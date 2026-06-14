@@ -104,34 +104,9 @@ Represents a desired future outcome.
 
 Goals provide long-term direction.
 
-Examples:
-
-- Become a physician
-- Graduate debt free
-- Match orthopedic surgery
-
-## Core Fields
-
-- id
-- title
-- description
-- priority
-- target_date
-- status
-- created_at
-- updated_at
-
-## Relationships
-
-A Goal may:
-
-- contain Projects
-- contain Tasks
-- be referenced by Plans
-- be reviewed through Reviews
-
 ## States
 
+- Scheduled
 - Active
 - Completed
 - Paused
@@ -145,36 +120,10 @@ A Goal may:
 
 Represents a multi-step effort intended to advance one or more Goals.
 
-Examples:
-
-- North Vector
-- Etherea Foundation
-- TechLink
-
-## Core Fields
-
-- id
-- title
-- description
-- priority
-- status
-- start_date
-- target_date
-- created_at
-- updated_at
-
-## Relationships
-
-A Project may:
-
-- belong to one or more Goals
-- contain Tasks
-- contain Plans
-- generate Decisions
-
 ## States
 
 - Proposed
+- Scheduled
 - Active
 - On Hold
 - Completed
@@ -188,31 +137,9 @@ A Project may:
 
 Represents a discrete actionable unit of work.
 
-Tasks are the smallest operational building block.
-
-## Core Fields
-
-- id
-- title
-- description
-- priority
-- due_date
-- status
-- created_at
-- updated_at
-
-## Relationships
-
-A Task may belong to:
-
-- a Goal
-- a Project
-- a Plan
-
-A Task may generate an Execution.
-
 ## States
 
+- Scheduled
 - Not Started
 - In Progress
 - Waiting
@@ -227,27 +154,6 @@ A Task may generate an Execution.
 
 Represents a structured path from a current state to a desired outcome.
 
-Plans connect strategy to execution.
-
-## Core Fields
-
-- id
-- title
-- description
-- planning_horizon
-- status
-- created_at
-- updated_at
-
-## Relationships
-
-A Plan may:
-
-- support Goals
-- support Projects
-- contain Tasks
-- create Decisions
-
 ## States
 
 - Draft
@@ -258,38 +164,6 @@ A Plan may:
 ---
 
 # 7. Decision
-
-## Purpose
-
-Represents a meaningful choice.
-
-North Vector should preserve important decisions and their rationale.
-
-Examples:
-
-- College selection
-- Career direction
-- Major purchases
-
-## Core Fields
-
-- id
-- title
-- description
-- rationale
-- decision_date
-- status
-- created_at
-- updated_at
-
-## Relationships
-
-A Decision may:
-
-- affect Goals
-- affect Projects
-- affect Plans
-- trigger Approvals
 
 ## States
 
@@ -303,29 +177,6 @@ A Decision may:
 
 # 8. Approval
 
-## Purpose
-
-Represents explicit human authorization.
-
-Approvals exist to preserve agency and governance.
-
-## Core Fields
-
-- id
-- approval_type
-- request_summary
-- status
-- requested_at
-- decided_at
-
-## Relationships
-
-An Approval may authorize:
-
-- a Decision
-- a Plan
-- an Execution
-
 ## States
 
 - Pending
@@ -337,30 +188,6 @@ An Approval may authorize:
 ---
 
 # 9. Execution
-
-## Purpose
-
-Represents an action taken by North Vector or the User.
-
-Executions transform plans into reality.
-
-## Core Fields
-
-- id
-- execution_type
-- summary
-- executed_at
-- outcome
-- status
-
-## Relationships
-
-An Execution may:
-
-- satisfy a Task
-- fulfill a Plan step
-- require an Approval
-- be reviewed later
 
 ## States
 
@@ -375,32 +202,6 @@ An Execution may:
 
 # 10. Review
 
-## Purpose
-
-Represents structured reflection and evaluation.
-
-Reviews help Chief understand progress, risks, failures, opportunities, and alignment.
-
-## Core Fields
-
-- id
-- review_type
-- summary
-- findings
-- recommendations
-- review_date
-
-## Relationships
-
-A Review may evaluate:
-
-- Goals
-- Projects
-- Tasks
-- Plans
-- Decisions
-- Executions
-
 ## States
 
 - Scheduled
@@ -412,8 +213,6 @@ A Review may evaluate:
 
 # Domain Hierarchy
 
-The foundational flow of North Vector is:
-
 User
 → Memory
 → Goal
@@ -423,23 +222,3 @@ User
 → Approval
 → Execution
 → Review
-
-This hierarchy represents the core operating loop of the North Vector system.
-
----
-
-# Scope Boundary
-
-This document intentionally excludes:
-
-- AI Agents
-- Workflow Engine
-- Event Bus
-- Integrations
-- Notifications
-- Provider Systems
-- Simulation Systems
-
-Those are implementation and infrastructure concerns that will be defined in future design documents.
-
-The purpose of this document is to establish the core business entities upon which the rest of North Vector will be built.
