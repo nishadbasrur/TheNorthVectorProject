@@ -3,12 +3,16 @@ import "./globals.css";
 
 export const metadata: Metadata = {
   title: "North Vector",
-  description: "Personal operating system and Chief of Staff platform.",
+  description: "Personal Chief of Staff Operating System.",
 };
 
 export default function RootLayout({ children }: { children: React.ReactNode }) {
   return (
     <html lang="en">
+      <head>
+        <link rel="preconnect" href="https://fonts.googleapis.com" />
+        <link rel="preconnect" href="https://fonts.gstatic.com" crossOrigin="anonymous" />
+      </head>
       <body>{children}</body>
     </html>
   );
