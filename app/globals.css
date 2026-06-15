@@ -636,3 +636,42 @@ html, body {
   .grid-2, .grid-3 { grid-template-columns: 1fr; }
   .page-body { padding: 16px; }
 }
+
+.nv-input,
+.nv-textarea {
+  width: 100%;
+  border-radius: 14px;
+  border: 1px solid var(--border-subtle);
+  background: rgba(4, 9, 26, 0.6);
+  color: var(--text-primary);
+  padding: 12px 14px;
+  font-size: 14px;
+  outline: none;
+}
+
+.nv-textarea {
+  min-height: 110px;
+  resize: vertical;
+  margin-top: 12px;
+}
+
+.nv-button,
+.nv-button-secondary {
+  border: 1px solid var(--cyan-500);
+  background: rgba(34, 211, 238, 0.12);
+  color: var(--cyan-300);
+  padding: 10px 16px;
+  border-radius: 999px;
+  font-weight: 700;
+  cursor: pointer;
+}
+
+.nv-button:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+}
+
+.nv-button-secondary {
+  padding: 8px 12px;
+  font-size: 12px;
+}

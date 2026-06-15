@@ -1,87 +1,280 @@
-import { AppShell } from "@/components/layout/app-shell";
-import { mockTasks } from "@/lib/mock-data";
+"use client";
 
-const priorityOrder = { high: 0, medium: 1, low: 2 };
+import { useEffect, useState } from "react";
+import { AppShell } from "@/components/layout/app-shell";
+import {
+  createTask,
+  getTasks,
+  updateTaskStatus,
+  type TaskDomain,
+  type TaskEnergy,
+  type TaskPriority,
+  type TaskRecord,
+  type TaskStatus,
+} from "@/lib/task-store";
+
+const priorities: TaskPriority[] = ["low", "medium", "high", "critical"];
+const statuses: TaskStatus[] = ["scheduled", "active", "paused", "completed", "cancelled"];
+const energies: TaskEnergy[] = ["low", "medium", "high"];
+const domains: TaskDomain[] = ["academic", "career", "health", "personal", "north-vector"];
+
+function formatLabel(value: string) {
+  return value
+    .split("-")
+    .map((word) => word.charAt(0).toUpperCase() + word.slice(1))
+    .join(" ");
+}
 
 export default function TasksPage() {
-  const open = mockTasks.filter(t => t.status === "open").sort((a, b) =>
-    (priorityOrder[a.priority as keyof typeof priorityOrder] ?? 9) - (priorityOrder[b.priority as keyof typeof priorityOrder] ?? 9)
-  );
-  const done = mockTasks.filter(t => t.status === "done");
+  const [tasks, setTasks] = useState<TaskRecord[]>([]);
+  const [isSaving, setIsSaving] = useState(false);
+
+  const [title, setTitle] = useState("");
+  const [description, setDescription] = useState("");
+  const [status, setStatus] = useState<TaskStatus>("scheduled");
+  const [priority, setPriority] = useState<TaskPriority>("medium");
+  const [energy, setEnergy] = useState<TaskEnergy>("medium");
+  const [domain, setDomain] = useState<TaskDomain>("north-vector");
+  const [dueDate, setDueDate] = useState("");
+  const [estimatedMinutes, setEstimatedMinutes] = useState("30");
+  const [notes, setNotes] = useState("");
+
+  async function loadTasks() {
+    const records = await getTasks();
+    setTasks(records);
+  }
+
+  useEffect(() => {
+    loadTasks();
+  }, []);
+
+  async function handleCreateTask() {
+    const trimmedTitle = title.trim();
+
+    if (!trimmedTitle) return;
+
+    setIsSaving(true);
+
+    try {
+      await createTask({
+        title: trimmedTitle,
+        description: description.trim(),
+        status,
+        priority,
+        energy,
+        domain,
+        dueDate: dueDate || undefined,
+        estimatedMinutes: Number(estimatedMinutes) || 30,
+        notes: notes.trim(),
+      });
+
+      setTitle("");
+      setDescription("");
+      setStatus("scheduled");
+      setPriority("medium");
+      setEnergy("medium");
+      setDomain("north-vector");
+      setDueDate("");
+      setEstimatedMinutes("30");
+      setNotes("");
+
+      await loadTasks();
+    } finally {
+      setIsSaving(false);
+    }
+  }
+
+  async function handleCompleteTask(taskId: string) {
+    await updateTaskStatus(taskId, "completed");
+    await loadTasks();
+  }
+
+  const openTasks = tasks.filter((task) => task.status !== "completed");
+  const completedTasks = tasks.filter((task) => task.status === "completed");
 
   return (
     <AppShell>
       <div className="page-header">
         <div className="page-eyebrow">Execution Layer</div>
         <div className="page-title">Tasks</div>
-        <div className="page-meta">Discrete actionable work · {open.length} open, {done.length} complete</div>
+        <div className="page-meta">
+          Firestore-backed execution queue · {openTasks.length} open · {completedTasks.length} completed
+        </div>
       </div>
 
       <div className="page-body">
-        {/* Stats */}
-        <div className="grid-4" style={{ marginBottom: 28 }}>
-          {[
-            { label: "Open", value: open.length, color: "var(--white)" },
-            { label: "High Priority", value: open.filter(t => t.priority === "high").length, color: "var(--status-risk)" },
-            { label: "Medium", value: open.filter(t => t.priority === "medium").length, color: "var(--status-warning)" },
-            { label: "Done This Week", value: done.length, color: "var(--status-success)" },
-          ].map(s => (
-            <div key={s.label} className="card-sm">
-              <div className="stat-value" style={{ fontSize: 26, color: s.color }}>{s.value}</div>
-              <div className="stat-label">{s.label}</div>
-            </div>
-          ))}
+        <div className="card" style={{ marginBottom: 24 }}>
+          <div className="section-heading">Create Task</div>
+
+          <div className="grid-2" style={{ marginTop: 12 }}>
+            <input
+              className="nv-input"
+              value={title}
+              onChange={(event) => setTitle(event.target.value)}
+              placeholder="Task title"
+            />
+
+            <select
+              className="nv-input"
+              value={priority}
+              onChange={(event) => setPriority(event.target.value as TaskPriority)}
+            >
+              {priorities.map((item) => (
+                <option key={item} value={item}>
+                  {formatLabel(item)}
+                </option>
+              ))}
+            </select>
+          </div>
+
+          <textarea
+            className="nv-textarea"
+            value={description}
+            onChange={(event) => setDescription(event.target.value)}
+            placeholder="Description"
+          />
+
+          <div className="grid-4" style={{ marginTop: 12 }}>
+            <select
+              className="nv-input"
+              value={status}
+              onChange={(event) => setStatus(event.target.value as TaskStatus)}
+            >
+              {statuses.map((item) => (
+                <option key={item} value={item}>
+                  {formatLabel(item)}
+                </option>
+              ))}
+            </select>
+
+            <select
+              className="nv-input"
+              value={energy}
+              onChange={(event) => setEnergy(event.target.value as TaskEnergy)}
+            >
+              {energies.map((item) => (
+                <option key={item} value={item}>
+                  {formatLabel(item)} Energy
+                </option>
+              ))}
+            </select>
+
+            <select
+              className="nv-input"
+              value={domain}
+              onChange={(event) => setDomain(event.target.value as TaskDomain)}
+            >
+              {domains.map((item) => (
+                <option key={item} value={item}>
+                  {formatLabel(item)}
+                </option>
+              ))}
+            </select>
+
+            <input
+              className="nv-input"
+              value={estimatedMinutes}
+              onChange={(event) => setEstimatedMinutes(event.target.value)}
+              placeholder="30"
+            />
+          </div>
+
+          <div className="grid-2" style={{ marginTop: 12 }}>
+            <input
+              className="nv-input"
+              type="date"
+              value={dueDate}
+              onChange={(event) => setDueDate(event.target.value)}
+            />
+
+            <input
+              className="nv-input"
+              value={notes}
+              onChange={(event) => setNotes(event.target.value)}
+              placeholder="Notes"
+            />
+          </div>
+
+          <button
+            className="nv-button"
+            onClick={handleCreateTask}
+            disabled={isSaving || !title.trim()}
+            style={{ marginTop: 14 }}
+          >
+            {isSaving ? "Creating..." : "Create Task"}
+          </button>
         </div>
 
-        {/* Open tasks */}
-        <div style={{ marginBottom: 24 }}>
-          <div className="section-heading">Open</div>
-          <div className="card">
-            {open.map(task => (
+        <div className="section-heading">Open Tasks</div>
+
+        <div className="card" style={{ marginBottom: 24 }}>
+          {openTasks.length === 0 ? (
+            <div style={{ color: "var(--text-muted)", fontSize: 14 }}>
+              No open tasks.
+            </div>
+          ) : (
+            openTasks.map((task) => (
               <div key={task.id} className="task-row">
-                <div className="task-check" />
                 <div style={{ flex: 1 }}>
-                  <div className="task-text">{task.title}</div>
-                  {task.projectTitle && (
-                    <div style={{ fontSize: 11, color: "var(--text-faint)", marginTop: 2 }}>{task.projectTitle}</div>
-                  )}
+                  <div style={{ fontWeight: 700, color: "var(--text-primary)", marginBottom: 6 }}>
+                    {task.title}
+                  </div>
+
+                  {task.description ? (
+                    <div style={{ color: "var(--text-muted)", fontSize: 13, marginBottom: 10 }}>
+                      {task.description}
+                    </div>
+                  ) : null}
+
+                  <div style={{ display: "flex", flexWrap: "wrap", gap: 8 }}>
+                    <span className="badge badge-navy">{formatLabel(task.status)}</span>
+                    <span className="badge badge-navy">{formatLabel(task.priority)}</span>
+                    <span className="badge badge-navy">{formatLabel(task.energy)} Energy</span>
+                    <span className="badge badge-navy">{formatLabel(task.domain)}</span>
+                    <span className="badge badge-navy">{task.estimatedMinutes} min</span>
+                    {task.dueDate ? (
+                      <span className="badge badge-muted">{task.dueDate}</span>
+                    ) : null}
+                  </div>
                 </div>
-                <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-                  {task.tags.slice(0, 1).map(tag => (
-                    <span key={tag} className="badge badge-muted">{tag}</span>
-                  ))}
-                  <span className={`badge ${task.priority === "high" ? "badge-risk" : task.priority === "medium" ? "badge-warning" : "badge-muted"}`}>
-                    {task.priority}
-                  </span>
-                  <span className="task-due">{task.dueDate}</span>
+
+                <button
+                  className="nv-button-secondary"
+                  onClick={() => handleCompleteTask(task.id)}
+                >
+                  Complete
+                </button>
+              </div>
+            ))
+          )}
+        </div>
+
+        <div className="section-heading">Completed</div>
+
+        <div className="card">
+          {completedTasks.length === 0 ? (
+            <div style={{ color: "var(--text-muted)", fontSize: 14 }}>
+              No completed tasks yet.
+            </div>
+          ) : (
+            completedTasks.map((task) => (
+              <div key={task.id} className="task-row">
+                <div style={{ flex: 1 }}>
+                  <div style={{ fontWeight: 700, color: "var(--text-primary)", marginBottom: 6 }}>
+                    {task.title}
+                  </div>
+
+                  <div style={{ display: "flex", flexWrap: "wrap", gap: 8 }}>
+                    <span className="badge badge-navy">{formatLabel(task.status)}</span>
+                    <span className="badge badge-navy">{formatLabel(task.priority)}</span>
+                    <span className="badge badge-navy">{formatLabel(task.energy)} Energy</span>
+                    <span className="badge badge-navy">{formatLabel(task.domain)}</span>
+                  </div>
                 </div>
               </div>
-            ))}
-          </div>
+            ))
+          )}
         </div>
-
-        {/* Completed */}
-        {done.length > 0 && (
-          <div>
-            <div className="section-heading">Completed</div>
-            <div className="card" style={{ opacity: 0.6 }}>
-              {done.map(task => (
-                <div key={task.id} className="task-row">
-                  <div className="task-check done" style={{ display: "flex", alignItems: "center", justifyContent: "center" }}>
-                    <span style={{ fontSize: 10, color: "white" }}>✓</span>
-                  </div>
-                  <div style={{ flex: 1 }}>
-                    <div className="task-text done">{task.title}</div>
-                    {task.projectTitle && (
-                      <div style={{ fontSize: 11, color: "var(--text-faint)", marginTop: 2 }}>{task.projectTitle}</div>
-                    )}
-                  </div>
-                  <span className="badge badge-success">done</span>
-                </div>
-              ))}
-            </div>
-          </div>
-        )}
       </div>
     </AppShell>
   );
