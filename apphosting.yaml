@@ -1,54 +1,57 @@
 # Settings for Backend (on Cloud Run).
-# See https://firebase.google.com/docs/app-hosting/configure#cloud-run
 runConfig:
   minInstances: 0
-  # maxInstances: 100
-  # concurrency: 80
-  # cpu: 1
-  # memoryMiB: 512
 
 # Environment variables and secrets.
-# env:
+env:
   - variable: DATABASE_URL
     value: "postgres://user:password@localhost:5432/north_vector"
     availability:
       - BUILD
       - RUNTIME
+
   - variable: AUTH_SECRET
     value: "local-dev-placeholder-secret"
     availability:
       - BUILD
       - RUNTIME
+
   - variable: AUTH_URL
     value: "https://north-vector--the-north-vector-project.us-east4.hosted.app"
     availability:
       - BUILD
       - RUNTIME
+
   - variable: NEXT_PUBLIC_FIREBASE_API_KEY
     value: "AIzaSyDvNHxEhbyXnm1Bk9da1mXHCsWB7wew9JE"
     availability:
       - BUILD
       - RUNTIME
+
   - variable: NEXT_PUBLIC_FIREBASE_AUTH_DOMAIN
     value: "the-north-vector-project.firebaseapp.com"
     availability:
       - BUILD
       - RUNTIME
+
   - variable: NEXT_PUBLIC_FIREBASE_PROJECT_ID
     value: "the-north-vector-project"
     availability:
       - BUILD
       - RUNTIME
+
   - variable: NEXT_PUBLIC_FIREBASE_STORAGE_BUCKET
     value: "the-north-vector-project.firebasestorage.app"
     availability:
       - BUILD
       - RUNTIME
+
   - variable: NEXT_PUBLIC_FIREBASE_MESSAGING_SENDER_ID
     value: "1011959080844"
     availability:
       - BUILD
       - RUNTIME
+
   - variable: NEXT_PUBLIC_FIREBASE_APP_ID
     value: "1:1011959080844:web:9273e8b816e7831c35d8a9"
     availability:
