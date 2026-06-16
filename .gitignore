@@ -5,3 +5,7 @@ tsconfig.tsbuildinfo
 
 .agents/
 skills-lock.json
+
+.claude/
+.agents/
+skills-lock.json
