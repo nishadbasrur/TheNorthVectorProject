@@ -9,3 +9,6 @@ skills-lock.json
 .claude/
 .agents/
 skills-lock.json
+
+# Local personal imports
+data/imports/openai-export/
