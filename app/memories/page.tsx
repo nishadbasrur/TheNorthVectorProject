@@ -10,8 +10,19 @@ type FirestoreMemory = {
   createdAt?: string;
 };
 
+type LocalMemory = {
+  id: string;
+  status: string;
+  created_at: string;
+  type: string;
+  domain: string;
+  content: string;
+  confidence: number;
+};
+
 export default function MemoriesPage() {
   const [memories, setMemories] = useState<FirestoreMemory[]>([]);
+  const [localMemories, setLocalMemories] = useState<LocalMemory[]>([]);
   const [content, setContent] = useState("");
   const [isSaving, setIsSaving] = useState(false);
 
@@ -20,8 +31,15 @@ export default function MemoriesPage() {
     setMemories(records as FirestoreMemory[]);
   }
 
+  async function loadLocalMemories() {
+    const response = await fetch("/api/v1/memories/local");
+    const data = await response.json();
+    setLocalMemories(data.records ?? []);
+  }
+
   useEffect(() => {
     loadMemories();
+    loadLocalMemories();
   }, []);
 
   async function handleSave() {
@@ -45,7 +63,8 @@ export default function MemoriesPage() {
         <div className="page-eyebrow">Intelligence Layer</div>
         <div className="page-title">Memories</div>
         <div className="page-meta">
-          Persistent Firestore memory store · {memories.length} records
+          Persistent Firestore memory store · {memories.length} stored records ·{" "}
+          {localMemories.length} local curated records
         </div>
       </div>
 
@@ -91,6 +110,53 @@ export default function MemoriesPage() {
           </button>
         </div>
 
+        <div className="section-heading">Local Curated Memories</div>
+
+        <div className="card" style={{ marginBottom: 24 }}>
+          {localMemories.length === 0 ? (
+            <div style={{ color: "var(--text-muted)", fontSize: 14 }}>
+              No local curated memories found.
+            </div>
+          ) : (
+            localMemories.map((memory) => (
+              <div key={memory.id} className="memory-row">
+                <div className="memory-icon">🧭</div>
+
+                <div style={{ flex: 1 }}>
+                  <div
+                    style={{
+                      fontSize: 12,
+                      fontWeight: 700,
+                      color: "var(--cyan-300)",
+                      marginBottom: 6,
+                      textTransform: "uppercase",
+                      letterSpacing: "0.08em",
+                    }}
+                  >
+                    {memory.domain} · {memory.type} ·{" "}
+                    {Math.round(memory.confidence * 100)}%
+                  </div>
+
+                  <div
+                    style={{
+                      fontSize: 13,
+                      fontWeight: 600,
+                      color: "var(--text-primary)",
+                      marginBottom: 6,
+                    }}
+                  >
+                    {memory.content}
+                  </div>
+
+                  <div style={{ fontSize: 11, color: "var(--text-faint)" }}>
+                    {memory.status} · {memory.id}
+                  </div>
+                </div>
+              </div>
+            ))
+          )}
+        </div>
+
         <div className="section-heading">Stored Memories</div>
 
         <div className="card">
@@ -102,6 +168,7 @@ export default function MemoriesPage() {
             memories.map((memory) => (
               <div key={memory.id} className="memory-row">
                 <div className="memory-icon">🧠</div>
+
                 <div style={{ flex: 1 }}>
                   <div
                     style={{
@@ -113,6 +180,7 @@ export default function MemoriesPage() {
                   >
                     {memory.content}
                   </div>
+
                   <div style={{ fontSize: 11, color: "var(--text-faint)" }}>
                     {memory.createdAt
                       ? new Date(memory.createdAt).toLocaleString()

@@ -12,3 +12,6 @@ skills-lock.json
 
 # Local personal imports
 data/imports/openai-export/
+
+# Local memory database
+data/memories/
