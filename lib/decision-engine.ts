@@ -1,36 +1,69 @@
-import { retrieveLocalMemories } from "./memory-retrieval";
+import { retrieveLocalMemories } from "@/lib/memory-retrieval";
+import { getStoredDecision, storeDecision } from "@/lib/decision-memory";
 
 export interface DecisionResult {
   recommendation: string;
   reasons: string[];
   risks: string[];
   confidence: "low" | "medium" | "high";
+  source: "new_evaluation" | "stored_decision";
+  timesAsked?: number;
 }
 
-export function evaluateDecision(
-  question: string
-): DecisionResult {
-  const memories = retrieveLocalMemories(question, 10);
+function includesAny(text: string, terms: string[]) {
+  return terms.some((term) => text.includes(term));
+}
 
-  const reasons = memories
-    .slice(0, 3)
-    .map((memory) => memory.content);
+export function evaluateDecision(question: string): DecisionResult {
+  const storedDecision = getStoredDecision(question);
 
-  const risks: string[] = [];
-
-  if (
-    question.toLowerCase().includes("class") ||
-    question.toLowerCase().includes("semester")
-  ) {
-    risks.push("Potential GPA impact");
-    risks.push("Reduced study bandwidth");
+  if (storedDecision) {
+    return {
+      recommendation: storedDecision.recommendation,
+      reasons: storedDecision.reasons,
+      risks: storedDecision.risks,
+      confidence: storedDecision.confidence as DecisionResult["confidence"],
+      source: "stored_decision",
+      timesAsked: storedDecision.timesAsked,
+    };
   }
 
-  return {
-    recommendation:
-      "Use retrieved context and risks to guide decision.",
+  const normalizedQuestion = question.toLowerCase();
+  const memories = retrieveLocalMemories(question, 10);
+
+  const reasons = memories.slice(0, 3).map((memory) => memory.content);
+  const risks: string[] = [];
+
+  let recommendation = "Use retrieved context and risks to guide decision.";
+  let confidence: DecisionResult["confidence"] = "medium";
+
+  if (
+    includesAny(normalizedQuestion, ["class", "semester", "credits", "course"])
+  ) {
+    recommendation =
+      "Do not add another class unless there is a clear strategic reason. Protecting GPA, sleep, and stability matters more than adding extra credits right now.";
+
+    risks.push("Potential GPA impact");
+    risks.push("Reduced study bandwidth");
+    risks.push("Higher stress during the first college semester");
+
+    confidence = "high";
+  }
+
+  const result: DecisionResult = {
+    recommendation,
     reasons,
     risks,
-    confidence: "medium",
+    confidence,
+    source: "new_evaluation",
   };
+
+  storeDecision(question, {
+    recommendation,
+    reasons,
+    risks,
+    confidence,
+  });
+
+  return result;
 }
