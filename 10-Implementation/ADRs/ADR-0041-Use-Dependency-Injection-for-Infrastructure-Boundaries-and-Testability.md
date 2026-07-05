@@ -16,17 +16,19 @@ Application and domain logic should depend on interfaces, contracts, or abstract
 
 Infrastructure dependencies should be supplied at composition boundaries.
 
+**Note (2026-07-03):** not followed in practice, for the same reason noted in `10-Implementation/ADRs/ADR-0028-Use-Repository-and-Service-Layers-to-Separate-Domain-Logic-from-Infrastructure.md` — the actual Firestore store modules (`lib/task-store.ts` and siblings) are imported and called directly wherever needed, with no interface/abstraction layer or injected dependencies. This is a real architectural gap from this ADR's decision, independent of the database technology change.
+
 ## Context
 
 North Vector depends on:
-- PostgreSQL
-- model providers
-- Google Calendar
+- a primary database (originally PostgreSQL; actually Firestore, see `10-Implementation/ADRs/ADR-0101-Use-Firestore-as-the-Primary-Database.md`)
+- model providers (not implemented)
+- Google Calendar (not implemented)
 - authentication systems
-- storage providers
+- storage providers (not implemented)
 - notification systems
-- monitoring tools
-- background job systems
+- monitoring tools (not implemented)
+- background job systems (one scheduled Cloud Function, not a general job system — see `10-Implementation/ADRs/ADR-0103-Use-Firebase-Cloud-Functions-for-Scheduled-Execution.md`)
 
 If business logic directly creates infrastructure clients:
 - testing becomes difficult
@@ -126,11 +128,11 @@ without changing workflow logic.
 
 ## Relationship to Repositories
 
-Services should depend on repository interfaces.
+Services should depend on repository interfaces. (No repository interfaces or services exist in the actual implementation — see the note under Decision above.)
 
 Repository implementations may depend on:
-- Drizzle
-- PostgreSQL
+- Drizzle (superseded — no ORM in use; direct Firestore SDK calls instead, see ADR-0101)
+- PostgreSQL (superseded — Firestore)
 - future persistence systems
 
 The service should not need to know which implementation is active.

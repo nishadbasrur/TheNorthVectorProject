@@ -2,7 +2,7 @@
 
 ## Status
 
-Accepted
+Superseded — see [ADR-0103: Use Firebase Cloud Functions for Scheduled Execution](./ADR-0103-Use-Firebase-Cloud-Functions-for-Scheduled-Execution.md). PostgreSQL no longer exists, so a PostgreSQL-backed job queue is not possible as specified. Note the replacement ADR covers only scheduled Cloud Functions (one recurring job implemented so far); it is not a like-for-like replacement for the general durable job-queue model this ADR describes (retries, dead-letter, idempotency keys across many job types) — that broader need is undecided. Preserved here unmodified for historical context per the ADR process — see `10-Implementation/Architecture_Decision_Record_Template.md`.
 
 ## Date
 

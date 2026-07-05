@@ -245,7 +245,7 @@ This workflow should block MVP release when failing.
 
 End-to-end tests should run against:
 - a dedicated test application instance or local test server
-- an isolated PostgreSQL database
+- an isolated database (originally PostgreSQL; actually Firestore, see `10-Implementation/ADRs/ADR-0101-Use-Firestore-as-the-Primary-Database.md` — note no isolated test Firestore instance actually exists yet, local dev has been hitting the real project)
 - synthetic seed data
 - test authentication configuration
 - fake providers by default
@@ -413,10 +413,10 @@ Avoid large page-object layers that hide the actual workflow and make tests diff
 
 ## CI Integration
 
-GitHub Actions should:
+GitHub Actions should (as originally planned — not implemented; the actual `.github/workflows/ci.yml` runs typecheck/lint/test/build only, no Playwright or database service step):
 1. install Playwright browsers
-2. start PostgreSQL
-3. apply migrations
+2. start a database (originally PostgreSQL; would actually be Firestore/emulator now, see ADR-0101)
+3. apply migrations (moot for Firestore)
 4. seed synthetic data
 5. start the web and worker processes
 6. run Playwright

@@ -2,7 +2,7 @@
 
 ## Status
 
-Accepted
+Superseded — see [ADR-0101: Use Firestore as the Primary Database](./ADR-0101-Use-Firestore-as-the-Primary-Database.md). Firestore is a fully managed service by definition, so the separate "which managed Postgres provider" decision this ADR addresses no longer applies. Preserved here unmodified for historical context per the ADR process — see `10-Implementation/Architecture_Decision_Record_Template.md`.
 
 ## Date
 

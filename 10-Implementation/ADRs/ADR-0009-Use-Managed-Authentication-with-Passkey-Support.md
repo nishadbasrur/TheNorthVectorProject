@@ -2,7 +2,7 @@
 
 ## Status
 
-Accepted
+Superseded — see [ADR-0102: Use Firebase Auth for Identity](./ADR-0102-Use-Firebase-Auth-for-Identity.md). Note this is a different kind of staleness than the PostgreSQL/Drizzle ADRs: it isn't a casualty of the database migration, it's a gap between this ADR's explicit passkey requirement and what was actually implemented (Firebase Auth with email/password only, no WebAuthn/passkey flow). Flagged and marked now to avoid silent supersession, per this project's own ADR process — see `10-Implementation/Architecture_Decision_Record_Template.md`.
 
 ## Date
 

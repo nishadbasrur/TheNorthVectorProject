@@ -125,81 +125,47 @@ Each module should own business logic while sharing common data and authorizatio
 
 ### Primary Database
 
-PostgreSQL.
+Firestore (Cloud Firestore, native mode). See `10-Implementation/ADRs/ADR-0101-Use-Firestore-as-the-Primary-Database.md`.
 
 Reasons:
-- reliable relational integrity
-- strong transaction support
-- mature indexing
-- JSON support
-- full-text search
-- extension ecosystem
-- good managed hosting options
+- already part of the Firebase project backing Auth and Cloud Functions — one platform instead of a separate database provider
+- schemaless documents fit the shallow, evolving object shapes in use so far
+- Firestore Security Rules provide a declarative, server-enforced authorization boundary
+- Admin SDK available for trusted server code that must bypass client-facing rules
+- zero infrastructure to provision or patch
 
-### Recommended Extensions
+Tradeoffs accepted: no relational joins or multi-document transactions by default, no server-enforced schema, weaker query flexibility than SQL. See the ADR for the full accounting.
 
-- pgvector for semantic retrieval
-- pg_trgm for text similarity where useful
-- uuid generation support
+### Semantic Retrieval Extensions
 
-A separate vector database or graph database should not be added during Phase 1 unless PostgreSQL demonstrably becomes insufficient.
+pgvector and pg_trgm assumed a PostgreSQL primary database and are no longer applicable. Firestore has no built-in equivalent. Semantic/vector retrieval on Firestore is undecided — see `10-Implementation/ADRs/ADR-0010-Use-pgvector-for-Initial-Semantic-Retrieval.md` (status: Deprecated, no replacement chosen yet).
 
 ## Database Access
 
-Recommended options:
-- Prisma
-- Drizzle ORM
-- direct typed SQL with a lightweight query layer
+Firestore is accessed directly via its own SDKs — no ORM or query-builder layer.
 
-Selection criteria:
-- reliable migrations
-- clear SQL visibility
-- strong TypeScript support
-- safe transaction handling
-- minimal hidden behavior
+- client-reachable code (Next.js pages, simple API routes) uses the Firebase client SDK through typed store modules, one per collection (see `lib/task-store.ts` and siblings for the pattern)
+- trusted server-only code (API routes handling secrets, Cloud Functions) uses the Firebase Admin SDK, which bypasses Firestore Security Rules
 
-The project should not treat the ORM as the data model itself.
+Prisma, Drizzle, and typed-SQL query layers assumed a relational database and do not apply. See `10-Implementation/ADRs/ADR-0018-Use-Drizzle-ORM-for-Phase-1-Database-Access.md` (status: Superseded).
+
+The project should not treat the Firestore SDK's inferred document shapes as the domain model itself — runtime validation still belongs at application boundaries.
 
 ## Canonical Data Storage
 
-Recommended relational structure:
-- users
-- devices
-- sessions
-- canonical_objects
-- object_versions
-- object_relationships
-- source_references
-- evidence_records
-- memory_records
-- integration_connections
-- permissions
-- proposed_actions
-- automation_definitions
-- automation_runs
-- notifications
-- audit_events
-- incidents
+Firestore collections in actual use, one per domain object type rather than a normalized relational schema:
+- tasks
+- goals
+- projects
+- decisions
+- plaid_items (encrypted bank-connection metadata)
+- daily-runs (scheduled risk-scan output)
 
-Object-family-specific tables may be added when the canonical base table becomes too generic.
+The originally planned relational structure (canonical_objects, object_versions, object_relationships, source_references, evidence_records, etc.) assumed PostgreSQL and was never implemented against real data. Collections are added per domain object as needed rather than pre-modeled as a generic canonical base table.
 
 ## Semantic Retrieval
 
-Phase 1 semantic retrieval should use pgvector.
-
-The system should store:
-- embedding vector
-- object ID
-- source version
-- sensitivity
-- deletion status
-- embedding model version
-
-Embeddings should be regenerated when:
-- content changes materially
-- model version changes
-- source is deleted
-- sensitivity rules change
+Undecided. pgvector required PostgreSQL, which no longer exists. No replacement approach has been chosen — see `10-Implementation/ADRs/ADR-0010-Use-pgvector-for-Initial-Semantic-Retrieval.md` (status: Deprecated). Revisit when a concrete semantic-retrieval requirement emerges.
 
 ## Relationship Graph
 
@@ -225,7 +191,7 @@ Possible providers:
 - Supabase Storage
 - another S3-compatible service
 
-File references should remain in PostgreSQL.
+File references should remain in Firestore.
 
 ## Cache and Queue
 
@@ -260,13 +226,11 @@ Background work is required for:
 - embedding generation
 - backup checks
 
-Recommended Phase 1 approach:
-- database-backed job table
-- one worker process
-- idempotent job handlers
-- retry and dead-letter status
+Actual Phase 1 approach: Firebase Cloud Functions v2 (`onSchedule`) for scheduled execution, starting with one recurring job (`dailyRiskScan`). See `10-Implementation/ADRs/ADR-0103-Use-Firebase-Cloud-Functions-for-Scheduled-Execution.md`.
 
-Possible future libraries:
+This is narrower than the database-backed job table originally planned (see `10-Implementation/ADRs/ADR-0007-Use-Database-Backed-Jobs-Before-a-Workflow-Platform.md`, status: Superseded) — there is no durable job queue, retry policy, or dead-letter handling shared across job types. Each scheduled function currently hand-builds its own resilience. A general job-queue layer (Firestore-backed, since Postgres is gone) remains undecided and should get its own ADR if a second recurring job type is needed.
+
+Possible future libraries if a real queue becomes necessary:
 - BullMQ
 - Temporal
 - Inngest
@@ -276,20 +240,11 @@ A workflow platform should be added only when native job orchestration becomes a
 
 ## Authentication
 
-Preferred options:
-- managed authentication provider with passkey support
-- Auth.js with a secure provider
-- Clerk, WorkOS, or equivalent
+Actual: Firebase Auth, email/password provider. See `10-Implementation/ADRs/ADR-0102-Use-Firebase-Auth-for-Identity.md`.
 
-Requirements:
-- single-user account
-- passkey or strong login
-- trusted-device support
-- session revocation
-- reauthentication
-- audit events
+This does not meet the passkey requirement originally specified — see `10-Implementation/ADRs/ADR-0009-Use-Managed-Authentication-with-Passkey-Support.md` (status: Superseded in part; passkeys, MFA, device trust, and reauthentication-for-sensitive-actions remain unimplemented). Firebase Auth was chosen because it was already part of the Firebase project in use for Firestore, and because it plugs directly into Firestore Security Rules (`request.auth.token.email`), which was the immediate need.
 
-Authentication provider choice should not determine authorization policy.
+Authentication provider choice should not determine authorization policy. In practice, authorization is enforced by Firestore Security Rules (an owner-email check) plus server-side token verification in API routes and Cloud Functions — not by the authentication provider itself.
 
 ## Authorization
 
@@ -462,8 +417,8 @@ Local development should provide:
 - hot reload
 
 Recommended tooling:
-- Docker Compose for PostgreSQL when useful
-- package scripts for setup, migration, test, and lint
+- Firebase Emulator Suite for local Firestore when useful (not yet adopted in practice)
+- package scripts for setup, test, and lint
 
 ## Test Environment
 
@@ -623,12 +578,12 @@ Protected branches may require these checks before merge.
 
 ## Continuous Deployment
 
-Phase 1 deployment may use:
-- Vercel for Next.js
-- Render, Railway, Fly.io, or similar for workers
-- managed PostgreSQL
+Actual Phase 1 deployment:
+- Firebase App Hosting for the Next.js application
+- Firebase Cloud Functions (separate deploy target, `firebase deploy --only functions`) for scheduled execution
+- Firestore as the database — no separate database provider or deployment step
 
-A single provider is acceptable initially if data portability and backups remain available.
+A single platform (Firebase) was chosen over the originally planned split across Vercel/Render/managed-Postgres, once Firestore, Auth, and Functions were all already on Firebase — see `10-Implementation/ADRs/ADR-0101-Use-Firestore-as-the-Primary-Database.md`.
 
 ## Deployment Strategy
 
@@ -640,14 +595,9 @@ Recommended:
 
 ## Database Migrations
 
-Migrations should be:
-- version controlled
-- reviewed
-- tested in staging
-- reversible where practical
-- backed up before high-risk changes
+Firestore has no formal migration framework; there is no schema to migrate in the SQL sense. Schema evolution happens by changing TypeScript types and, where field shapes change, handling missing/legacy fields defensively in application code. Documents do not currently carry a schema version field.
 
-Production migration should not run blindly during application startup if failure could leave the system inconsistent.
+Firestore Security Rules changes are the closest equivalent to a migration in terms of required care — a rules change can silently open or close access, and should be reviewed and verified (ideally against the live database, not just rules syntax) before and after deploy.
 
 ## Feature Flags
 
@@ -666,7 +616,7 @@ Recommended tools:
 - Playwright for end-to-end tests
 - Testing Library for components
 - provider mocks for integrations
-- containerized PostgreSQL for integration tests
+- Firestore Emulator Suite for integration tests (not yet adopted in practice; current verification has relied on direct Admin SDK scripts against the real project)
 
 ## Test Categories
 
@@ -835,10 +785,12 @@ The system should preserve the ability to identify:
 Reduce lock-in through:
 - canonical internal schemas
 - provider adapters
-- portable PostgreSQL
+- Firestore export via Admin SDK or Google Cloud's managed export/import tooling
 - S3-compatible storage
 - export formats
 - model abstraction
+
+Note: choosing Firestore over PostgreSQL was itself a lock-in tradeoff — Firestore's document model and Security Rules are more Firebase-specific than a portable PostgreSQL instance would have been. Accepted deliberately in exchange for platform consolidation; see `10-Implementation/ADRs/ADR-0101-Use-Firestore-as-the-Primary-Database.md`.
 
 Do not overengineer portability before the product works.
 
@@ -1028,14 +980,17 @@ Initial runbooks should cover:
 
 ## Open Technical Decisions
 
-Decisions still requiring prototype validation:
-- Prisma versus Drizzle versus typed SQL
-- authentication provider
-- deployment platform
-- background job implementation
+Resolved since this document was first written:
+- database and access layer: Firestore, no ORM (ADR-0101)
+- authentication provider: Firebase Auth, email/password (ADR-0102; passkey requirement still unmet)
+- deployment platform: Firebase App Hosting + Cloud Functions (ADR-0101, ADR-0103)
+- background job implementation: Firebase Cloud Functions `onSchedule` for the one recurring job built so far (ADR-0103); a general job-queue layer remains undecided
+
+Still requiring prototype validation:
 - model providers
 - local embedding strategy
 - object storage provider
+- semantic/vector retrieval approach on Firestore (ADR-0010 deprecated, no replacement chosen)
 
 ## Decision Criteria for Open Choices
 
@@ -1091,7 +1046,7 @@ Engineering effort shifts from product workflows to unnecessary platform complex
 
 The technical foundation is complete when:
 - application runs locally and in staging
-- PostgreSQL migrations are reproducible
+- Firestore Security Rules are reviewed and verified against the live database, not just rules syntax
 - authentication works
 - environment configuration is validated
 - secrets remain outside Git

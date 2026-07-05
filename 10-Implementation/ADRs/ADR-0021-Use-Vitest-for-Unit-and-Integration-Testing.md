@@ -28,9 +28,11 @@ Nishad
 - `10-Implementation/Implementation_Risk_Register.md`
 - `10-Implementation/ADRs/ADR-0006-Use-TypeScript-Across-the-Phase-1-Application.md`
 - `10-Implementation/ADRs/ADR-0017-Use-pnpm-for-Package-and-Workspace-Management.md`
-- `10-Implementation/ADRs/ADR-0018-Use-Drizzle-ORM-for-Phase-1-Database-Access.md`
+- `10-Implementation/ADRs/ADR-0018-Use-Drizzle-ORM-for-Phase-1-Database-Access.md` (superseded — see `10-Implementation/ADRs/ADR-0101-Use-Firestore-as-the-Primary-Database.md`)
 - `10-Implementation/ADRs/ADR-0019-Use-GitHub-Actions-for-Continuous-Integration.md`
-- `10-Implementation/ADRs/ADR-0020-Use-Playwright-for-End-to-End-Testing.md`
+- `10-Implementation/ADRs/ADR-0020-Use-Playwright-for-End-to-End-Testing.md` (Playwright itself was never adopted — see that ADR)
+
+**Note (2026-07-03):** Vitest itself is correctly decided and actually in use (`package.json`, `vitest.config.mts`). This document's many PostgreSQL/Drizzle integration-testing sections below were not implemented that way — the actual test suite (`tests/service-smoke.test.ts`) is a placeholder with no real database integration tests. Read "PostgreSQL"/"Drizzle" below as describing a testing setup that was planned but not built, not a live discrepancy to correct line by line. See ADR-0101.
 
 ## Context
 

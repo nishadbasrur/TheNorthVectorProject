@@ -12,6 +12,8 @@ Accepted
 
 North Vector will use explicit repository and service layers to separate domain logic from infrastructure concerns such as databases, provider SDKs, web frameworks, background workers, and model APIs.
 
+**Note (2026-07-03):** this pattern was not followed for what actually got built. A brief Drizzle-backed `services/` layer existed for a period (matching this ADR's repository/service split against PostgreSQL) but was deleted along with the rest of the Postgres layer — two of its files (`decision-service.ts`, `approval-service.ts`) had zero real callers by the time they were removed. The current Firestore implementation calls typed store modules (`lib/task-store.ts` and siblings) directly from route handlers and pages, with no repository or service abstraction layer in between — see `10-Implementation/ADRs/ADR-0101-Use-Firestore-as-the-Primary-Database.md`'s "Decision" section. This ADR's architectural guidance was not carried forward into the current implementation, not just its choice of database.
+
 ## Context
 
 North Vector includes many domains:
@@ -85,7 +87,7 @@ Examples:
 Owns external systems.
 
 Examples:
-- PostgreSQL
+- a primary database (originally PostgreSQL; actually Firestore, see ADR-0101)
 - Google Calendar
 - object storage
 - model providers
@@ -93,11 +95,11 @@ Examples:
 
 ## Boundaries
 
-Route handlers and UI components should call services, not raw database queries.
+Route handlers and UI components should call services, not raw database queries. **Not followed in practice** — route handlers and pages call Firestore store modules directly (see note under Decision above).
 
 Domain logic should not depend directly on:
 - Next.js
-- Drizzle
+- Drizzle (moot — no ORM is used at all now, but the actual code also doesn't isolate Firestore SDK calls behind a domain boundary either)
 - Google SDKs
 - Sentry
 - model-provider SDKs
@@ -147,10 +149,10 @@ Repositories should expose intention-revealing methods rather than arbitrary dat
 
 ## Testing
 
-Tests should verify:
+Tests should verify (none of this test suite currently exists — see `tests/service-smoke.test.ts`, a placeholder):
 - domain rules without database dependency
 - services with fake repositories where useful
-- repositories against real PostgreSQL
+- repositories against a real database (originally PostgreSQL; would be Firestore now)
 - route handlers do not bypass authorization and services
 
 ## Outcome

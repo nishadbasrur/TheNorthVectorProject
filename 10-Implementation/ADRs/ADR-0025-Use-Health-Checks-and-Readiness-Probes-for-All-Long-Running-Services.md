@@ -16,8 +16,8 @@ North Vector will implement explicit health checks and readiness probes for all 
 
 The platform depends on:
 - web services
-- background workers
-- PostgreSQL
+- background workers (actually one scheduled Cloud Function, not a persistent worker — see `10-Implementation/ADRs/ADR-0103-Use-Firebase-Cloud-Functions-for-Scheduled-Execution.md`)
+- a primary database (originally PostgreSQL; actually Firestore — see `10-Implementation/ADRs/ADR-0101-Use-Firestore-as-the-Primary-Database.md`)
 - authentication systems
 - provider integrations
 - AI services

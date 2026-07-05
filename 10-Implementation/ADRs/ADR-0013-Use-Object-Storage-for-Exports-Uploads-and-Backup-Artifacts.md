@@ -29,8 +29,10 @@ Nishad
 - `10-Implementation/MVP_Scope_and_Acceptance_Criteria.md`
 - `10-Implementation/Phase_1_Backlog.md`
 - `10-Implementation/Implementation_Risk_Register.md`
-- `10-Implementation/ADRs/ADR-0001-Use-PostgreSQL-as-Primary-Database.md`
-- `10-Implementation/ADRs/ADR-0012-Use-a-Managed-PostgreSQL-Provider-for-Production.md`
+- `10-Implementation/ADRs/ADR-0001-Use-PostgreSQL-as-Primary-Database.md` (superseded — see `10-Implementation/ADRs/ADR-0101-Use-Firestore-as-the-Primary-Database.md`)
+- `10-Implementation/ADRs/ADR-0012-Use-a-Managed-PostgreSQL-Provider-for-Production.md` (superseded — see ADR-0101)
+
+**Note (2026-07-03):** every "PostgreSQL" reference in this document (there are many, since this ADR's core decision — object storage — was written assuming Postgres held the canonical metadata) should be read as "Firestore." This ADR's own decision (use managed object storage for large binary artifacts) hasn't itself been implemented — no object storage exists in the deployed app — so this note is documenting a database-name substitution in an otherwise still-hypothetical design, not correcting a live discrepancy. See ADR-0101 for what's actually deployed.
 
 ## Context
 

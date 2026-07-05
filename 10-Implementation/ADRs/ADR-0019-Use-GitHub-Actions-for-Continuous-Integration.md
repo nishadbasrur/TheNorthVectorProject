@@ -30,7 +30,9 @@ Nishad
 - `10-Implementation/Implementation_Risk_Register.md`
 - `10-Implementation/ADRs/ADR-0006-Use-TypeScript-Across-the-Phase-1-Application.md`
 - `10-Implementation/ADRs/ADR-0017-Use-pnpm-for-Package-and-Workspace-Management.md`
-- `10-Implementation/ADRs/ADR-0018-Use-Drizzle-ORM-for-Phase-1-Database-Access.md`
+- `10-Implementation/ADRs/ADR-0018-Use-Drizzle-ORM-for-Phase-1-Database-Access.md` (superseded — see `10-Implementation/ADRs/ADR-0101-Use-Firestore-as-the-Primary-Database.md`)
+
+**Note (2026-07-03):** this document's many PostgreSQL/pgvector CI-testing sections (service containers, migration steps in the pipeline, etc.) were never implemented this way — the actual `.github/workflows/ci.yml` runs typecheck/lint/test/build only, no database service container at all, and still sets a now-unused `DATABASE_URL` build variable left over from the deleted Postgres layer (a small, separate cleanup item, not fixed here since it's a config file, not documentation). Read "PostgreSQL"/"pgvector" below as describing a CI setup that was planned but not built, not a live discrepancy to individually correct line by line.
 
 ## Context
 

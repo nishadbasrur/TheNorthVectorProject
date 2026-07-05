@@ -686,12 +686,19 @@ The system should avoid adding storage technologies without a clear reason.
 
 ## Suggested Phase 1 Storage
 
-A practical Phase 1 could use:
+Originally suggested:
 - PostgreSQL for canonical objects and relationships
 - object storage or repository links for files
 - pgvector for semantic retrieval
 - Redis or local cache for short-lived session state
 - append-only audit tables
+
+**Actual, 2026-07-03** (see `10-Implementation/ADRs/ADR-0101-Use-Firestore-as-the-Primary-Database.md`):
+- Firestore for the canonical objects that exist (tasks, goals, projects, decisions, Plaid bank-connection metadata, scheduled risk-scan output) — relationships are plain unvalidated string fields (e.g. `goalId` on a task), not foreign keys or a relationship table
+- object storage: not implemented
+- semantic retrieval: not implemented; pgvector's replacement is undecided — see `10-Implementation/ADRs/ADR-0010-Use-pgvector-for-Initial-Semantic-Retrieval.md` (status: Deprecated)
+- Redis or session cache: not implemented — no session state store beyond Firebase Auth's own session handling
+- audit tables: not implemented — there is no audit log of who changed what and when
 
 ## Database Design Principles
 

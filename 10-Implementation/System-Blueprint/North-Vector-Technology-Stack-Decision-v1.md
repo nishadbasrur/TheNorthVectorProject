@@ -1,5 +1,9 @@
 # North Vector Technology Stack Decision v1.0
 
+## Status
+
+**Superseded in part as of 2026-07-03.** The Database, Database Layer, Authentication, and Deployment rows below no longer reflect what's actually running. See `10-Implementation/ADRs/ADR-0101-Use-Firestore-as-the-Primary-Database.md`, `ADR-0102-Use-Firebase-Auth-for-Identity.md`, and `ADR-0103-Use-Firebase-Cloud-Functions-for-Scheduled-Execution.md` for the current decisions and their rationale. This document is left in place with corrections inline rather than rewritten, per this project's ADR-supersession convention.
+
 ## Purpose
 
 This document confirms the initial technology stack for North Vector V1.
@@ -10,7 +14,7 @@ The goal is to make the first implementation path clear enough to begin coding w
 
 # Decision
 
-North Vector V1 will use the following stack:
+Originally decided:
 
 ```text
 Frontend: Next.js, React, TypeScript
@@ -24,6 +28,20 @@ Deployment: Vercel initially
 Version Control: GitHub
 ```
 
+Actual, as of 2026-07-03:
+
+```text
+Frontend: Next.js, React, TypeScript
+Backend: Next.js server-side TypeScript + Firebase Cloud Functions (TypeScript, separate deploy)
+Database: Firestore (Cloud Firestore, native mode)
+Database Layer: none — direct Firestore SDK access via typed store modules, no ORM
+Authentication: Firebase Auth (email/password)
+Styling: Tailwind CSS (adopted as planned) plus hand-rolled custom-property-based classes for the design system
+UI Components: hand-rolled (shadcn/ui config/components never present — not adopted)
+Deployment: Firebase App Hosting (not Vercel — never adopted)
+Version Control: GitHub
+```
+
 ---
 
 # Rationale
@@ -34,35 +52,27 @@ Next.js provides a mature full-stack React framework with strong TypeScript supp
 
 Using one TypeScript codebase across frontend and backend reduces context switching and makes the early build faster.
 
-## PostgreSQL
+## PostgreSQL (superseded — see Firestore below)
 
-North Vector is fundamentally relational.
+North Vector was originally assessed as fundamentally relational, given users, memories, goals, projects, tasks, plans, approvals, executions, reviews, and many relationships between them. PostgreSQL was a strong fit for that domain model on paper.
 
-The system contains users, memories, goals, projects, tasks, plans, approvals, executions, reviews, and many relationships between them.
+In practice, the `db/`/`services/` Postgres implementation accumulated zero production data or callers before it was deleted. When Firebase Auth and Firebase Cloud Functions were adopted for other reasons (see below), consolidating the database onto the same platform (Firestore) removed the operational cost of running two cloud platforms for a single-user product. See `10-Implementation/ADRs/ADR-0101-Use-Firestore-as-the-Primary-Database.md` for the full rationale and accepted tradeoffs (no relational joins, no server-enforced schema).
 
-PostgreSQL is a strong fit for this domain model.
+## Drizzle (superseded)
 
-## Drizzle
+Drizzle provided a type-safe, relatively lightweight database layer for the PostgreSQL era. With Postgres gone, there is no database for Drizzle to access. Firestore is used directly via its own SDKs, with no ORM layer — see ADR-0101 and `10-Implementation/ADRs/ADR-0018-Use-Drizzle-ORM-for-Phase-1-Database-Access.md`.
 
-Drizzle provides a type-safe and relatively lightweight database layer.
+## Auth.js (never implemented)
 
-It keeps schema definitions close to the code while avoiding unnecessary database abstraction complexity.
-
-## Auth.js
-
-Auth.js keeps authentication open-source and compatible with the Next.js ecosystem.
-
-This avoids early vendor lock-in while leaving room for future authentication changes.
+Auth.js (`next-auth`, `@auth/core`) remained a listed dependency but was never actually wired up — no login flow existed until Firebase Auth was implemented directly (see `10-Implementation/ADRs/ADR-0102-Use-Firebase-Auth-for-Identity.md`). Firebase Auth was chosen once Firestore Security Rules needed a real identity to check against, and Firebase Auth was already available in the same Firebase project as Firestore.
 
 ## Tailwind CSS and shadcn/ui
 
-Tailwind and shadcn/ui allow rapid development of a clean, modern interface without spending early project energy building a design system from scratch.
+Tailwind was adopted as planned and remains in use. shadcn/ui was not — the UI ended up as hand-rolled components using Tailwind plus custom-property-based classes, not shadcn's component library.
 
-## Vercel
+## Vercel (superseded)
 
-Vercel is the fastest initial deployment path for a Next.js application.
-
-Deployment strategy may evolve later if infrastructure requirements change.
+Vercel was the originally planned deployment path. The application deploys to Firebase App Hosting instead, once Firestore and Firebase Auth were adopted — running the Next.js app on the same platform as the rest of the backend removed a reason to keep Vercel as a separate hosting provider. See `10-Implementation/ADRs/ADR-0101-Use-Firestore-as-the-Primary-Database.md`.
 
 ---
 
@@ -107,8 +117,8 @@ This decision unblocks:
 
 - NV-002: Create Runnable App Skeleton
 - NV-003: Configure Environment Management
-- NV-004: Configure Database Connection
-- NV-005: Configure Migration Tooling
+- NV-004: Configure Database Connection (superseded — became Firestore client/Admin SDK initialization, not a Postgres connection string)
+- NV-005: Configure Migration Tooling (moot — Firestore has no migration framework; see `10-Implementation/ADRs/ADR-0101-Use-Firestore-as-the-Primary-Database.md`)
 
 ---
 

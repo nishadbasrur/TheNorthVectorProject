@@ -1,5 +1,11 @@
 # Phase 1 Backlog v1.0
 
+## Status
+
+**Partially superseded as of 2026-07-03.** This note covers only the database/stack-technology items (P1-020, P1-026, and their dependents) — see inline corrections below and `10-Implementation/ADRs/ADR-0101-Use-Firestore-as-the-Primary-Database.md`.
+
+Separately, and out of scope for this correction pass: the great majority of this backlog (Chief conversation, memory candidate lifecycle, retrieval ranking, Calendar integration, approval/execution pipeline, most of Workstreams 4 through 9) describes functionality that has not been built in any form, Firestore or otherwise. What actually exists is a much smaller slice — task/goal/project/decision CRUD, a rule-based (not AI-driven) daily risk scan, a Plaid bank-connection integration, and email notifications — none of which map cleanly onto this backlog's workstream structure. Reconciling the full backlog against real progress is a materially larger effort than a stale-reference fix and hasn't been done here; flagging it rather than guessing at it.
+
 ## Purpose
 
 This document defines the concrete engineering backlog for Phase 1 of North Vector.
@@ -310,6 +316,8 @@ Acceptance Criteria:
 
 ## P1-020: Provision PostgreSQL and Migration Framework
 
+**Superseded.** PostgreSQL was deleted before this was completed as specified. Actual: Firestore, provisioned as part of the existing Firebase project, no migration framework (Firestore has none). See `10-Implementation/ADRs/ADR-0101-Use-Firestore-as-the-Primary-Database.md`.
+
 Priority:
 P0
 
@@ -319,11 +327,11 @@ Data
 Dependencies:
 P1-001, P1-002
 
-Acceptance Criteria:
-- local and test databases are available
-- migrations are version controlled
-- migration command is documented
-- database reset works in test
+Acceptance Criteria (as originally written):
+- local and test databases are available — partially true; there's no separate local/test Firestore instance in use today (the Firebase Emulator Suite exists but hasn't been adopted), so local development has been hitting the real project
+- migrations are version controlled — not applicable, no migrations
+- migration command is documented — not applicable
+- database reset works in test — not applicable; no automated test database reset exists
 
 ## P1-021: Implement Canonical Base Object Schema
 
@@ -434,6 +442,8 @@ Acceptance Criteria:
 - ordinary failure does not leave unaudited state change
 
 ## P1-026: Add pgvector and Retrieval Index Schema
+
+**Deprecated, not superseded.** pgvector required PostgreSQL, which is gone. Unlike P1-020, there's no replacement to point to — semantic/vector retrieval on Firestore is undecided. See `10-Implementation/ADRs/ADR-0010-Use-pgvector-for-Initial-Semantic-Retrieval.md` (status: Deprecated).
 
 Priority:
 P1

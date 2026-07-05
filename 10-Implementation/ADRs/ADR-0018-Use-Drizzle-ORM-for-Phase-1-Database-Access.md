@@ -2,7 +2,7 @@
 
 ## Status
 
-Accepted
+Superseded — see [ADR-0101: Use Firestore as the Primary Database](./ADR-0101-Use-Firestore-as-the-Primary-Database.md). With PostgreSQL removed, Drizzle has no database to access; the codebase now uses direct Firestore SDK calls behind typed store modules, with no ORM layer. Preserved here unmodified for historical context per the ADR process — see `10-Implementation/Architecture_Decision_Record_Template.md`.
 
 ## Date
 

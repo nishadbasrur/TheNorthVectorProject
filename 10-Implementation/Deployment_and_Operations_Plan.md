@@ -1,5 +1,11 @@
 # Deployment and Operations Plan v1.0
 
+## Status
+
+**Partially superseded as of 2026-07-03.** The database/worker architecture sections below (Deployment Architecture, Database Deployment, and the Phase 1 Implementation checklist's "managed PostgreSQL"/"separate worker deployment" items) describe the original Postgres-plus-separate-worker plan, which was never built that way — see corrections inline and `10-Implementation/ADRs/ADR-0101-Use-Firestore-as-the-Primary-Database.md` and `ADR-0103-Use-Firebase-Cloud-Functions-for-Scheduled-Execution.md`.
+
+Separately, and out of scope for this correction pass: most of this document's broader operational maturity (staging environment, structured logging, error monitoring, health checks, encrypted daily backups, restore testing, feature flags, incident runbooks) was never built regardless of database choice — there is one production environment, no staging, no backup/restore process, and no formal monitoring beyond Firebase/Google Cloud's own default logging. That's a real operational gap worth its own review, not something to paper over by marking this document "done."
+
 ## Purpose
 
 This document defines how North Vector should be deployed, monitored, operated, maintained, recovered, and updated in production.
@@ -86,7 +92,7 @@ Post-Deployment Verification
 
 No release should bypass staging for ordinary product changes.
 
-## Deployment Architecture
+## Deployment Architecture (as originally planned)
 
 A practical Phase 1 deployment may include:
 - Web application service
@@ -100,6 +106,17 @@ A practical Phase 1 deployment may include:
 
 The initial architecture should remain a modular monolith, not a distributed microservice system.
 
+## Deployment Architecture (actual, 2026-07-03)
+
+- Next.js application on Firebase App Hosting (not Vercel/Render/Fly.io/Railway — those were never adopted)
+- No separate always-running worker service. Background execution is one scheduled Firebase Cloud Function (`dailyRiskScan`, `functions/`), triggered on a cron schedule rather than a long-running process — see `10-Implementation/ADRs/ADR-0103-Use-Firebase-Cloud-Functions-for-Scheduled-Execution.md`
+- Firestore as the database, part of the same Firebase project as Auth and Functions — see `10-Implementation/ADRs/ADR-0101-Use-Firestore-as-the-Primary-Database.md`
+- Object storage: not implemented — no export/upload/backup-artifact storage exists
+- Authentication provider: Firebase Auth (see ADR-0102)
+- Model provider: not implemented — there is no AI/LLM integration in the deployed app; the "risk scan" is deterministic rule logic (`lib/risk-engine.ts`), not model-driven
+- Google Calendar integration: not implemented
+- Monitoring and error tracking: not implemented beyond Firebase/Google Cloud's own default logging (no Sentry or equivalent)
+
 ## Web Application Deployment
 
 The web application should host:
@@ -109,7 +126,9 @@ The web application should host:
 - session handling
 - low-latency application logic
 
-Possible hosting platforms:
+Actual: Firebase App Hosting. The "possible hosting platforms" below were the original options considered; none were adopted.
+
+Possible hosting platforms (as originally considered):
 - Vercel
 - Render
 - Fly.io
@@ -118,7 +137,9 @@ Possible hosting platforms:
 
 ## Worker Deployment
 
-The worker should process:
+**Not built as originally scoped.** There is no separate, always-running worker service. The one piece of background execution that exists (`dailyRiskScan`) runs as a Firebase Cloud Function on a cron schedule, not a persistent worker process. None of the other listed responsibilities (Calendar sync, automation triggers, embedding generation, notification delivery beyond the risk-scan email, backup verification) have been built. See ADR-0103.
+
+Originally scoped, the worker should process:
 - synchronization jobs
 - automation triggers
 - briefing generation
@@ -127,11 +148,11 @@ The worker should process:
 - notification delivery
 - backup verification jobs
 
-The worker should run separately from the interactive web process so long tasks do not block user requests.
-
 ## Database Deployment
 
-Use managed PostgreSQL with:
+**Superseded.** Firestore, not managed PostgreSQL — see ADR-0101. Firestore provides encryption at rest and TLS by default. Automated backups, point-in-time recovery, and tested restoration have not been set up for this project (a real gap, not yet addressed regardless of database choice). Access control is enforced via Firestore Security Rules (`firestore.rules`) rather than network-level database access control.
+
+Originally scoped: use managed PostgreSQL with:
 - encryption at rest
 - TLS connections
 - automated backups
@@ -140,7 +161,7 @@ Use managed PostgreSQL with:
 - monitoring
 - tested restoration
 
-Direct public database exposure should be avoided.
+Direct public database exposure should be avoided. (This principle still holds — Firestore Security Rules are what currently enforce it.)
 
 ## Storage Deployment
 
@@ -1058,7 +1079,7 @@ Infrastructure complexity exceeds the needs of the single-user product.
 
 ## Phase 1 Implementation
 
-Phase 1 should establish:
+Originally scoped, Phase 1 should establish:
 - staging and production environments
 - automated deployment
 - separate worker deployment
@@ -1072,6 +1093,8 @@ Phase 1 should establish:
 - restore testing
 - feature flags
 - automation and integration pause controls
+
+**Actual status, 2026-07-03:** one production environment (no staging), manual deployment via `firebase deploy` (not automated CI/CD), no separate worker (one scheduled Cloud Function instead — see ADR-0103), Firestore instead of managed PostgreSQL (ADR-0101), no formal environment validation beyond what fails loudly at runtime, no structured logging beyond default platform logs, no error monitoring service, no health checks, no release records, no backups, no restore testing, no feature flags, no automation/integration pause controls. This is a substantial gap between plan and reality that predates and is independent of the database migration — flagged here, not fixed, since closing it is a much larger effort than a stale-reference correction.
 - operational dashboard
 - initial runbooks
 

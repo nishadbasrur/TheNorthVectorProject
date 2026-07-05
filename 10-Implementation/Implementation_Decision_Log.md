@@ -790,11 +790,13 @@ Pending.
 
 ## IDL-0007: Use PostgreSQL for Canonical, Relationship, and Initial Vector Data
 
+**Correction added 2026-07-03:** This decision was carried into ADR-0001 (Accepted 2026-06-14) but never implemented against real data — the PostgreSQL/Drizzle layer was deleted before real migrations existed, and Firestore was adopted instead. See `10-Implementation/ADRs/ADR-0101-Use-Firestore-as-the-Primary-Database.md` for what actually happened and why. The entry below is left as originally recorded, not rewritten, per this project's convention for superseded decisions.
+
 Date:
 2026-06-14
 
 Status:
-Proposed
+Proposed (superseded — see correction above)
 
 Category:
 Data Model
@@ -869,11 +871,12 @@ Should become an ADR before schema implementation.
 
 ### Outcome
 
-Pending.
+Pending, as originally recorded. **Actual outcome (added 2026-07-03):** Not implemented as decided. PostgreSQL and Drizzle were deleted before any real migration or production data existed; Firestore was adopted instead, once Firebase Auth and Cloud Functions were already in use for other reasons. See ADR-0101.
 
 ### Lessons
 
 - A capable general-purpose database should be exhausted before adding specialized stores.
+- **Added 2026-07-03:** platform consistency (what else is already in use) turned out to matter more in practice than the database's own technical merits — Firestore was chosen primarily because Firebase Auth and Cloud Functions were already adopted, not because Firestore was assessed as technically superior to PostgreSQL for this workload.
 
 ## IDL-0008: Keep Voice, Wearables, Finance, Health, and Location Outside Phase 1
 

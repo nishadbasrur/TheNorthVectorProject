@@ -30,7 +30,7 @@ Nishad
 - `10-Implementation/Implementation_Decision_Log.md`
 - `10-Implementation/ADRs/ADR-0003-Separate-Reasoning-Approval-Execution-and-Verification.md`
 - `10-Implementation/ADRs/ADR-0006-Use-TypeScript-Across-the-Phase-1-Application.md`
-- `10-Implementation/ADRs/ADR-0010-Use-pgvector-for-Initial-Semantic-Retrieval.md`
+- `10-Implementation/ADRs/ADR-0010-Use-pgvector-for-Initial-Semantic-Retrieval.md` (deprecated, no replacement decided — see `10-Implementation/System-Blueprint/North-Vector-Database-Schema-v1.md`)
 - `10-Implementation/ADRs/ADR-0011-Use-Provider-Abstractions-for-Models-and-Integrations.md`
 
 ## Context

@@ -2,7 +2,7 @@
 
 ## Status
 
-Accepted
+Deprecated. pgvector required PostgreSQL, which was deleted from the codebase (2026-07-03). Unlike ADR-0001/ADR-0018, this is marked Deprecated rather than Superseded because no replacement semantic-retrieval architecture has been decided yet for Firestore — see `10-Implementation/Architecture_Decision_Record_Template.md` for when Deprecated vs. Superseded applies. A new ADR should be written when that decision is made. Preserved here unmodified for historical context.
 
 ## Date
 

@@ -18,8 +18,8 @@ Human-readable console logs may be used in local development, but production log
 
 The system includes:
 - Next.js web services
-- background workers
-- PostgreSQL operations
+- background workers (actually one scheduled Cloud Function, not a persistent worker — see `10-Implementation/ADRs/ADR-0103-Use-Firebase-Cloud-Functions-for-Scheduled-Execution.md`)
+- database operations (originally PostgreSQL; actually Firestore — see `10-Implementation/ADRs/ADR-0101-Use-Firestore-as-the-Primary-Database.md`)
 - provider integrations
 - AI workflows
 - synchronization jobs

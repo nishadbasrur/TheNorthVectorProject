@@ -399,13 +399,13 @@ Early Warning Signals:
 
 Preventive Actions:
 - begin as a modular monolith
-- use PostgreSQL for canonical, relationship, and vector data
+- use one primary database for canonical data (originally PostgreSQL; actually Firestore as of 2026-07-03, consolidated onto the same platform as Auth and Cloud Functions — see `10-Implementation/ADRs/ADR-0101-Use-Firestore-as-the-Primary-Database.md`; vector data has no current store, semantic retrieval is undecided)
 - add infrastructure only after measured limitations
 
 Contingency Actions:
 - consolidate services
 - remove unused dependencies
-- return jobs to a database-backed worker
+- return jobs to a database-backed worker (moot as originally stated — there is no database-backed worker to return to; the current job model is scheduled Cloud Functions, see `10-Implementation/ADRs/ADR-0103-Use-Firebase-Cloud-Functions-for-Scheduled-Execution.md`)
 
 Owner:
 Technical Lead

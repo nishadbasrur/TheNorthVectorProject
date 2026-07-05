@@ -2,7 +2,7 @@
 
 ## Status
 
-Accepted
+Superseded — see [ADR-0101: Use Firestore as the Primary Database](./ADR-0101-Use-Firestore-as-the-Primary-Database.md). PostgreSQL and Drizzle were deleted from the codebase entirely (2026-07-03); Firestore is now the canonical data store. Preserved here unmodified for historical context per the ADR process — see `10-Implementation/Architecture_Decision_Record_Template.md`.
 
 ## Date
 

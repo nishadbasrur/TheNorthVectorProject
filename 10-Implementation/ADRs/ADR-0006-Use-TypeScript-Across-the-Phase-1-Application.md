@@ -275,7 +275,7 @@ Recommended tooling:
 - Next.js and React
 - Node.js runtime
 - Zod or JSON Schema for runtime validation
-- Prisma, Drizzle, or typed SQL for database access
+- Prisma, Drizzle, or typed SQL for database access (superseded — actual database access is the Firestore SDK directly, no ORM; see `10-Implementation/ADRs/ADR-0101-Use-Firestore-as-the-Primary-Database.md`)
 - Vitest or Jest
 - Playwright
 - ESLint

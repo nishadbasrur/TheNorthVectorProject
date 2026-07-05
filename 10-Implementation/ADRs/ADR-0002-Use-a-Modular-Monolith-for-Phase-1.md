@@ -28,7 +28,7 @@ Nishad
 - `10-Implementation/Phase_1_Backlog.md`
 - `10-Implementation/Implementation_Risk_Register.md`
 - `10-Implementation/Implementation_Decision_Log.md`
-- `10-Implementation/ADRs/ADR-0001-Use-PostgreSQL-as-Primary-Database.md`
+- `10-Implementation/ADRs/ADR-0001-Use-PostgreSQL-as-Primary-Database.md` (superseded — see `10-Implementation/ADRs/ADR-0101-Use-Firestore-as-the-Primary-Database.md`)
 
 ## Context
 
@@ -87,7 +87,7 @@ The architectural question is whether those boundaries should be represented as 
 ### Option A: Modular Monolith
 
 Description:
-Build one primary application codebase with explicit domain modules, one primary web deployment, one worker deployment, and one PostgreSQL database.
+Build one primary application codebase with explicit domain modules, one primary web deployment, one worker deployment, and one primary database (originally PostgreSQL; actually Firestore as of 2026-07-03, see ADR-0101).
 
 Advantages:
 - straightforward local setup
@@ -190,7 +190,7 @@ North Vector will use a modular monolith for Phase 1.
 The Phase 1 deployment will consist of:
 - one primary web application
 - one background worker process
-- one PostgreSQL database
+- one primary database (originally PostgreSQL; actually Firestore, see ADR-0101 — and note the "worker process" became one scheduled Cloud Function rather than an always-running process, see ADR-0103)
 - one shared codebase or monorepo with explicit domain modules
 
 The worker may be deployed separately for operational isolation, but it will share the same domain packages, database, authorization rules, and release process.

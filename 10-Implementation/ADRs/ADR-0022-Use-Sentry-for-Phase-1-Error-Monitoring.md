@@ -36,10 +36,10 @@ Nishad
 
 North Vector Phase 1 will run as a production web application and background worker that depend on:
 - Next.js
-- PostgreSQL
-- Google Calendar
+- a primary database (originally PostgreSQL; actually Firestore, no separate worker process — see `10-Implementation/ADRs/ADR-0101-Use-Firestore-as-the-Primary-Database.md` and `ADR-0103-Use-Firebase-Cloud-Functions-for-Scheduled-Execution.md`)
+- Google Calendar (not implemented)
 - managed authentication
-- language-model providers
+- language-model providers (not implemented — no AI/LLM integration exists)
 - object storage
 - background jobs
 - approval and execution workflows

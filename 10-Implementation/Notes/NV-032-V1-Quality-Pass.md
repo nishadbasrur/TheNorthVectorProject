@@ -2,7 +2,7 @@
 
 ## Status
 
-Initial pass created.
+Initial pass created. **Correction added 2026-07-03:** the Drizzle-related gap noted below is moot — Drizzle and PostgreSQL were deleted entirely and replaced with Firestore, which has no migration framework. See `10-Implementation/ADRs/ADR-0101-Use-Firestore-as-the-Primary-Database.md`. Left as originally recorded otherwise, not rewritten.
 
 ## Scope Reviewed
 
@@ -20,7 +20,7 @@ Initial pass created.
 - Planning context API route still needs implementation.
 - UI screens are structural placeholders, not full CRUD interfaces yet.
 - Test framework package and configuration still need to be finalized.
-- Database migrations should be generated from Drizzle after schema validation.
+- Database migrations should be generated from Drizzle after schema validation. (Moot as of 2026-07-03 — see Status correction above.)
 
 ## Next Engineering Wave
 

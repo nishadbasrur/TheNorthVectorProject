@@ -90,7 +90,7 @@ Examples:
 Moves data between storage technologies or instances.
 
 Examples:
-- local database to PostgreSQL
+- local database to Firestore (the actual primary database as of 2026-07-03 — see `10-Implementation/ADRs/ADR-0101-Use-Firestore-as-the-Primary-Database.md`; originally planned as PostgreSQL)
 - one cloud region to another
 - file storage provider change
 

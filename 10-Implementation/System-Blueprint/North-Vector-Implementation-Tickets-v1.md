@@ -1,5 +1,9 @@
 # North Vector Implementation Tickets v1.0
 
+## Status
+
+**Partially superseded as of 2026-07-03.** Phase 2 (NV-004 through NV-008) describes PostgreSQL/Drizzle work that was never completed as specified — Postgres was deleted before real migrations existed. Phase 3 and Phase 4 tickets (NV-009 through NV-025) each bundle multiple entities together; within each, `goals`/`projects`/`tasks`/`decisions` work has real Firestore-backed equivalents (though not "Services" in the originally designed shape — see notes inline), while `memories`/`plans`/`approvals`/`executions`/`reviews` work was never started in any form. Notes are added inline per ticket rather than rewriting them, so it's clear which specific part of each bundled ticket is stale. See `10-Implementation/ADRs/ADR-0101-Use-Firestore-as-the-Primary-Database.md`.
+
 ## Purpose
 
 This document breaks the North Vector V1 Build Plan into concrete implementation tickets.
@@ -103,6 +107,8 @@ Acceptance Criteria:
 
 # Phase 2: Database Implementation
 
+**Superseded.** None of NV-004 through NV-008 happened as specified — PostgreSQL was deleted before real migrations existed. What actually happened instead: `lib/firebase.ts` (client SDK) and `lib/firebase-admin.ts` (Admin SDK, trusted server code) initialize a connection to Firestore, with no separate migration step since Firestore has no migration framework. See `10-Implementation/ADRs/ADR-0101-Use-Firestore-as-the-Primary-Database.md` and the "Actual Firestore Shape" section of `10-Implementation/System-Blueprint/North-Vector-Database-Schema-v1.md`.
+
 ## NV-004: Configure Database Connection
 
 Objective:
@@ -158,28 +164,28 @@ Create the main V1 database tables.
 
 Scope:
 
-- users
-- memories
-- goals
-- projects
-- tasks
-- plans
-- decisions
-- approvals
-- executions
-- reviews
+- users — not implemented; identity is Firebase Auth, not an app-owned collection (ADR-0102)
+- memories — not started, no Firestore collection exists
+- goals — done, as a `goals` Firestore collection (`lib/goal-store.ts`), not a migrated table
+- projects — done, as a `projects` Firestore collection (`lib/project-store.ts`)
+- tasks — done, as a `tasks` Firestore collection (`lib/task-store.ts`)
+- plans — not started, no Firestore collection exists
+- decisions — done, as a `decisions` Firestore collection with deterministic document IDs (`lib/decision-memory.ts`), a different pattern from goals/projects/tasks — see the Database Schema doc
+- approvals — not started
+- executions — not started
+- reviews — not started
 
 Deliverable:
 
-Database migration for core tables.
+Database migration for core tables. **Superseded** for the four entities that exist — there is no migration, since Firestore collections come into existence on first write. See the "Actual Firestore Shape" section of `10-Implementation/System-Blueprint/North-Vector-Database-Schema-v1.md`.
 
-Acceptance Criteria:
+Acceptance Criteria (as originally written, not all met):
 
-- all core tables exist
-- primary keys exist
-- user ownership is represented
-- status fields exist
-- timestamp fields exist
+- all core tables exist — false; 4 of 10 have a Firestore equivalent, 6 were never built
+- primary keys exist — Firestore document IDs serve this role for the 4 that exist
+- user ownership is represented — not per-document; enforced instead at the Firestore Security Rules layer for the whole database (single-user)
+- status fields exist — true for the 4 that exist
+- timestamp fields exist — true for the 4 that exist, though inconsistently: `createdAt`/`updatedAt` are client-set ISO strings on tasks/goals/projects/decisions, not Firestore's `serverTimestamp()` (contrast with the `daily-runs` collection, added later, which does use `serverTimestamp()` deliberately)
 
 ---
 
@@ -201,11 +207,13 @@ Deliverable:
 
 Database migration for junction tables.
 
+**Superseded — none of this exists.** Firestore has no equivalent implemented. Where a relationship exists at all in the real data (`goalId` on `tasks` and `projects`), it's a plain unvalidated string field, not a table, not enforced, not queryable in reverse without a collection scan. See "Relationships and Junction Tables in Firestore" in `10-Implementation/System-Blueprint/North-Vector-Database-Schema-v1.md`.
+
 Acceptance Criteria:
 
-- junction tables exist
-- composite primary keys exist where appropriate
-- foreign keys exist where possible
+- junction tables exist — false
+- composite primary keys exist where appropriate — not applicable
+- foreign keys exist where possible — not applicable; Firestore has no foreign key concept
 
 ---
 
@@ -224,18 +232,24 @@ Scope:
 
 Deliverable:
 
-Index migration.
+Index migration. **Superseded** — Firestore auto-indexes single fields; composite indexes are declared in `firestore.indexes.json`, which doesn't exist yet. Every current query (`getTasks`, `getGoals`, `getProjects`, `getDecisions`) is a single `orderBy("createdAt", "desc")` with no additional filter, so this hasn't been a real constraint.
 
 Acceptance Criteria:
 
-- common list queries have supporting indexes
-- indexes match Database Schema v1.0 recommendations
+- common list queries have supporting indexes — true by default so far, no composite index has been needed
+- indexes match Database Schema v1.0 recommendations — not applicable; those recommendations were SQL-specific
 
 ---
 
 # Phase 3: Core Services
 
+**Partially superseded.** `goals`/`projects`/`tasks`/`decisions` have working equivalents, but not as "Service" classes — they're Firestore store modules (`lib/goal-store.ts`, `lib/project-store.ts`, `lib/task-store.ts`, `lib/decision-memory.ts`) called directly from pages and API routes, with no repository/service abstraction layer in between (see ADR-0101's "Decision" section). `user`/`memory`/`plan`/`approval`/`execution`/`review` services were never built, in either the originally planned form or a Firestore-adapted one. Note also: Drizzle-backed `services/*.ts` files (a distinct, now-deleted implementation attempt from partway through the project, separate from both this original plan and the current Firestore stores) briefly existed for several of these entities before being deleted — `decision-service.ts` and `approval-service.ts` had zero real callers by the time they were removed.
+
 ## NV-009: Implement User Service
+
+## NV-009: Implement User Service
+
+**Status: not started.** No UserService or equivalent exists; identity is Firebase Auth only (ADR-0102).
 
 Objective:
 
@@ -258,6 +272,8 @@ Acceptance Criteria:
 ---
 
 ## NV-010: Implement Memory Service
+
+**Status: not started.** No MemoryService, no Firestore collection. `lib/memory-store.ts` exists as a minimal, separate scaffold (`createMemory(content)`/`getMemories()`) but is not wired to any route and doesn't implement review states as scoped here.
 
 Objective:
 
@@ -285,6 +301,8 @@ Acceptance Criteria:
 
 ## NV-011: Implement Goal Service
 
+**Status: done, different shape.** `lib/goal-store.ts` — a Firestore store module (`createGoal`, `getGoals`, `updateGoalStatus`), not a `GoalService` class. Status set is also different from what's scoped here: `active | completed | paused | cancelled` (no `scheduled`), plus a `horizon` field (`now | mid | long`) not mentioned in this ticket.
+
 Objective:
 
 Create service operations for goals.
@@ -311,6 +329,8 @@ Acceptance Criteria:
 
 ## NV-012: Implement Project Service
 
+**Status: done, different shape.** `lib/project-store.ts` — Firestore store module, not a class. Status set: `planning | active | completed | paused | cancelled` (no `proposed`/`on_hold` as scoped here). Linked to goals via an unvalidated `goalId` string field.
+
 Objective:
 
 Create service operations for projects.
@@ -335,6 +355,8 @@ Acceptance Criteria:
 ---
 
 ## NV-013: Implement Task Service
+
+**Status: done, different shape.** `lib/task-store.ts` — Firestore store module, not a class. Status set: `scheduled | active | completed | paused | cancelled` (not `scheduled | not_started | in_progress | waiting | completed | cancelled` as scoped here). Tasks link to goals and projects via unvalidated string fields; plans don't exist, so the "belong to... plans" criterion doesn't apply.
 
 Objective:
 
@@ -362,6 +384,8 @@ Acceptance Criteria:
 
 ## NV-014: Implement Plan Service
 
+**Status: not started.** No PlanService, no Firestore collection.
+
 Objective:
 
 Create service operations for plans.
@@ -388,6 +412,8 @@ Acceptance Criteria:
 
 ## NV-015: Implement Decision Service
 
+**Status: done, materially different shape.** `lib/decision-memory.ts` — not a CRUD service. Decisions are keyed by a normalized version of the question text (deterministic document ID), not a generated ID, specifically so repeat questions resolve to the same document; there's a `timesAsked` counter instead of update/supersede operations. This ticket's scoped operations (update, supersede) don't exist. Also powers `lib/decision-engine.ts`, a separate rule-based recommendation engine not scoped in this ticket at all.
+
 Objective:
 
 Create service operations for decision records.
@@ -412,6 +438,8 @@ Acceptance Criteria:
 ---
 
 ## NV-016: Implement Approval Service
+
+**Status: not started.** No ApprovalService, no Firestore collection.
 
 Objective:
 
@@ -439,6 +467,8 @@ Acceptance Criteria:
 
 ## NV-017: Implement Execution Service
 
+**Status: not started.** No ExecutionService, no Firestore collection.
+
 Objective:
 
 Create service operations for execution records.
@@ -462,6 +492,8 @@ Acceptance Criteria:
 ---
 
 ## NV-018: Implement Review Service
+
+**Status: not started.** No ReviewService, no Firestore collection.
 
 Objective:
 
@@ -490,6 +522,8 @@ Acceptance Criteria:
 
 ## NV-019: Implement User API Routes
 
+**Status: stubbed, not implemented.** `GET /api/v1/me` and `PATCH /api/v1/me` exist as routes but return `501 Not Implemented` — they depended on the deleted `services/user-service.ts` and were stubbed rather than rewired, since there's no Firestore `users` collection to rewire them to (ADR-0102: identity is Firebase Auth, not an app-owned user record).
+
 Objective:
 
 Expose current-user API routes.
@@ -511,6 +545,8 @@ Acceptance Criteria:
 ---
 
 ## NV-020: Implement Memory API Routes
+
+**Status: stubbed, not implemented.** `GET /api/v1/memories` returns `200 { items: [] }` (always empty); `POST` returns `501 Not Implemented`. Note `lib/memory-store.ts` exists as a minimal, unwired Firestore scaffold — this route was stubbed rather than rewired to it, since the store doesn't implement review states, update, or delete as scoped here.
 
 Objective:
 
@@ -537,6 +573,8 @@ Acceptance Criteria:
 
 ## NV-021: Implement Goal API Routes
 
+**Status: done, narrower than scoped.** `GET`/`POST /api/v1/goals` work against `lib/goal-store.ts` (Firestore). No `get`-by-ID, `update`, `cancel`, or `archive` routes exist — only list and create. "User scoping" isn't per-request; it's enforced at the Firestore Security Rules layer for the whole database (single-user).
+
 Objective:
 
 Expose goal API routes.
@@ -562,6 +600,8 @@ Acceptance Criteria:
 
 ## NV-022: Implement Project API Routes
 
+**Status: done, narrower than scoped.** `GET`/`POST /api/v1/projects` work against `lib/project-store.ts` (Firestore). No get-by-ID, update, cancel, or archive routes — list and create only.
+
 Objective:
 
 Expose project API routes.
@@ -586,6 +626,8 @@ Acceptance Criteria:
 ---
 
 ## NV-023: Implement Task API Routes
+
+**Status: done, narrower than scoped.** `GET`/`POST /api/v1/tasks` work against `lib/task-store.ts` (Firestore). No get-by-ID, dedicated complete/cancel routes here (task completion is handled client-side in `app/tasks/page.tsx` via `updateTaskStatus`, not this API route). "Completion can create or support execution records" doesn't apply — executions were never built.
 
 Objective:
 
@@ -613,6 +655,8 @@ Acceptance Criteria:
 
 ## NV-024: Implement Plan API Routes
 
+**Status: stubbed, not implemented.** `GET /api/v1/plans` returns `200 { items: [] }`; `POST` returns `501 Not Implemented`. No `lib/plan-store.ts` or equivalent exists.
+
 Objective:
 
 Expose plan API routes.
@@ -638,6 +682,8 @@ Acceptance Criteria:
 ---
 
 ## NV-025: Implement Decision, Approval, Execution, and Review API Routes
+
+**Status: mixed.** `decisions`: `POST /api/v1/decisions` works, but not as CRUD — it calls `lib/decision-engine.ts`'s `evaluateDecision`, which either returns a stored answer (keyed by normalized question text) or generates and stores a new one; `GET` returns a hardcoded empty list regardless of what's actually stored, which is a real, notable gap (the endpoint can't currently list past decisions even though they're persisted). `approvals`: route exists but both `GET` and `POST` are stubs (`{ items: [] }` / `501`), and no Firestore collection backs it. `executions`, `reviews`: same stub pattern as `approvals`. None of the "state changes are validated" or "match API Surface v1.0" acceptance criteria apply to the three stubbed entities.
 
 Objective:
 
