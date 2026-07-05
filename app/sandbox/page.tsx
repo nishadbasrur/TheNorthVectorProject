@@ -7,12 +7,47 @@ import { routeVoiceInput } from "@/lib/voice-intent-router";
 
 type Status = "idle" | "listening" | "processing" | "speaking";
 
+// Builds a 1-sample silent WAV as a blob URL. Used only to "unlock" the
+// reused <audio> element inside a real user gesture (see startListening) —
+// Safari blocks .play() on any element that hasn't successfully played
+// something from directly within a user-gesture call stack at least once.
+function createSilentAudioUrl(): string {
+  const sampleRate = 8000;
+  const header = new ArrayBuffer(44);
+  const view = new DataView(header);
+
+  const writeStr = (offset: number, str: string) => {
+    for (let i = 0; i < str.length; i++) view.setUint8(offset + i, str.charCodeAt(i));
+  };
+
+  writeStr(0, "RIFF");
+  view.setUint32(4, 36 + 1, true);
+  writeStr(8, "WAVE");
+  writeStr(12, "fmt ");
+  view.setUint32(16, 16, true);
+  view.setUint16(20, 1, true); // PCM
+  view.setUint16(22, 1, true); // mono
+  view.setUint32(24, sampleRate, true);
+  view.setUint32(28, sampleRate, true); // byte rate (1 byte/sample * 1 channel)
+  view.setUint16(32, 1, true); // block align
+  view.setUint16(34, 8, true); // bits per sample
+  writeStr(36, "data");
+  view.setUint32(40, 1, true);
+
+  const blob = new Blob([header, new Uint8Array([128])], { type: "audio/wav" });
+  return URL.createObjectURL(blob);
+}
+
 export default function SandboxPage() {
   const [status, setStatus] = useState<Status>("idle");
   const [transcript, setTranscript] = useState("");
   const [responseText, setResponseText] = useState("");
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
   const recognitionRef = useRef<SpeechRecognition | null>(null);
+  // Reused across the page session (not recreated per response) — once this
+  // exact element has played from within a user gesture, Safari allows later
+  // programmatic .play() calls on it even outside a gesture call stack.
+  const audioRef = useRef<HTMLAudioElement | null>(null);
 
   const speak = useCallback(async (text: string) => {
     setStatus("speaking");
@@ -35,12 +70,13 @@ export default function SandboxPage() {
 
       const blob = await response.blob();
       const url = URL.createObjectURL(blob);
-      const audioElement = new Audio(url);
+      const audioElement = audioRef.current ?? new Audio();
+      audioElement.src = url;
 
-      await new Promise<void>((resolve) => {
+      await new Promise<void>((resolve, reject) => {
         audioElement.onended = () => resolve();
-        audioElement.onerror = () => resolve();
-        audioElement.play().catch(() => resolve());
+        audioElement.onerror = () => reject(new Error("Audio playback failed."));
+        audioElement.play().catch(reject);
       });
 
       URL.revokeObjectURL(url);
@@ -83,6 +119,12 @@ export default function SandboxPage() {
     setErrorMessage(null);
     setTranscript("");
     setResponseText("");
+
+    if (!audioRef.current) {
+      const audio = new Audio(createSilentAudioUrl());
+      audio.play().catch(() => {});
+      audioRef.current = audio;
+    }
 
     const recognition = new SpeechRecognitionCtor();
     recognition.lang = "en-US";
