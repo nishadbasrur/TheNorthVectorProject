@@ -154,9 +154,17 @@ export default function SandboxPage() {
     recognitionRef.current?.stop();
   }, []);
 
+  const handleMicTap = useCallback(() => {
+    if (status === "idle") {
+      startListening();
+    } else if (status === "listening") {
+      stopListening();
+    }
+  }, [status, startListening, stopListening]);
+
   const statusLabel: Record<Status, string> = {
-    idle: "Hold to talk",
-    listening: "Listening…",
+    idle: "Tap to talk",
+    listening: "Listening… (tap to stop)",
     processing: "Thinking…",
     speaking: "Speaking…",
   };
@@ -167,8 +175,8 @@ export default function SandboxPage() {
         <div className="page-eyebrow">Experimental</div>
         <div className="page-title">Sandbox</div>
         <div className="page-meta">
-          Voice input prototype · push-to-talk → rule-based routing (task creation or
-          decision engine) → spoken response · no open-ended AI reasoning
+          Voice input prototype · tap to talk, tap again to stop → rule-based routing (task
+          creation, decision engine, or Claude for anything unrecognized) → spoken response
         </div>
       </div>
 
@@ -189,17 +197,7 @@ export default function SandboxPage() {
           <button
             className="nv-button"
             style={{ width: 160, height: 160, borderRadius: "50%", fontSize: 14 }}
-            onMouseDown={startListening}
-            onMouseUp={stopListening}
-            onMouseLeave={stopListening}
-            onTouchStart={(event) => {
-              event.preventDefault();
-              startListening();
-            }}
-            onTouchEnd={(event) => {
-              event.preventDefault();
-              stopListening();
-            }}
+            onClick={handleMicTap}
             disabled={status === "processing" || status === "speaking"}
           >
             {statusLabel[status]}

@@ -3,13 +3,27 @@ import { createTask, type CreateTaskInput } from "./task-store";
 
 const TASK_TRIGGERS = ["add task", "create task", "new task", "remind me to", "i need to"];
 
+// Common decision-question openers. Used only to decide which engine answers
+// a "should I..."-shaped question with no dedicated rule-engine match — not a
+// replacement for the rule engine's own class/semester branch, which still
+// runs first and wins when it matches (see routeVoiceInput below).
+const DECISION_TRIGGERS = [
+  "should i",
+  "should we",
+  "is it better to",
+  "would it be better to",
+  "do you think i should",
+  "what should i do about",
+  "which is better",
+];
+
 const MAX_VOICE_SENTENCES = 4;
 
 // lib/decision-engine.ts's own literal placeholder for "no specific rule
 // matched" (see its default `recommendation` value). Since the rule-based
 // classifier here has no dedicated "unrecognized" bucket of its own, this
 // exact string is the only signal that the decision engine didn't actually
-// have an answer — treat it as unrecognized instead of showing it verbatim.
+// have an answer.
 const DECISION_ENGINE_GENERIC_FALLBACK = "Use retrieved context and risks to guide decision.";
 
 // Deliberately not importing lib/decision-engine.ts's DecisionResult type —
@@ -30,8 +44,8 @@ export type VoiceIntentResult =
   | { type: "decision"; responseText: string; decision: DecisionApiResult }
   | { type: "unrecognized"; responseText: string };
 
-function matchTaskTrigger(lowerText: string): string | null {
-  return TASK_TRIGGERS.find((trigger) => lowerText.startsWith(trigger)) ?? null;
+function matchTrigger(triggers: string[], lowerText: string): string | null {
+  return triggers.find((trigger) => lowerText.startsWith(trigger)) ?? null;
 }
 
 function capitalize(text: string): string {
@@ -50,17 +64,21 @@ async function getIdToken(): Promise<string | undefined> {
   return auth.currentUser?.getIdToken();
 }
 
-async function askDecisionEngine(question: string): Promise<DecisionApiResult> {
+async function authorizedFetch(path: string, body: Record<string, unknown>): Promise<Response> {
   const idToken = await getIdToken();
 
-  const response = await fetch("/api/v1/decisions", {
+  return fetch(path, {
     method: "POST",
     headers: {
       "Content-Type": "application/json",
       ...(idToken ? { Authorization: `Bearer ${idToken}` } : {}),
     },
-    body: JSON.stringify({ question }),
+    body: JSON.stringify(body),
   });
+}
+
+async function askDecisionEngine(question: string): Promise<DecisionApiResult> {
+  const response = await authorizedFetch("/api/v1/decisions", { question });
 
   if (!response.ok) {
     throw new Error("Decision engine request failed.");
@@ -70,18 +88,9 @@ async function askDecisionEngine(question: string): Promise<DecisionApiResult> {
 }
 
 // Server-only (Anthropic SDK, "server-only" guard) — must be reached via
-// fetch, same reasoning as askDecisionEngine above, never imported directly.
+// fetch, never imported directly, same reasoning throughout this file.
 async function askVoiceFallback(text: string): Promise<string> {
-  const idToken = await getIdToken();
-
-  const response = await fetch("/api/v1/voice/respond", {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      ...(idToken ? { Authorization: `Bearer ${idToken}` } : {}),
-    },
-    body: JSON.stringify({ text }),
-  });
+  const response = await authorizedFetch("/api/v1/voice/respond", { text });
 
   if (!response.ok) {
     // Safe fallback if the API call fails — never leave the user without a reply.
@@ -92,12 +101,25 @@ async function askVoiceFallback(text: string): Promise<string> {
   return typeof data.responseText === "string" ? data.responseText : "I didn't catch that clearly — mind trying again?";
 }
 
+async function askVoiceJudgment(question: string): Promise<string> {
+  const response = await authorizedFetch("/api/v1/voice/judgment", { question });
+
+  if (!response.ok) {
+    return "I don't have a clear take on that one — want to think it through together later?";
+  }
+
+  const data = await response.json();
+  return typeof data.answer === "string" ? data.answer : "I don't have a clear take on that one — want to think it through together later?";
+}
+
 export async function routeVoiceInput(transcript: string): Promise<VoiceIntentResult> {
   const trimmed = transcript.trim();
-  const trigger = matchTaskTrigger(trimmed.toLowerCase());
+  const lower = trimmed.toLowerCase();
 
-  if (trigger) {
-    const title = capitalize(trimmed.slice(trigger.length).trim()) || trimmed;
+  const taskTrigger = matchTrigger(TASK_TRIGGERS, lower);
+
+  if (taskTrigger) {
+    const title = capitalize(trimmed.slice(taskTrigger.length).trim()) || trimmed;
 
     const input: CreateTaskInput = {
       title,
@@ -115,16 +137,28 @@ export async function routeVoiceInput(transcript: string): Promise<VoiceIntentRe
     return { type: "task", responseText: `Added: ${title}.` };
   }
 
-  const decision = await askDecisionEngine(trimmed);
+  const decisionTrigger = matchTrigger(DECISION_TRIGGERS, lower);
 
-  if (decision.recommendation === DECISION_ENGINE_GENERIC_FALLBACK) {
-    const responseText = await askVoiceFallback(trimmed);
-    return { type: "unrecognized", responseText };
+  if (decisionTrigger) {
+    const decision = await askDecisionEngine(trimmed);
+
+    if (decision.recommendation === DECISION_ENGINE_GENERIC_FALLBACK) {
+      // The rule engine had no specific answer (e.g. anything outside its one
+      // class/semester branch) — give it a real, honest take via the
+      // Judgment Engine instead of showing the generic placeholder verbatim.
+      const responseText = await askVoiceJudgment(trimmed);
+      return { type: "decision", responseText, decision };
+    }
+
+    return {
+      type: "decision",
+      responseText: limitToSentences(decision.recommendation, MAX_VOICE_SENTENCES),
+      decision,
+    };
   }
 
-  return {
-    type: "decision",
-    responseText: limitToSentences(decision.recommendation, MAX_VOICE_SENTENCES),
-    decision,
-  };
+  // Not a task and not decision-shaped — genuinely ambiguous input, keep the
+  // lighter conversational fallback rather than the stronger advisory prompt.
+  const responseText = await askVoiceFallback(trimmed);
+  return { type: "unrecognized", responseText };
 }
