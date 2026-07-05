@@ -1,30 +1,13 @@
 import { NextResponse } from "next/server";
-import { createGoal, listGoals } from "@/services/goal-service";
+import { createGoal, getGoals } from "@/lib/goal-store";
 
-function getUserId(request: Request) {
-  return request.headers.get("x-user-id");
-}
-
-export async function GET(request: Request) {
-  const userId = getUserId(request);
-
-  if (!userId) {
-    return NextResponse.json({ error: "Missing x-user-id header" }, { status: 401 });
-  }
-
-  const goals = await listGoals(userId);
+export async function GET() {
+  const goals = await getGoals();
   return NextResponse.json({ goals });
 }
 
 export async function POST(request: Request) {
-  const userId = getUserId(request);
-
-  if (!userId) {
-    return NextResponse.json({ error: "Missing x-user-id header" }, { status: 401 });
-  }
-
   const input = await request.json();
-  const goal = await createGoal({ ...input, userId });
-
+  const goal = await createGoal(input);
   return NextResponse.json({ goal }, { status: 201 });
 }

@@ -1,0 +1,70 @@
+rules_version = '2';
+
+// Single-user restriction: only the owner's authenticated account may
+// read or write data in this project, and only in the specific
+// collections listed below.
+//
+// Deliberately NOT using a catch-all `match /{document=**}` for the
+// owner-accessible collections: Firestore combines the results of every
+// `match` block whose path pattern structurally matches a request with a
+// logical OR, so a broad catch-all sitting alongside a "deny all" block
+// for a restricted collection (like plaid_items) would NOT actually
+// override that deny — the owner-authenticated catch-all would still
+// independently match and grant access. Enumerating each real collection
+// explicitly avoids that ambiguity entirely: a request path either
+// belongs to exactly one of these non-overlapping `match` blocks, or it
+// is denied by default (no block matches).
+service cloud.firestore {
+  match /databases/{database}/documents {
+    function isOwner() {
+      return request.auth != null
+        && request.auth.token.email == "nishadbasrur@gmail.com";
+    }
+
+    // Collections the owner's authenticated browser session reads and
+    // writes directly via the client SDK.
+    match /tasks/{document=**} {
+      allow read, write: if isOwner();
+    }
+    match /goals/{document=**} {
+      allow read, write: if isOwner();
+    }
+    match /projects/{document=**} {
+      allow read, write: if isOwner();
+    }
+    match /decisions/{document=**} {
+      allow read, write: if isOwner();
+    }
+    match /memories/{document=**} {
+      allow read, write: if isOwner();
+    }
+
+    // plaid_items holds encrypted bank access tokens. Even the owner's
+    // own browser session must never read or write it directly — only
+    // trusted server code (the Admin SDK, which bypasses these rules
+    // entirely) is allowed to touch this collection.
+    match /plaid_items/{document=**} {
+      allow read, write: if false;
+    }
+
+    // daily-runs is written only by the scheduled Cloud Function via the
+    // Admin SDK, which bypasses these rules entirely regardless of what's
+    // written here. The owner may still read their own risk-scan history
+    // in the app; no direct client write path is allowed, same pattern as
+    // plaid_items.
+    match /daily-runs/{document=**} {
+      allow read: if isOwner();
+      allow write: if false;
+    }
+
+    // inbox holds raw messages captured from the iOS Shortcut ingest
+    // endpoint (app/api/v1/messages/ingest), authenticated by a shared
+    // secret rather than a Firebase session. Only that trusted server
+    // route (via the Admin SDK, which bypasses these rules entirely) may
+    // write here — no client, including the owner's own browser session,
+    // may read or write it directly. Same pattern as plaid_items.
+    match /inbox/{document=**} {
+      allow read, write: if false;
+    }
+  }
+}

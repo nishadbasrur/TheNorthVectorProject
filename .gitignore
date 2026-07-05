@@ -15,3 +15,6 @@ data/imports/openai-export/
 
 # Local memory database
 data/memories/
+
+# Cloud Functions build output (bundled by esbuild, not source)
+functions/lib/

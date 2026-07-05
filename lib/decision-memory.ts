@@ -1,3 +1,6 @@
+import { collection, doc, getDoc, getDocs, increment, orderBy, query, setDoc, updateDoc } from "firebase/firestore";
+import { db } from "./firebase";
+
 export interface StoredDecision {
   question: string;
   recommendation: string;
@@ -8,8 +11,6 @@ export interface StoredDecision {
   timesAsked: number;
 }
 
-const decisionStore = new Map<string, StoredDecision>();
-
 function normalizeQuestion(question: string) {
   return question
     .toLowerCase()
@@ -17,28 +18,38 @@ function normalizeQuestion(question: string) {
     .trim();
 }
 
-export function getStoredDecision(question: string) {
+export async function getStoredDecision(question: string) {
   const key = normalizeQuestion(question);
-  const decision = decisionStore.get(key);
+  const decisionRef = doc(db, "decisions", key);
+  const snapshot = await getDoc(decisionRef);
 
-  if (!decision) {
+  if (!snapshot.exists()) {
     return null;
   }
 
-  decision.timesAsked += 1;
-  return decision;
+  await updateDoc(decisionRef, { timesAsked: increment(1) });
+
+  const decision = snapshot.data() as StoredDecision;
+  return { ...decision, timesAsked: decision.timesAsked + 1 };
 }
 
-export function storeDecision(
+export async function storeDecision(
   question: string,
   decision: Omit<StoredDecision, "question" | "createdAt" | "timesAsked">
 ) {
   const key = normalizeQuestion(question);
 
-  decisionStore.set(key, {
+  await setDoc(doc(db, "decisions", key), {
     question,
     createdAt: new Date().toISOString(),
     timesAsked: 1,
     ...decision,
   });
+}
+
+export async function getDecisions() {
+  const decisionQuery = query(collection(db, "decisions"), orderBy("createdAt", "desc"));
+  const snapshot = await getDocs(decisionQuery);
+
+  return snapshot.docs.map((decisionDoc) => decisionDoc.data()) as StoredDecision[];
 }

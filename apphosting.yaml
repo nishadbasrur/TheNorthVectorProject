@@ -4,18 +4,6 @@ runConfig:
 
 # Environment variables and secrets.
 env:
-  - variable: DATABASE_URL
-    value: "postgres://user:password@localhost:5432/north_vector"
-    availability:
-      - BUILD
-      - RUNTIME
-
-  - variable: AUTH_SECRET
-    value: "local-dev-placeholder-secret"
-    availability:
-      - BUILD
-      - RUNTIME
-
   - variable: AUTH_URL
     value: "https://north-vector--the-north-vector-project.us-east4.hosted.app"
     availability:
@@ -54,6 +42,24 @@ env:
 
   - variable: NEXT_PUBLIC_FIREBASE_APP_ID
     value: "1:1011959080844:web:9273e8b816e7831c35d8a9"
+    availability:
+      - BUILD
+      - RUNTIME
+
+  - variable: FIREBASE_SERVICE_ACCOUNT_KEY
+    secret: FIREBASE_SERVICE_ACCOUNT_KEY
+    availability:
+      - BUILD
+      - RUNTIME
+
+  - variable: GOOGLE_TTS_SERVICE_ACCOUNT_KEY
+    secret: GOOGLE_TTS_SERVICE_ACCOUNT_KEY
+    availability:
+      - BUILD
+      - RUNTIME
+
+  - variable: SHORTCUT_INGEST_SECRET
+    secret: SHORTCUT_INGEST_SECRET
     availability:
       - BUILD
       - RUNTIME

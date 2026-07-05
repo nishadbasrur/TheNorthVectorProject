@@ -1,5 +1,6 @@
+import "server-only";
 import { retrieveLocalMemories } from "@/lib/memory-retrieval";
-import { getStoredDecision, storeDecision } from "@/lib/decision-memory";
+import { getStoredDecision, storeDecision } from "@/lib/decision-memory-admin";
 
 export interface DecisionResult {
   recommendation: string;
@@ -14,8 +15,8 @@ function includesAny(text: string, terms: string[]) {
   return terms.some((term) => text.includes(term));
 }
 
-export function evaluateDecision(question: string): DecisionResult {
-  const storedDecision = getStoredDecision(question);
+export async function evaluateDecision(question: string): Promise<DecisionResult> {
+  const storedDecision = await getStoredDecision(question);
 
   if (storedDecision) {
     return {
@@ -58,7 +59,7 @@ export function evaluateDecision(question: string): DecisionResult {
     source: "new_evaluation",
   };
 
-  storeDecision(question, {
+  await storeDecision(question, {
     recommendation,
     reasons,
     risks,

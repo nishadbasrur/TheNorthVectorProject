@@ -210,7 +210,10 @@ html, body {
   gap: 8px;
   padding: 6px 8px;
   border-radius: 6px;
+  text-decoration: none;
+  transition: background 0.15s;
 }
+.user-chip:hover { background: rgba(59, 91, 219, 0.12); }
 
 .user-avatar {
   width: 28px;
@@ -626,14 +629,134 @@ html, body {
   color: var(--text-faint);
 }
 
-/* Responsive */
-@media (max-width: 1100px) {
+/* Mobile top bar (phone only) */
+.mobile-topbar {
+  display: none;
+  align-items: center;
+  gap: 12px;
+  height: 52px;
+  padding: 0 16px;
+  background: var(--bg-sidebar);
+  border-bottom: 1px solid var(--border-default);
+  flex-shrink: 0;
+}
+
+.hamburger-btn,
+.rail-toggle-btn,
+.nav-drawer-close {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 6px;
+  border: 1px solid var(--border-default);
+  background: transparent;
+  color: var(--text-muted);
+  cursor: pointer;
+  transition: all 0.15s;
+}
+.hamburger-btn:hover,
+.rail-toggle-btn:hover,
+.nav-drawer-close:hover {
+  color: var(--text-primary);
+  border-color: var(--border-strong);
+  background: rgba(59, 91, 219, 0.12);
+}
+
+.hamburger-btn { width: 34px; height: 34px; font-size: 16px; }
+
+.mobile-topbar-brand {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--white);
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+
+.rail-toggle-btn {
+  display: none;
+  width: calc(100% - 16px);
+  margin: 4px 8px 8px;
+  padding: 8px;
+  font-size: 14px;
+}
+
+/* Nav drawer overlay — used by tablet "expand on tap" and phone hamburger */
+.nav-drawer-backdrop {
+  position: fixed;
+  inset: 0;
+  background: rgba(4, 9, 26, 0.6);
+  z-index: 40;
+}
+
+.nav-drawer {
+  position: fixed;
+  top: 0;
+  left: 0;
+  bottom: 0;
+  width: 260px;
+  max-width: 82vw;
+  background: var(--bg-sidebar);
+  border-right: 1px solid var(--border-default);
+  z-index: 50;
+  display: flex;
+  flex-direction: column;
+  overflow-y: auto;
+  box-shadow: 8px 0 24px rgba(0, 0, 0, 0.4);
+}
+
+.nav-drawer-close {
+  position: absolute;
+  top: 14px;
+  right: 14px;
+  width: 28px;
+  height: 28px;
+  font-size: 14px;
+  z-index: 1;
+}
+
+/* Responsive breakpoints */
+
+/* Tablet: 768px - 1024px — collapsed icon-only rail, expands via drawer on tap.
+   Selectors are scoped to `.sidebar` (not `.nav-drawer`) since NavLinks/BrandBlock/
+   UserChip are shared components reused in the full-label drawer overlay too. */
+@media (max-width: 1024px) {
+  .sidebar {
+    width: 64px;
+    min-width: 64px;
+  }
+  .sidebar .sidebar-brand {
+    justify-content: center;
+    padding: 16px 8px;
+  }
+  .sidebar .sidebar-brand-text,
+  .sidebar .sidebar-brand-sub,
+  .sidebar .sidebar-section-label,
+  .sidebar .nav-label,
+  .sidebar .user-name,
+  .sidebar .user-role {
+    display: none;
+  }
+  .sidebar .nav-item {
+    justify-content: center;
+    padding: 10px 0;
+  }
+  .sidebar .nav-item.active {
+    border-left: none;
+    padding-left: 0;
+  }
+  .sidebar .user-chip { justify-content: center; }
+  .rail-toggle-btn { display: flex; }
   .grid-main-side { grid-template-columns: 1fr; }
   .grid-4 { grid-template-columns: repeat(2, 1fr); }
 }
-@media (max-width: 768px) {
+
+/* Phone: < 768px — sidebar hidden, top bar + slide-in drawer */
+@media (max-width: 767px) {
+  .app-layout { flex-direction: column; }
   .sidebar { display: none; }
+  .mobile-topbar { display: flex; }
   .grid-2, .grid-3 { grid-template-columns: 1fr; }
+  .page-header { padding: 20px 16px 16px; }
   .page-body { padding: 16px; }
 }
 

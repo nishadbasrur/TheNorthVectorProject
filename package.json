@@ -9,18 +9,22 @@
     "lint": "echo lint skipped for scaffold",
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
-    "check": "npm run typecheck && npm run lint && npm run test && npm run build"
+    "check": "npm run typecheck && npm run lint && npm run test && npm run build",
+    "typecheck:all": "npm run typecheck && npm --prefix functions run typecheck",
+    "build:all": "npm run build && npm --prefix functions run build"
   },
   "dependencies": {
     "@auth/core": "latest",
-    "@auth/drizzle-adapter": "latest",
-    "@neondatabase/serverless": "latest",
-    "drizzle-orm": "latest",
+    "@google-cloud/text-to-speech": "^6.4.1",
     "firebase": "^12.14.0",
+    "firebase-admin": "^14.1.0",
     "next": "latest",
     "next-auth": "latest",
+    "plaid": "^43.0.0",
     "react": "latest",
     "react-dom": "latest",
+    "react-plaid-link": "^4.1.1",
+    "server-only": "^0.0.1",
     "zod": "latest"
   },
   "devDependencies": {
@@ -30,7 +34,6 @@
     "@types/react": "latest",
     "@types/react-dom": "latest",
     "autoprefixer": "latest",
-    "drizzle-kit": "latest",
     "eslint": "latest",
     "eslint-config-next": "latest",
     "postcss": "latest",

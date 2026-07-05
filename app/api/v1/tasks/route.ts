@@ -1,23 +1,13 @@
 import { NextResponse } from "next/server";
-import { createTask, listTasks } from "@/services/task-service";
+import { createTask, getTasks } from "@/lib/task-store";
 
-function userIdFrom(request: Request) {
-  return request.headers.get("x-user-id");
-}
-
-export async function GET(request: Request) {
-  const userId = userIdFrom(request);
-  if (!userId) return NextResponse.json({ error: "Missing user" }, { status: 401 });
-
-  const tasks = await listTasks(userId);
+export async function GET() {
+  const tasks = await getTasks();
   return NextResponse.json({ tasks });
 }
 
 export async function POST(request: Request) {
-  const userId = userIdFrom(request);
-  if (!userId) return NextResponse.json({ error: "Missing user" }, { status: 401 });
-
   const input = await request.json();
-  const task = await createTask({ ...input, userId });
+  const task = await createTask(input);
   return NextResponse.json({ task }, { status: 201 });
 }

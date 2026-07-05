@@ -19,10 +19,11 @@ export async function POST(req: Request) {
       );
     }
 
-    const result = evaluateDecision(question);
+    const result = await evaluateDecision(question);
 
     return NextResponse.json(result);
-  } catch {
+  } catch (error) {
+    console.error("Failed to evaluate decision", error);
     return NextResponse.json(
       { error: "Invalid request body." },
       { status: 400 }
