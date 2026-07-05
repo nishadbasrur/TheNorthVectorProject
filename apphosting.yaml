@@ -63,3 +63,9 @@ env:
     availability:
       - BUILD
       - RUNTIME
+
+  - variable: ANTHROPIC_API_KEY
+    secret: ANTHROPIC_API_KEY
+    availability:
+      - BUILD
+      - RUNTIME

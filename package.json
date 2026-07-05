@@ -14,6 +14,7 @@
     "build:all": "npm run build && npm --prefix functions run build"
   },
   "dependencies": {
+    "@anthropic-ai/sdk": "^0.110.0",
     "@auth/core": "latest",
     "@google-cloud/text-to-speech": "^6.4.1",
     "firebase": "^12.14.0",
