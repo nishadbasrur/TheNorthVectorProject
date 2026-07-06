@@ -53,6 +53,19 @@ export default function SandboxPage() {
   // exact element has played from within a user gesture, Safari allows later
   // programmatic .play() calls on it even outside a gesture call stack.
   const audioRef = useRef<HTMLAudioElement | null>(null);
+  // Backstop for a real-world quirk (most pronounced on Safari/iOS) where a
+  // new recognition session can start without ever calling onresult, onerror,
+  // or onend — with nothing to reset "listening", the mic button would be
+  // stuck forever with zero visible feedback. Cleared whenever any of those
+  // three callbacks actually fires.
+  const listeningWatchdogRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  const clearListeningWatchdog = useCallback(() => {
+    if (listeningWatchdogRef.current) {
+      clearTimeout(listeningWatchdogRef.current);
+      listeningWatchdogRef.current = null;
+    }
+  }, []);
 
   const speak = useCallback(async (text: string) => {
     setStatus("speaking");
@@ -121,6 +134,16 @@ export default function SandboxPage() {
       return;
     }
 
+    // A leftover instance from the previous cycle can leave the browser's
+    // native recognition service half-torn-down if it wasn't fully released
+    // yet — explicitly aborting it first gives the new instance a clean
+    // handoff instead of silently failing to capture anything.
+    try {
+      recognitionRef.current?.abort();
+    } catch {
+      // Nothing to abort if it already fully ended — not an error.
+    }
+
     setErrorMessage(null);
     setTranscript("");
     setResponseText("");
@@ -145,11 +168,13 @@ export default function SandboxPage() {
     };
 
     recognition.onerror = (event) => {
+      clearListeningWatchdog();
       setErrorMessage(`Speech recognition error: ${event.error}`);
       setStatus("idle");
     };
 
     recognition.onend = () => {
+      clearListeningWatchdog();
       setStatus((current) => {
         if (current !== "listening") return current;
 
@@ -163,8 +188,29 @@ export default function SandboxPage() {
 
     recognitionRef.current = recognition;
     setStatus("listening");
-    recognition.start();
-  }, [status, handleTranscript]);
+
+    try {
+      recognition.start();
+    } catch (error) {
+      // start() can throw synchronously if the browser's speech service
+      // hasn't fully released the previous session yet — without this catch
+      // the button would get stuck showing "Listening…" forever, since
+      // nothing else would ever fire to reset it.
+      console.warn("SpeechRecognition.start() failed:", error);
+      setErrorMessage("Couldn't start listening — try tapping again in a moment.");
+      setStatus("idle");
+      return;
+    }
+
+    clearListeningWatchdog();
+    listeningWatchdogRef.current = setTimeout(() => {
+      setStatus((current) => {
+        if (current !== "listening") return current;
+        setErrorMessage("Didn't catch anything — try holding a bit longer before you speak.");
+        return "idle";
+      });
+    }, 10000);
+  }, [status, handleTranscript, clearListeningWatchdog]);
 
   const stopListening = useCallback(() => {
     try {
@@ -175,9 +221,10 @@ export default function SandboxPage() {
       // tap arrived — that's a normal race, not a real failure, so just make
       // sure the UI doesn't get stuck rather than surfacing a scary error.
       console.warn("SpeechRecognition.stop() failed, likely already ended:", error);
+      clearListeningWatchdog();
       setStatus((current) => (current === "listening" ? "idle" : current));
     }
-  }, []);
+  }, [clearListeningWatchdog]);
 
   const handleMicTap = useCallback(() => {
     if (status === "idle") {
