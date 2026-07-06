@@ -13,18 +13,23 @@ jobs:
       - name: Setup Node
         uses: actions/setup-node@v4
         with:
-          node-version: 20
+          node-version-file: .nvmrc
       - name: Install dependencies
         run: npm install
+      - name: Install functions dependencies
+        run: npm --prefix functions install
       - name: Typecheck
-        run: npm run typecheck
+        run: npm run typecheck:all
       - name: Lint
         run: npm run lint
       - name: Test
         run: npm run test
       - name: Build
-        run: npm run build
+        run: npm run build:all
         env:
-          DATABASE_URL: postgres://user:password@localhost:5432/north_vector
-          AUTH_SECRET: ci-placeholder-secret
-          AUTH_URL: http://localhost:3000
+          NEXT_PUBLIC_FIREBASE_API_KEY: ci-placeholder-key
+          NEXT_PUBLIC_FIREBASE_AUTH_DOMAIN: ci-placeholder.firebaseapp.com
+          NEXT_PUBLIC_FIREBASE_PROJECT_ID: ci-placeholder
+          NEXT_PUBLIC_FIREBASE_STORAGE_BUCKET: ci-placeholder.appspot.com
+          NEXT_PUBLIC_FIREBASE_MESSAGING_SENDER_ID: "000000000000"
+          NEXT_PUBLIC_FIREBASE_APP_ID: "1:000000000000:web:0000000000000000000000"
