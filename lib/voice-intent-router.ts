@@ -17,6 +17,19 @@ const DECISION_TRIGGERS = [
   "which is better",
 ];
 
+// On-demand only — see docs/integrations/calendar-notion-gmail-task.md
+// Section 3. There is no periodic Gmail scan; this is the only trigger path.
+const EMAIL_TRIGGERS = [
+  "any important emails",
+  "any important email",
+  "any urgent emails",
+  "any urgent email",
+  "check my email",
+  "check my emails",
+  "anything important in my email",
+  "anything urgent in my email",
+];
+
 const MAX_VOICE_SENTENCES = 4;
 
 // lib/decision-engine.ts's own literal placeholder for "no specific rule
@@ -42,6 +55,7 @@ export type DecisionApiResult = {
 export type VoiceIntentResult =
   | { type: "task"; responseText: string }
   | { type: "decision"; responseText: string; decision: DecisionApiResult }
+  | { type: "email"; responseText: string }
   | { type: "unrecognized"; responseText: string };
 
 function matchTrigger(triggers: string[], lowerText: string): string | null {
@@ -112,9 +126,36 @@ async function askVoiceJudgment(question: string): Promise<string> {
   return typeof data.answer === "string" ? data.answer : "I don't have a clear take on that one — want to think it through together later?";
 }
 
+// Server-only (reads the full inbox + calls the Judgment Engine) — must be
+// reached via fetch, same reasoning as the other server-side checks here.
+async function checkUrgentEmails(): Promise<string> {
+  const response = await authorizedFetch("/api/v1/gmail/check-urgent", {});
+
+  if (!response.ok) {
+    return "I couldn't check your email just now — try again in a bit.";
+  }
+
+  const data = await response.json();
+  const urgent = Array.isArray(data.urgent) ? data.urgent : [];
+
+  if (urgent.length === 0) {
+    return "Nothing urgent in your inbox right now.";
+  }
+
+  const subjects = urgent.map((item: { subject: string }) => `"${item.subject}"`).join(", ");
+  return `You have ${urgent.length} urgent email${urgent.length === 1 ? "" : "s"}: ${subjects}.`;
+}
+
 export async function routeVoiceInput(transcript: string): Promise<VoiceIntentResult> {
   const trimmed = transcript.trim();
   const lower = trimmed.toLowerCase();
+
+  const emailTrigger = matchTrigger(EMAIL_TRIGGERS, lower);
+
+  if (emailTrigger) {
+    const responseText = await checkUrgentEmails();
+    return { type: "email", responseText };
+  }
 
   const taskTrigger = matchTrigger(TASK_TRIGGERS, lower);
 

@@ -10,5 +10,11 @@
     "noEmit": true,
     "types": ["node"]
   },
-  "include": ["src/**/*.ts", "../lib/risk-engine.ts", "../lib/owner.ts"]
+  "include": [
+    "src/**/*.ts",
+    "../lib/risk-engine.ts",
+    "../lib/owner.ts",
+    "../lib/google-calendar-client.ts",
+    "../lib/notion-client.ts"
+  ]
 }

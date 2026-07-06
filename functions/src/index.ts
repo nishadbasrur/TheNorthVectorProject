@@ -1,11 +1,14 @@
 import { onSchedule } from "firebase-functions/v2/scheduler";
 import { onRequest } from "firebase-functions/v2/https";
+import { defineSecret } from "firebase-functions/params";
 import { initializeApp, getApps } from "firebase-admin/app";
 import { getFirestore, FieldValue } from "firebase-admin/firestore";
 import { logger } from "firebase-functions";
 import { evaluateRisks, type RiskEvaluationTask, type RiskEvaluationGoal } from "../../lib/risk-engine";
 import { resendApiKey, sendEmail, sendRiskSummaryEmail } from "./email";
 import { verifyOwner } from "./require-owner";
+import { runUrgencyScan } from "./urgency-scan";
+import { sendPushNotification } from "./push";
 
 if (!getApps().length) {
   // No explicit credential — the deployed function runs under its own
@@ -88,6 +91,52 @@ export const sendTestEmail = onRequest(
       res.status(200).json({ ok: true });
     } else {
       res.status(500).json({ ok: false, error: "Email send failed — check function logs." });
+    }
+  }
+);
+
+// Calendar/Notion urgency scan — see docs/integrations/calendar-notion-gmail-task.md.
+// Gmail is deliberately NOT included here; it's on-demand only (see
+// app/api/v1/gmail/check-urgent), never on a periodic schedule.
+const googleCalendarClientId = defineSecret("GOOGLE_CALENDAR_CLIENT_ID");
+const googleCalendarClientSecret = defineSecret("GOOGLE_CALENDAR_CLIENT_SECRET");
+const googleCalendarRefreshToken = defineSecret("GOOGLE_CALENDAR_REFRESH_TOKEN");
+const notionApiToken = defineSecret("NOTION_API_TOKEN");
+
+const urgencyScanSecrets = [
+  googleCalendarClientId,
+  googleCalendarClientSecret,
+  googleCalendarRefreshToken,
+  notionApiToken,
+];
+
+export const urgencyScan = onSchedule(
+  {
+    schedule: "every 15 minutes",
+    secrets: urgencyScanSecrets,
+  },
+  async () => {
+    await runUrgencyScan();
+  }
+);
+
+// Manually-triggered test path, same reasoning as sendTestEmail — lets push
+// deliverability be verified without waiting for a real qualifying event.
+export const sendTestUrgency = onRequest(
+  { secrets: urgencyScanSecrets },
+  async (req, res) => {
+    const isOwner = await verifyOwner(req, res);
+    if (!isOwner) return;
+
+    const sent = await sendPushNotification(
+      "North Vector: test alert",
+      "This is a test of the urgency scan's push notification path. If you're reading this, delivery works."
+    );
+
+    if (sent) {
+      res.status(200).json({ ok: true });
+    } else {
+      res.status(500).json({ ok: false, error: "Push send failed — check function logs, and confirm a device has enabled alerts in Settings." });
     }
   }
 );

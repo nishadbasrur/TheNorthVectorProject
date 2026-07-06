@@ -46,6 +46,12 @@ env:
       - BUILD
       - RUNTIME
 
+  - variable: NEXT_PUBLIC_FIREBASE_VAPID_KEY
+    value: "BMVmAr6cH5G_zQExT5snX-TgObSh-Vl00lOaiRUuMrb2ghNhHggEaJ7GP0NBVgFV5wAuBXjh8Qf5zKYeQj-0PVU"
+    availability:
+      - BUILD
+      - RUNTIME
+
   - variable: FIREBASE_SERVICE_ACCOUNT_KEY
     secret: FIREBASE_SERVICE_ACCOUNT_KEY
     availability:
@@ -69,3 +75,13 @@ env:
     availability:
       - BUILD
       - RUNTIME
+  - variable: GOOGLE_CALENDAR_CLIENT_ID
+    secret: GOOGLE_CALENDAR_CLIENT_ID
+  - variable: GOOGLE_CALENDAR_CLIENT_SECRET
+    secret: GOOGLE_CALENDAR_CLIENT_SECRET
+  - variable: GOOGLE_CALENDAR_REFRESH_TOKEN
+    secret: GOOGLE_CALENDAR_REFRESH_TOKEN
+  - variable: NOTION_API_TOKEN
+    secret: NOTION_API_TOKEN
+  - variable: GMAIL_REFRESH_TOKEN
+    secret: GMAIL_REFRESH_TOKEN

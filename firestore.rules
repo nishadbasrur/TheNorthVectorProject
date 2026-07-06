@@ -66,5 +66,42 @@ service cloud.firestore {
     match /inbox/{document=**} {
       allow read, write: if false;
     }
+
+    // alert_state de-duplicates the Calendar/Notion urgency scan (see
+    // functions/src/urgency-scan.ts) — one doc per already-alerted
+    // event/item so the same thing doesn't re-notify every 15-minute
+    // cycle. Only the scheduled Cloud Function (Admin SDK) writes it.
+    match /alert_state/{document=**} {
+      allow read: if isOwner();
+      allow write: if false;
+    }
+
+    // alerts is the audit log of push notifications actually sent —
+    // summary/subject only, never raw email body content (see the
+    // Gmail-specific handling notes in
+    // docs/integrations/calendar-notion-gmail-task.md). Only the Cloud
+    // Function writes it.
+    match /alerts/{document=**} {
+      allow read: if isOwner();
+      allow write: if false;
+    }
+
+    // gmail_surfaced de-duplicates the on-demand Gmail urgency check (see
+    // app/api/v1/gmail/check-urgent) — one doc per evaluated message id
+    // with a surfacedAt timestamp, so the same message isn't re-evaluated
+    // within the TTL window. Written directly by that trusted server
+    // route via the Admin SDK; no client write path.
+    match /gmail_surfaced/{document=**} {
+      allow read: if isOwner();
+      allow write: if false;
+    }
+
+    // push_subscriptions holds this device's Firebase Cloud Messaging
+    // registration token, written directly by the owner's own signed-in
+    // browser session when they enable urgent alerts in Settings — same
+    // access model as tasks/goals, not the Admin-SDK-only pattern above.
+    match /push_subscriptions/{document=**} {
+      allow read, write: if isOwner();
+    }
   }
 }
