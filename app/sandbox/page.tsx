@@ -7,6 +7,21 @@ import { routeVoiceInput } from "@/lib/voice-intent-router";
 
 type Status = "idle" | "listening" | "processing" | "speaking";
 
+// Standard SpeechRecognition error codes (per the Web Speech API spec) mapped
+// to copy a person can actually act on — the raw code alone (e.g.
+// "audio-capture") is accurate but not obviously meaningful mid-conversation.
+const SPEECH_ERROR_MESSAGES: Record<string, string> = {
+  "audio-capture": "The microphone stream failed to start — try tapping again in a moment.",
+  "not-allowed": "Microphone access is blocked — check this site's permission in your browser settings.",
+  "no-speech": "Didn't catch anything — try holding a bit longer before you speak.",
+  network: "Lost connection to the speech recognition service — try again.",
+  aborted: "Listening was interrupted — try again.",
+};
+
+function describeSpeechError(code: string): string {
+  return SPEECH_ERROR_MESSAGES[code] ?? `Speech recognition error: ${code}`;
+}
+
 // Builds a 1-sample silent WAV as a blob URL. Used only to "unlock" the
 // reused <audio> element inside a real user gesture (see startListening) —
 // Safari blocks .play() on any element that hasn't successfully played
@@ -169,7 +184,8 @@ export default function SandboxPage() {
 
     recognition.onerror = (event) => {
       clearListeningWatchdog();
-      setErrorMessage(`Speech recognition error: ${event.error}`);
+      console.warn("SpeechRecognition error:", event.error);
+      setErrorMessage(describeSpeechError(event.error));
       setStatus("idle");
     };
 

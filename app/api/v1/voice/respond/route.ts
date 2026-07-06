@@ -27,11 +27,12 @@ export async function POST(request: Request) {
       "You are North, a personal chief-of-staff assistant. Someone just spoke to you and your " +
       "rule-based classifier couldn't categorize it as a task, status request, or decision. " +
       "Respond in 1-2 short sentences, conversationally, matching the brevity rule in the North " +
-      "voice interface spec (Phase 1: 1-4 sentences, no filler). If it sounds like something " +
-      "actionable that just didn't match a known pattern, say so plainly rather than guessing " +
-      "what they meant.",
+      "voice interface spec (Phase 1: 1-4 sentences, no filler). Keep the whole answer under 40 " +
+      "words and make sure it's a complete, finished thought — never trail off mid-sentence. If " +
+      "it sounds like something actionable that just didn't match a known pattern, say so plainly " +
+      "rather than guessing what they meant.",
     userMessage: text,
-    maxTokens: 150,
+    maxTokens: 220,
   });
 
   if (!result.ok) {

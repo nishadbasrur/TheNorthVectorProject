@@ -33,9 +33,10 @@ export async function POST(request: Request) {
       "specific trade/timing signal (as opposed to reasoning about their own readiness, risk, or " +
       "process), say plainly that you can't predict markets, then redirect to the readiness/risk " +
       "framing you can actually help with. Respond in 1-4 short sentences — this is spoken aloud, " +
-      "not read, so keep it tight with no filler.",
+      "not read, so keep it tight with no filler. Keep the whole answer under 60 words and make " +
+      "sure it's a complete, finished thought — never trail off mid-sentence.",
     userMessage: question,
-    maxTokens: 150,
+    maxTokens: 220,
   });
 
   if (!result.ok) {
