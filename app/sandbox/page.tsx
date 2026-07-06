@@ -44,6 +44,11 @@ export default function SandboxPage() {
   const [responseText, setResponseText] = useState("");
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
   const recognitionRef = useRef<SpeechRecognition | null>(null);
+  // Tracks whether onresult fired for the in-progress recognition session, so
+  // onend can tell "got a transcript" apart from "ended with nothing captured"
+  // (e.g. stop() tapped before any speech was recognized, or a silent no-speech
+  // timeout) and show explicit feedback instead of resetting silently.
+  const resultReceivedRef = useRef(false);
   // Reused across the page session (not recreated per response) — once this
   // exact element has played from within a user gesture, Safari allows later
   // programmatic .play() calls on it even outside a gesture call stack.
@@ -126,12 +131,15 @@ export default function SandboxPage() {
       audioRef.current = audio;
     }
 
+    resultReceivedRef.current = false;
+
     const recognition = new SpeechRecognitionCtor();
     recognition.lang = "en-US";
     recognition.continuous = false;
     recognition.interimResults = false;
 
     recognition.onresult = (event) => {
+      resultReceivedRef.current = true;
       const text = event.results[0]?.[0]?.transcript ?? "";
       handleTranscript(text);
     };
@@ -142,7 +150,15 @@ export default function SandboxPage() {
     };
 
     recognition.onend = () => {
-      setStatus((current) => (current === "listening" ? "idle" : current));
+      setStatus((current) => {
+        if (current !== "listening") return current;
+
+        if (!resultReceivedRef.current) {
+          setErrorMessage("Didn't catch anything — try holding a bit longer before you speak.");
+        }
+
+        return "idle";
+      });
     };
 
     recognitionRef.current = recognition;
@@ -151,7 +167,16 @@ export default function SandboxPage() {
   }, [status, handleTranscript]);
 
   const stopListening = useCallback(() => {
-    recognitionRef.current?.stop();
+    try {
+      recognitionRef.current?.stop();
+    } catch (error) {
+      // stop() can throw if the recognition session already ended on its own
+      // (e.g. auto-stopped after detecting silence) before the user's second
+      // tap arrived — that's a normal race, not a real failure, so just make
+      // sure the UI doesn't get stuck rather than surfacing a scary error.
+      console.warn("SpeechRecognition.stop() failed, likely already ended:", error);
+      setStatus((current) => (current === "listening" ? "idle" : current));
+    }
   }, []);
 
   const handleMicTap = useCallback(() => {

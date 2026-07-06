@@ -5,7 +5,7 @@ const client = new Anthropic({
   apiKey: process.env.ANTHROPIC_API_KEY,
 });
 
-const MODEL = "claude-sonnet-5";
+const MODEL = process.env.ANTHROPIC_MODEL || "claude-haiku-4-5-20251001";
 
 // Simple in-memory daily counter — not persisted, resets on redeploy/restart.
 // Good enough as a first-pass sanity check; a real budget tracker against
