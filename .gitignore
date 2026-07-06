@@ -2,6 +2,7 @@ node_modules
 .next
 .env.local
 tsconfig.tsbuildinfo
+.DS_Store
 
 .agents/
 skills-lock.json
@@ -10,8 +11,9 @@ skills-lock.json
 .agents/
 skills-lock.json
 
-# Local personal imports
-data/imports/openai-export/
+# Local personal imports — the whole directory, not per-subfolder, so a
+# newly-added import source (e.g. true-export/) is never silently untracked.
+data/imports/
 
 # Local memory database
 data/memories/
