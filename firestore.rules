@@ -103,5 +103,16 @@ service cloud.firestore {
     match /push_subscriptions/{document=**} {
       allow read, write: if isOwner();
     }
+
+    // preferences holds standing instructions detected from live
+    // conversation turns (see lib/preference-detector.ts) — distinct from
+    // memories, which holds historical facts imported from the ChatGPT
+    // export. Written only by the trusted server routes (Judgment Engine /
+    // voice routes) via the Admin SDK, which bypasses these rules entirely;
+    // the owner may still read their own stated preferences in the app.
+    match /preferences/{document=**} {
+      allow read: if isOwner();
+      allow write: if false;
+    }
   }
 }
