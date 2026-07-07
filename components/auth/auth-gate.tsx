@@ -9,6 +9,7 @@ import {
 } from "firebase/auth";
 import { auth } from "@/lib/firebase";
 import { OWNER_EMAIL } from "@/lib/owner";
+import { initForegroundPushListenerIfEnabled } from "@/lib/push-client";
 
 type Mode = "sign-in" | "sign-up";
 
@@ -25,6 +26,10 @@ export function AuthGate({ children }: { children: ReactNode }) {
     return onAuthStateChanged(auth, (nextUser) => {
       setUser(nextUser);
       setIsChecking(false);
+
+      if (nextUser) {
+        initForegroundPushListenerIfEnabled();
+      }
     });
   }, []);
 

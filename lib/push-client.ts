@@ -1,6 +1,6 @@
 "use client";
 
-import { getMessaging, getToken, isSupported } from "firebase/messaging";
+import { getMessaging, getToken, isSupported, onMessage } from "firebase/messaging";
 import { doc, setDoc } from "firebase/firestore";
 import { app, auth, db } from "@/lib/firebase";
 
@@ -14,6 +14,39 @@ export type PushEnableFailureReason = "unsupported" | "permission-denied" | "not
 export type PushEnableResult =
   | { ok: true }
   | { ok: false; reason: PushEnableFailureReason; error?: string };
+
+// FCM's onBackgroundMessage (in public/firebase-messaging-sw.js) only fires
+// when the app isn't focused — it does NOT cover the case where the PWA/tab
+// is open and in the foreground at the moment a push arrives. For that case
+// the app itself has to be listening and construct the notification itself;
+// nothing shows up otherwise, which is exactly what produced a silent,
+// never-appeared test push on a foregrounded Mac PWA.
+let foregroundListenerRegistered = false;
+
+async function registerForegroundListener(): Promise<void> {
+  if (foregroundListenerRegistered) return;
+  if (!(await isSupported())) return;
+
+  const messaging = getMessaging(app);
+
+  onMessage(messaging, (payload) => {
+    const { title, body } = payload.notification ?? {};
+    if (title) {
+      new Notification(title, { body, icon: "/icon-192.png" });
+    }
+  });
+
+  foregroundListenerRegistered = true;
+}
+
+// Called once on app load (see components/auth/auth-gate.tsx) so a device
+// that already granted permission on a previous visit keeps getting
+// foreground pushes without needing to re-tap "Enable urgent alerts".
+// No-op if permission was never granted — nothing to listen for yet.
+export async function initForegroundPushListenerIfEnabled(): Promise<void> {
+  if (typeof Notification === "undefined" || Notification.permission !== "granted") return;
+  await registerForegroundListener();
+}
 
 // Requests Notification permission, registers the FCM service worker,
 // obtains a device token, and stores it in this owner's push_subscriptions
@@ -49,6 +82,8 @@ export async function enableUrgentAlerts(): Promise<PushEnableResult> {
       token,
       createdAt: new Date().toISOString(),
     });
+
+    await registerForegroundListener();
 
     return { ok: true };
   } catch (error) {

@@ -20,3 +20,6 @@ data/memories/
 
 # Cloud Functions build output (bundled by esbuild, not source)
 functions/lib/
+
+# Cloud Functions plain (non-secret) env vars, same treatment as .env.local
+functions/.env
