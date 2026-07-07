@@ -17,6 +17,8 @@ export default function SettingsPage() {
   const [copied, setCopied] = useState(false);
   const [pushStatus, setPushStatus] = useState<"idle" | "enabling" | "enabled" | "error">("idle");
   const [pushError, setPushError] = useState<string | null>(null);
+  const [testStatus, setTestStatus] = useState<"idle" | "sending" | "sent" | "error">("idle");
+  const [testMessage, setTestMessage] = useState<string | null>(null);
 
   const handleEnableAlerts = async () => {
     setPushStatus("enabling");
@@ -29,6 +31,31 @@ export default function SettingsPage() {
     } else {
       setPushStatus("error");
       setPushError(result.error ?? PUSH_ERROR_MESSAGES[result.reason]);
+    }
+  };
+
+  const handleSendTestAlert = async () => {
+    setTestStatus("sending");
+    setTestMessage(null);
+
+    try {
+      const idToken = await auth.currentUser?.getIdToken();
+      const response = await fetch("/api/v1/push/test", {
+        method: "POST",
+        headers: { Authorization: `Bearer ${idToken}` },
+      });
+      const data = await response.json();
+
+      if (response.ok) {
+        setTestStatus("sent");
+        setTestMessage(`Sent to ${data.sentCount}/${data.totalCount} device(s).`);
+      } else {
+        setTestStatus("error");
+        setTestMessage(data.error ?? "Test alert failed.");
+      }
+    } catch (error) {
+      setTestStatus("error");
+      setTestMessage(error instanceof Error ? error.message : "Test alert failed.");
     }
   };
 
@@ -58,6 +85,26 @@ export default function SettingsPage() {
           </button>
           {pushError && (
             <div style={{ marginTop: 8, fontSize: 12, color: "var(--status-warning)" }}>{pushError}</div>
+          )}
+
+          <button
+            className="nv-button-secondary"
+            style={{ marginTop: 8, marginLeft: 8 }}
+            onClick={handleSendTestAlert}
+            disabled={testStatus === "sending"}
+          >
+            {testStatus === "sending" ? "Sending…" : "Send test alert"}
+          </button>
+          {testMessage && (
+            <div
+              style={{
+                marginTop: 8,
+                fontSize: 12,
+                color: testStatus === "error" ? "var(--status-warning)" : "var(--text-faint)",
+              }}
+            >
+              {testMessage}
+            </div>
           )}
         </div>
 

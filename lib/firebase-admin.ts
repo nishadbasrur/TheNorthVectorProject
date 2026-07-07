@@ -2,6 +2,7 @@ import "server-only";
 import { cert, getApps, initializeApp, type App } from "firebase-admin/app";
 import { getFirestore } from "firebase-admin/firestore";
 import { getAuth } from "firebase-admin/auth";
+import { getMessaging } from "firebase-admin/messaging";
 
 function createAdminApp(): App {
   if (getApps().length) {
@@ -24,3 +25,4 @@ function createAdminApp(): App {
 export const adminApp = createAdminApp();
 export const adminDb = getFirestore(adminApp);
 export const adminAuth = getAuth(adminApp);
+export const adminMessaging = getMessaging(adminApp);
