@@ -16,6 +16,7 @@
   "dependencies": {
     "@anthropic-ai/sdk": "^0.110.0",
     "@auth/core": "latest",
+    "@google-cloud/speech": "^7.5.0",
     "@google-cloud/text-to-speech": "^6.4.1",
     "@googleapis/calendar": "^15.0.0",
     "@googleapis/gmail": "^17.0.0",

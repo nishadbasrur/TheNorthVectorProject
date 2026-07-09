@@ -64,6 +64,12 @@ env:
       - BUILD
       - RUNTIME
 
+  - variable: GOOGLE_STT_SERVICE_ACCOUNT_KEY
+    secret: GOOGLE_STT_SERVICE_ACCOUNT_KEY
+    availability:
+      - BUILD
+      - RUNTIME
+
   - variable: SHORTCUT_INGEST_SECRET
     secret: SHORTCUT_INGEST_SECRET
     availability:
