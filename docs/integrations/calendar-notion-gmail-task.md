@@ -10,7 +10,7 @@ All three integrations are READ-ONLY. Never create, modify, delete, or send/repl
 
 ## 3. Source-by-Source Design — Read Carefully, These Differ
 
-### Calendar and Notion: simple, explainable flags, periodic scan
+### Calendar and Notion: simple, explainable flags, periodic scan — plus an on-demand path
 
 No AI judgment involved in detecting these — a scheduled Cloud Function (every 15 minutes) checks the flag directly:
 
@@ -18,6 +18,8 @@ No AI judgment involved in detecting these — a scheduled Cloud Function (every
 - **Notion:** items where the "Urgent" checkbox property is true, not already alerted.
 
 De-duplication: a Firestore `alert_state` doc per event/item (keyed by source + external ID), written once alerted, checked before re-alerting on every 15-minute cycle.
+
+**Update:** Calendar and Notion also each got an **on-demand** path (`app/api/v1/calendar/check-upcoming`, `app/api/v1/notion/check-urgent`, wired into the voice router via `CALENDAR_TRIGGERS`/`NOTION_TRIGGERS`), added when it became clear a spoken "what's on my calendar" had nowhere to go — the proactive scan only ever pushes a notification, it never answers a live question. This on-demand path is a separate code path from the scheduled scan and **does not** use `alert_state` or any dedup — each ask is a fresh snapshot read, since a live question deserves a complete answer every time, not a filtered "only what you haven't already been told." Reusing the scan's dedup state here would actually be a bug (asking twice in one day would silently omit events the second time). See `North_Vector_Intent_and_Capability_Awareness_Plan.md` Section 6.4 for the full reasoning — this is intentional, not an inconsistency to "fix" later.
 
 ### Gmail: on-demand only, AI judgment, no periodic scan
 
@@ -74,9 +76,9 @@ Decided: every evaluated message (urgent or not) is marked surfaced with a **tim
 
 ## 9. Notion Setup
 
-Database ID: pending — Nishad is creating the database now. Property name confirmed as exactly `Urgent` (Checkbox type). The integration tied to `NOTION_API_TOKEN` must be explicitly added via the database's `•••` → `Connections` menu, or the API returns 404 even with a valid token. Once the database ID is available, it will be read from a new env var `NOTION_URGENT_DATABASE_ID` (not hardcoded, despite the original task text's suggestion — simpler to keep as config since it isn't ready at implementation time, and avoids a code change once it is).
+Resolved: database created and shared with the `NOTION_API_TOKEN` integration. Property confirmed as exactly `Urgent` (Checkbox type). `NOTION_URGENT_DATABASE_ID` is read from env (`functions/.env` for the Cloud Function, `.env.local` for local dev) rather than hardcoded. One gotcha hit and resolved during setup: the ID initially provided was the *containing page's* ID, not the database's own ID — Notion's newer API models a database as a `data_sources` child of a page, and the two IDs are different. Resolved by walking the page's block children for the `child_database` block and using its ID instead.
 
-## 9. Explicitly Out of Scope
+## 10. Explicitly Out of Scope
 
 - Any write/modify/delete/send/reply actions on Calendar, Notion, or Gmail.
 - Haptic delivery (no Band/Puck hardware yet — push notification is the stand-in).

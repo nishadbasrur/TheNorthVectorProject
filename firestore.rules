@@ -114,5 +114,16 @@ service cloud.firestore {
       allow read: if isOwner();
       allow write: if false;
     }
+
+    // voice_intent_log is a diagnostic branch-tracking log — which
+    // routeVoiceInput branch each voice input took (see
+    // North_Vector_Intent_and_Capability_Awareness_Plan.md Section 11) —
+    // used to tell whether the loose-match keyword lists for Email/
+    // Calendar/Notion are actually catching real phrasings. Written only by
+    // app/api/v1/voice/log-intent via the Admin SDK; no client write path.
+    match /voice_intent_log/{document=**} {
+      allow read: if isOwner();
+      allow write: if false;
+    }
   }
 }

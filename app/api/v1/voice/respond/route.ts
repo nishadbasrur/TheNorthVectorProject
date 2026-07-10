@@ -3,6 +3,7 @@ import { requireOwner } from "@/lib/require-owner";
 import { askClaude } from "@/lib/anthropic-client";
 import { getPreferences, formatPreferencesForPrompt } from "@/lib/preferences-store";
 import { detectAndStorePreference } from "@/lib/preference-detector";
+import { CAPABILITY_MANIFEST } from "@/lib/capability-manifest";
 
 // Backs the voice pipeline's "unrecognized" fallback — called only when the
 // rule-based classifier in lib/voice-intent-router.ts couldn't place the
@@ -33,7 +34,8 @@ export async function POST(request: Request) {
     "voice interface spec (Phase 1: 1-4 sentences, no filler). Keep the whole answer under 40 " +
     "words and make sure it's a complete, finished thought — never trail off mid-sentence. If " +
     "it sounds like something actionable that just didn't match a known pattern, say so plainly " +
-    "rather than guessing what they meant." +
+    "rather than guessing what they meant.\n\n" +
+    CAPABILITY_MANIFEST +
     formatPreferencesForPrompt(preferences);
 
   const [result] = await Promise.all([
