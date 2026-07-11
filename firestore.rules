@@ -125,5 +125,15 @@ service cloud.firestore {
       allow read: if isOwner();
       allow write: if false;
     }
+
+    // voice_sessions holds short-lived conversational turn history for
+    // multi-turn voice continuity (pronoun resolution across separate spoken
+    // utterances) — see North_Vector_JARVIS_Tool_Calling_Migration_Plan.md
+    // Section 6. Written only by app/api/v1/voice/respond via the Admin SDK;
+    // no client write path, same pattern as voice_intent_log above.
+    match /voice_sessions/{document=**} {
+      allow read: if isOwner();
+      allow write: if false;
+    }
   }
 }

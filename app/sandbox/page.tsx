@@ -3,7 +3,6 @@
 import { useCallback, useRef, useState } from "react";
 import { AppShell } from "@/components/layout/app-shell";
 import { auth } from "@/lib/firebase";
-import { routeVoiceInput } from "@/lib/voice-intent-router";
 
 type Status = "idle" | "listening" | "transcribing" | "processing" | "speaking";
 
@@ -102,11 +101,49 @@ function mergeSamples(chunks: Float32Array[]): Float32Array {
   return merged;
 }
 
+type VoiceRespondResult = { responseText: string; toolsUsed: string[] };
+
+// Calls the tool-calling voice endpoint directly — replaces
+// lib/voice-intent-router.ts's client-side rule-based dispatch, deleted as
+// part of the JARVIS tool-calling migration. sessionId carries multi-turn
+// continuity across separate spoken utterances (see
+// lib/voice-session-store.ts); the endpoint itself decides which tool(s), if
+// any, the transcript needs.
+async function askNorth(text: string, sessionId: string): Promise<VoiceRespondResult> {
+  const idToken = await auth.currentUser?.getIdToken();
+
+  const response = await fetch("/api/v1/voice/respond", {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      ...(idToken ? { Authorization: `Bearer ${idToken}` } : {}),
+    },
+    body: JSON.stringify({ text, sessionId }),
+  });
+
+  if (!response.ok) {
+    return { responseText: "I didn't catch that clearly — mind trying again?", toolsUsed: [] };
+  }
+
+  const data = await response.json();
+  const responseText =
+    typeof data.responseText === "string" ? data.responseText : "I didn't catch that clearly — mind trying again?";
+  const toolsUsed = Array.isArray(data.toolsUsed) ? data.toolsUsed : [];
+
+  return { responseText, toolsUsed };
+}
+
 export default function SandboxPage() {
   const [status, setStatus] = useState<Status>("idle");
   const [transcript, setTranscript] = useState("");
   const [responseText, setResponseText] = useState("");
+  const [toolsUsed, setToolsUsed] = useState<string[]>([]);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
+
+  // One session per page visit — see lib/voice-session-store.ts for the
+  // server-side idle expiration (10 min) that bounds how long this actually
+  // carries conversational context for.
+  const sessionIdRef = useRef<string>(crypto.randomUUID());
 
   const mediaStreamRef = useRef<MediaStream | null>(null);
   const audioContextRef = useRef<AudioContext | null>(null);
@@ -195,12 +232,14 @@ export default function SandboxPage() {
     async (text: string) => {
       setTranscript(text);
       setResponseText("");
+      setToolsUsed([]);
       setStatus("processing");
       setErrorMessage(null);
 
       try {
-        const result = await routeVoiceInput(text);
+        const result = await askNorth(text, sessionIdRef.current);
         setResponseText(result.responseText);
+        setToolsUsed(result.toolsUsed);
         await speak(result.responseText);
       } catch (error) {
         setErrorMessage(error instanceof Error ? error.message : "Something went wrong.");
@@ -369,9 +408,9 @@ export default function SandboxPage() {
         <div className="page-eyebrow">Experimental</div>
         <div className="page-title">Sandbox</div>
         <div className="page-meta">
-          Voice input prototype · tap to talk, tap again to stop → Cloud Speech-to-Text → rule-based
-          routing (task creation, decision engine, or Claude for anything unrecognized) → spoken
-          response
+          Voice input prototype · tap to talk, tap again to stop → Cloud Speech-to-Text → Claude with
+          tool-calling (checks email/calendar/Notion, creates tasks, or answers directly, as needed) →
+          spoken response
         </div>
       </div>
 
@@ -419,6 +458,15 @@ export default function SandboxPage() {
                 North
               </div>
               <div style={{ fontSize: 13, color: "var(--text-primary)", marginTop: 4 }}>{responseText}</div>
+            </div>
+          )}
+
+          {toolsUsed.length > 0 && (
+            <div style={{ marginTop: 12, textAlign: "left" }}>
+              <div style={{ fontSize: 11, color: "var(--text-faint)", textTransform: "uppercase", letterSpacing: "0.05em" }}>
+                Tools used
+              </div>
+              <div style={{ fontSize: 12, color: "var(--text-faint)", marginTop: 4 }}>{toolsUsed.join(", ")}</div>
             </div>
           )}
         </div>

@@ -47,3 +47,48 @@ export async function askClaude(params: {
     return { ok: false, error: err instanceof Error ? err.message : "Unknown error" };
   }
 }
+
+// Multi-turn, tool-aware sibling of askClaude — used by the voice
+// tool-calling loop (app/api/v1/voice/respond/route.ts), which needs the raw
+// stop_reason/content blocks to drive its own loop rather than a single
+// extracted text string. askClaude stays as-is for genuinely single-turn,
+// no-tools callers (lib/gmail-urgency.ts's per-message evaluation,
+// lib/preference-detector.ts) that shouldn't pay for this extra shape.
+// Shares the same module-level callsToday/SOFT_DAILY_CALL_CAP guard — see
+// North_Vector_JARVIS_Tool_Calling_Migration_Plan.md Section 7.2 for why
+// that cap's effective headroom needs re-examining now that one voice turn
+// can cost more than one call.
+export async function askClaudeWithTools(params: {
+  systemPrompt: string;
+  messages: Anthropic.MessageParam[];
+  tools: Anthropic.Tool[];
+  maxTokens?: number;
+}): Promise<
+  | { ok: true; stopReason: string; content: Anthropic.ContentBlock[] }
+  | { ok: false; error: string }
+> {
+  if (!process.env.ANTHROPIC_API_KEY) {
+    return { ok: false, error: "ANTHROPIC_API_KEY not configured" };
+  }
+
+  if (callsToday >= SOFT_DAILY_CALL_CAP) {
+    console.warn(`[anthropic-client] Soft daily call cap (${SOFT_DAILY_CALL_CAP}) reached — refusing call.`);
+    return { ok: false, error: "Daily call cap reached" };
+  }
+
+  try {
+    callsToday += 1;
+    const response = await client.messages.create({
+      model: MODEL,
+      max_tokens: params.maxTokens ?? 400,
+      system: params.systemPrompt,
+      messages: params.messages,
+      tools: params.tools,
+    });
+
+    return { ok: true, stopReason: response.stop_reason ?? "end_turn", content: response.content };
+  } catch (err) {
+    console.error("[anthropic-client] Tool-use API call failed:", err);
+    return { ok: false, error: err instanceof Error ? err.message : "Unknown error" };
+  }
+}
