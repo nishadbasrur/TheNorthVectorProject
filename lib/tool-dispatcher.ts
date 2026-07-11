@@ -5,6 +5,7 @@ import { getUpcomingEvents } from "./google-calendar-client";
 import { summarizeUpcomingEvents } from "./calendar-summary";
 import { getUrgentItems } from "./notion-client";
 import { checkUrgentEmails } from "./gmail-urgency";
+import { getRecentInboxMessages } from "./gmail-client";
 import { evaluateDecision } from "./decision-engine";
 
 // Single source of truth for what North can do via voice — read directly by
@@ -30,9 +31,22 @@ export const TOOL_DEFINITIONS: Anthropic.Tool[] = [
   {
     name: "check_email",
     description:
-      "Check Gmail (read-only) for anything urgent or time-sensitive right now. Only call this when " +
-      "explicitly asked about email/inbox status — never proactively, never to send or modify anything.",
-    input_schema: { type: "object", properties: {} },
+      "Check Gmail (read-only). With no query, checks for anything urgent or time-sensitive right " +
+      "now. With a query (e.g. \"anything from Dr. Bala\", \"what was my last email\"), looks up " +
+      "recent messages to answer that specific lookup question instead of judging urgency. Only " +
+      "covers the ~25 most recent inbox messages, not full-text search across the whole inbox. Only " +
+      "call this when explicitly asked about email — never proactively, never to send or modify " +
+      "anything.",
+    input_schema: {
+      type: "object",
+      properties: {
+        query: {
+          type: "string",
+          description:
+            "What to look up in the inbox (sender, subject, topic). Omit for a general urgency check.",
+        },
+      },
+    },
   },
   {
     name: "check_calendar",
@@ -94,8 +108,31 @@ async function handleCreateTask(input: { title: string }): Promise<string> {
   }
 }
 
-async function handleCheckEmail(): Promise<string> {
+// Bypasses the urgency-triage pipeline entirely (no Claude judgment call, no
+// gmail_surfaced dedup — that machinery only makes sense for "is this worth
+// interrupting someone for," not a lookup question). Hands back the raw
+// recent inbox so Claude itself can answer the actual question from real
+// sender/subject/date/snippet data. Only covers the most recent messages —
+// same limit checkUrgentEmails has always had, not real Gmail search.
+async function lookupEmails(query: string): Promise<string> {
+  const messages = await getRecentInboxMessages(25);
+
+  if (messages.length === 0) {
+    return "Inbox is empty or unreachable — nothing to look up.";
+  }
+
+  const formatted = messages
+    .map((m) => `From: ${m.from}\nDate: ${m.date}\nSubject: ${m.subject}\nSnippet: ${m.bodyText.slice(0, 300)}`)
+    .join("\n\n---\n\n");
+
+  return `Recent inbox messages (most recent first), for answering "${query}":\n\n${formatted}`;
+}
+
+async function handleCheckEmail(input: { query?: string }): Promise<string> {
   try {
+    if (input.query && input.query.trim().length > 0) {
+      return await lookupEmails(input.query.trim());
+    }
     return await checkUrgentEmails();
   } catch (error) {
     console.error("[tool-dispatcher] check_email failed:", error);
@@ -150,7 +187,7 @@ export async function executeTool(name: string, input: unknown): Promise<string>
     case "create_task":
       return handleCreateTask(input as { title: string });
     case "check_email":
-      return handleCheckEmail();
+      return handleCheckEmail(input as { query?: string });
     case "check_calendar":
       return handleCheckCalendar(input as { withinHours?: number });
     case "check_notion":

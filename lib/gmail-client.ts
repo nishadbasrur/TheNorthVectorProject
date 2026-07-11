@@ -34,6 +34,8 @@ function getGmailClient(): gmail_v1.Gmail {
 export type InboxMessage = {
   id: string;
   subject: string;
+  from: string;
+  date: string;
   bodyText: string;
 };
 
@@ -99,9 +101,11 @@ export async function getRecentInboxMessages(maxResults = 25): Promise<InboxMess
         });
 
         const subject = getHeader(full.data.payload, "Subject") || "(no subject)";
+        const from = getHeader(full.data.payload, "From") || "(unknown sender)";
+        const date = getHeader(full.data.payload, "Date") || "";
         const bodyText = extractBodyText(full.data.payload) || full.data.snippet || "";
 
-        return { id: ref.id, subject, bodyText };
+        return { id: ref.id, subject, from, date, bodyText };
       })
   );
 
