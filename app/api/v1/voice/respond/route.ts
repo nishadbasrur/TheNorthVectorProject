@@ -127,19 +127,27 @@ export async function POST(request: Request) {
   const auth = await requireOwner(request);
   if (auth instanceof NextResponse) return auth;
 
+  // Read as raw text first (rather than request.json() directly) so a parse
+  // failure can still be logged with what was actually received — a bare
+  // 400 with no context was the actual gap that turned a real client/server
+  // drift bug into three separate rounds of guessing.
+  const rawBody = await request.text();
   let body: unknown;
   try {
-    body = await request.json();
+    body = JSON.parse(rawBody);
   } catch {
+    console.warn(`[voice-respond] Rejected: invalid JSON body. Received: ${rawBody.slice(0, 500)}`);
     return NextResponse.json({ error: "Invalid JSON body." }, { status: 400 });
   }
 
   const text = (body as Record<string, unknown>)?.text;
   const sessionId = (body as Record<string, unknown>)?.sessionId;
   if (typeof text !== "string" || text.trim().length === 0) {
+    console.warn(`[voice-respond] Rejected: missing/empty 'text'. Received body: ${JSON.stringify(body).slice(0, 500)}`);
     return NextResponse.json({ error: "Missing 'text' field." }, { status: 400 });
   }
   if (typeof sessionId !== "string" || sessionId.trim().length === 0) {
+    console.warn(`[voice-respond] Rejected: missing/empty 'sessionId'. Received body: ${JSON.stringify(body).slice(0, 500)}`);
     return NextResponse.json({ error: "Missing 'sessionId' field." }, { status: 400 });
   }
 

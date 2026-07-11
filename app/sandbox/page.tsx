@@ -122,7 +122,21 @@ async function askNorth(text: string, sessionId: string): Promise<VoiceRespondRe
   });
 
   if (!response.ok) {
-    return { responseText: "I didn't catch that clearly — mind trying again?", toolsUsed: [] };
+    // Throw with the real status + server detail instead of silently
+    // returning the generic fallback string — every failure (bad request,
+    // auth failure, model error, a deleted route) used to collapse into the
+    // identical "I didn't catch that clearly" text, which made three
+    // different real bugs look indistinguishable from the transcript alone.
+    // handleTranscript's existing catch block routes this into the same
+    // errorMessage display already used for mic/auth/TTS failures.
+    let detail = "";
+    try {
+      const errorBody = await response.json();
+      detail = typeof errorBody?.error === "string" ? errorBody.error : "";
+    } catch {
+      // Response body wasn't JSON — nothing more to extract.
+    }
+    throw new Error(`Voice request failed (${response.status}${detail ? `: ${detail}` : ""}).`);
   }
 
   const data = await response.json();
