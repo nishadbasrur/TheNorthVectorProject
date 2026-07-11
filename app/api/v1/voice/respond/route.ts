@@ -1,4 +1,4 @@
-import { NextResponse } from "next/server";
+import { NextResponse, after } from "next/server";
 import type Anthropic from "@anthropic-ai/sdk";
 import { requireOwner } from "@/lib/require-owner";
 import { askClaudeWithTools } from "@/lib/anthropic-client";
@@ -143,7 +143,10 @@ export async function POST(request: Request) {
     return NextResponse.json({ error: "Missing 'sessionId' field." }, { status: 400 });
   }
 
+  const requestStart = performance.now();
+
   const [preferences, priorTurns] = await Promise.all([getPreferences(), loadSession(sessionId)]);
+  console.log(`[voice-respond] Session loaded (${priorTurns.length} prior turn(s)) in ${Math.round(performance.now() - requestStart)}ms`);
 
   detectAndStorePreference(text); // fire-and-forget, unchanged from the old router's behavior
 
@@ -157,16 +160,22 @@ export async function POST(request: Request) {
   let finalText: string | null = null;
 
   for (let i = 0; i < MAX_TOOL_ITERATIONS; i++) {
+    const callStart = performance.now();
     const result = await askClaudeWithTools({
       systemPrompt,
       messages,
       tools: TOOL_DEFINITIONS,
-      maxTokens: 150, // was 400 — 60 words ≈ 80 tokens; 400 gave the model
-                       // enormous room to ignore the word cap and still
-                       // finish a "complete thought." This is the hard
-                       // backstop the instruction alone proved insufficient
-                       // for.
+      maxTokens: 300, // was 150, was 400 originally — 150 turned out tight
+                       // enough to truncate mid-tool-call on some turns
+                       // (stop_reason "max_tokens" instead of "tool_use",
+                       // no completed text block, finalText came back
+                       // null). 300 keeps a real backstop against the model
+                       // ignoring the 60-word/no-markdown rule while giving
+                       // tool-calling turns enough room to actually finish.
     });
+    console.log(
+      `[voice-respond] Claude call ${i + 1}: stopReason=${result.ok ? result.stopReason : "error"} in ${Math.round(performance.now() - callStart)}ms`
+    );
 
     if (!result.ok) {
       return NextResponse.json({ error: result.error }, { status: 502 });
@@ -184,12 +193,16 @@ export async function POST(request: Request) {
       (b): b is Anthropic.ToolUseBlock => b.type === "tool_use"
     );
 
+    const toolStart = performance.now();
     const toolResults: Anthropic.ToolResultBlockParam[] = await Promise.all(
       toolUseBlocks.map(async (block) => {
         toolsUsed.push(block.name);
         const content = await executeTool(block.name, block.input);
         return { type: "tool_result" as const, tool_use_id: block.id, content };
       })
+    );
+    console.log(
+      `[voice-respond] Tool execution (${toolUseBlocks.map((b) => b.name).join(", ")}) in ${Math.round(performance.now() - toolStart)}ms`
     );
 
     messages.push({ role: "user", content: toolResults });
@@ -202,7 +215,23 @@ export async function POST(request: Request) {
     { role: "user", content: text },
     { role: "assistant", content: responseText },
   ];
-  await saveSession(sessionId, updatedTurns);
+
+  // Deferred via Next.js's after(), not a bare unawaited call — this is a
+  // serverless deploy target (see lib/voice-session-store.ts's reasoning on
+  // why session state can't be in-memory), and an un-awaited promise can be
+  // killed the instant the response is sent, which would silently drop the
+  // session write and reintroduce exactly the lost-context bug sessionId
+  // was built to fix. after() keeps the invocation alive long enough to
+  // finish without making the caller wait for it.
+  after(async () => {
+    try {
+      await saveSession(sessionId, updatedTurns);
+    } catch (error) {
+      console.error("[voice-respond] saveSession failed:", error);
+    }
+  });
+
+  console.log(`[voice-respond] Total request time: ${Math.round(performance.now() - requestStart)}ms`);
 
   return NextResponse.json({ responseText, toolsUsed });
 }
