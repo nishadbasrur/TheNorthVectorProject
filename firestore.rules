@@ -87,10 +87,11 @@ service cloud.firestore {
     }
 
     // gmail_surfaced de-duplicates the on-demand Gmail urgency check (see
-    // app/api/v1/gmail/check-urgent) — one doc per evaluated message id
-    // with a surfacedAt timestamp, so the same message isn't re-evaluated
-    // within the TTL window. Written directly by that trusted server
-    // route via the Admin SDK; no client write path.
+    // lib/gmail-urgency.ts, invoked by the voice tool dispatcher's
+    // check_email tool) — one doc per evaluated message id with a
+    // surfacedAt timestamp, so the same message isn't re-evaluated within
+    // the TTL window. Written directly by that trusted server code via the
+    // Admin SDK; no client write path.
     match /gmail_surfaced/{document=**} {
       allow read: if isOwner();
       allow write: if false;
@@ -115,22 +116,11 @@ service cloud.firestore {
       allow write: if false;
     }
 
-    // voice_intent_log is a diagnostic branch-tracking log — which
-    // routeVoiceInput branch each voice input took (see
-    // North_Vector_Intent_and_Capability_Awareness_Plan.md Section 11) —
-    // used to tell whether the loose-match keyword lists for Email/
-    // Calendar/Notion are actually catching real phrasings. Written only by
-    // app/api/v1/voice/log-intent via the Admin SDK; no client write path.
-    match /voice_intent_log/{document=**} {
-      allow read: if isOwner();
-      allow write: if false;
-    }
-
     // voice_sessions holds short-lived conversational turn history for
     // multi-turn voice continuity (pronoun resolution across separate spoken
     // utterances) — see North_Vector_JARVIS_Tool_Calling_Migration_Plan.md
     // Section 6. Written only by app/api/v1/voice/respond via the Admin SDK;
-    // no client write path, same pattern as voice_intent_log above.
+    // no client write path.
     match /voice_sessions/{document=**} {
       allow read: if isOwner();
       allow write: if false;
