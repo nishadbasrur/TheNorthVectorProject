@@ -4,6 +4,7 @@ import { useCallback, useRef, useState } from "react";
 import { AppShell } from "@/components/layout/app-shell";
 import { auth } from "@/lib/firebase";
 import { useWakeWord } from "./use-wake-word";
+import { HudMap, type MapVisual } from "./hud-map";
 
 // TEMPORARY — lets Nishad grab a real ID token from the browser console for
 // manual curl testing of owner-gated endpoints (e.g. triggerSynthesisScan),
@@ -206,7 +207,19 @@ const HUD_PARTICLES = [
   { x: 4, y: 40, size: 1.5, blur: 1.5 },
 ];
 
-type VoiceRespondResult = { responseText: string; toolsUsed: string[] };
+type VoiceRespondResult = { responseText: string; toolsUsed: string[]; visual: MapVisual | null };
+
+function isMapVisual(value: unknown): value is MapVisual {
+  const v = value as Record<string, unknown> | null | undefined;
+  return (
+    !!v &&
+    v.type === "map" &&
+    typeof v.location === "string" &&
+    typeof v.lat === "number" &&
+    typeof v.lon === "number" &&
+    typeof v.zoom === "number"
+  );
+}
 
 // Calls the tool-calling voice endpoint directly. sessionId carries
 // multi-turn continuity across separate spoken utterances (see
@@ -239,8 +252,9 @@ async function askNorth(text: string, sessionId: string): Promise<VoiceRespondRe
   const responseText =
     typeof data.responseText === "string" ? data.responseText : "I didn't catch that clearly — mind trying again?";
   const toolsUsed = Array.isArray(data.toolsUsed) ? data.toolsUsed : [];
+  const visual = isMapVisual(data.visual) ? data.visual : null;
 
-  return { responseText, toolsUsed };
+  return { responseText, toolsUsed, visual };
 }
 
 export default function SandboxPage() {
@@ -251,6 +265,17 @@ export default function SandboxPage() {
   const [responseText, setResponseText] = useState("");
   const [toolsUsed, setToolsUsed] = useState<string[]>([]);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
+  // Transcript/response/tools-used readouts are debug detail, not something
+  // the finished product should show by default — but they're what caught
+  // nearly every real bug during development (truncated responses, stale
+  // caches, missing tool calls), so keep them one tap away rather than
+  // deleting the capability outright.
+  const [showTranscript, setShowTranscript] = useState(false);
+  // "What's currently on screen" — set whenever show_map runs, cleared on
+  // manual dismiss or going dormant. Server-side mirror lives in
+  // lib/voice-session-store.ts's VisualState so a follow-up "zoom in" can
+  // act on it without the frontend having to resend the current view.
+  const [visual, setVisual] = useState<MapVisual | null>(null);
 
   // One session per page visit — see lib/voice-session-store.ts for the
   // server-side idle expiration (10 min) that bounds how long this actually
@@ -430,6 +455,7 @@ export default function SandboxPage() {
     audioRef.current?.pause();
     setMode("dormant");
     updateStatus("idle");
+    setVisual(null); // map (if any) doesn't survive back to the resting orb-only screen
   }, [clearInactivityTimer, teardownRecording, stopBargeInMonitor, updateStatus]);
 
   const resetInactivityTimer = useCallback(() => {
@@ -512,6 +538,7 @@ export default function SandboxPage() {
         const result = await askNorth(text, sessionIdRef.current);
         setResponseText(result.responseText);
         setToolsUsed(result.toolsUsed);
+        if (result.visual) setVisual(result.visual); // only ever set, never cleared by a non-map turn — see hud-map close button / goDormant for the ways it goes away
         await speak(result.responseText);
       } catch (error) {
         setErrorMessage(error instanceof Error ? error.message : "Something went wrong.");
@@ -795,17 +822,9 @@ export default function SandboxPage() {
 
   return (
     <AppShell>
-      <div className="page-header">
-        <div className="page-eyebrow">Experimental</div>
-        <div className="page-title">Sandbox</div>
-        <div className="page-meta">
-          Voice input prototype · say &quot;{WAKE_WORD_DISPLAY_NAME}&quot; (placeholder for &quot;Hey
-          North&quot; — see code) to wake, talk freely, say &quot;go to sleep, North&quot; or pause 75s to
-          end → Cloud Speech-to-Text → Claude with tool-calling → spoken response
-        </div>
-      </div>
+      <div className={`hud-page ${visual ? "hud-page-map-active" : ""}`}>
+        {visual && <HudMap visual={visual} onClose={() => setVisual(null)} />}
 
-      <div className="hud-page">
         <div className="hud-ruler">
           {Array.from({ length: 48 }, (_, i) => (
             <div key={i} className="hud-ruler-tick" />
@@ -866,32 +885,40 @@ export default function SandboxPage() {
           </div>
 
           <div className="hud-panel">
-            <div className="hud-warning">
-              Experimental — voice recognition quality and routing accuracy are not guaranteed
-            </div>
-
             {errorMessage && <div className="hud-error">{errorMessage}</div>}
 
-            {transcript && (
-              <div className="hud-readout">
-                <div className="hud-readout-label">You said</div>
-                <div className="hud-readout-text">{transcript}</div>
-              </div>
+            {showTranscript && (
+              <>
+                {transcript && (
+                  <div className="hud-readout">
+                    <div className="hud-readout-label">You said</div>
+                    <div className="hud-readout-text">{transcript}</div>
+                  </div>
+                )}
+
+                {responseText && (
+                  <div className="hud-readout">
+                    <div className="hud-readout-label">North</div>
+                    <div className="hud-readout-text">{responseText}</div>
+                  </div>
+                )}
+
+                {toolsUsed.length > 0 && (
+                  <div className="hud-readout">
+                    <div className="hud-readout-label">Tools used</div>
+                    <div className="hud-readout-text">{toolsUsed.join(", ")}</div>
+                  </div>
+                )}
+              </>
             )}
 
-            {responseText && (
-              <div className="hud-readout">
-                <div className="hud-readout-label">North</div>
-                <div className="hud-readout-text">{responseText}</div>
-              </div>
-            )}
-
-            {toolsUsed.length > 0 && (
-              <div className="hud-readout">
-                <div className="hud-readout-label">Tools used</div>
-                <div className="hud-readout-text">{toolsUsed.join(", ")}</div>
-              </div>
-            )}
+            <button
+              type="button"
+              className="hud-transcript-toggle"
+              onClick={() => setShowTranscript((v) => !v)}
+            >
+              {showTranscript ? "Hide details" : "Details"}
+            </button>
           </div>
         </div>
       </div>

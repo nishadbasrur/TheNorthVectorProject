@@ -15,6 +15,8 @@ import { evaluateDecision } from "./decision-engine";
 import { assembleSynthesisContext } from "./synthesis-context";
 import { runSynthesis } from "./synthesis-engine";
 import { deliveryChannel } from "./synthesis-priority";
+import { geocodeLocation } from "./map-client";
+import { loadVisualState, saveVisualState, type VisualState } from "./voice-session-store";
 
 // Single source of truth for what North can do via voice — read directly by
 // Claude as tool schemas, not maintained separately as prose (that
@@ -193,6 +195,36 @@ export const TOOL_DEFINITIONS: Anthropic.Tool[] = [
       "'anything I should know about', 'catch me up', or 'what's going on' — not for specific " +
       "single-source questions, which have their own tools.",
     input_schema: { type: "object", properties: {} },
+  },
+  {
+    name: "show_map",
+    description:
+      "Show an interactive map on screen, or adjust the map that's already showing. Use for any " +
+      "request to see/view a place (\"show me a map of Boston\") — the map displays visually, don't " +
+      "also try to describe the location in words. Also use this for follow-up adjustments to a map " +
+      "already on screen (\"zoom in\", \"zoom in on the west side\", \"zoom out\", \"pan to downtown\") " +
+      "by omitting location and setting zoomDelta/zoomLevel, or by giving a new location to recenter " +
+      "on. If nothing is currently showing and no location is given, this fails — ask what place to " +
+      "show first.",
+    input_schema: {
+      type: "object",
+      properties: {
+        location: {
+          type: "string",
+          description:
+            "Place name to show or recenter on, e.g. \"Boston\", \"the west side of Chicago\". Omit " +
+            "for a pure zoom/pan adjustment to the currently displayed map.",
+        },
+        zoomDelta: {
+          type: "number",
+          description: "Relative zoom change from the current view, e.g. 2 to zoom in, -1 to zoom out.",
+        },
+        zoomLevel: {
+          type: "number",
+          description: "Absolute zoom level 2-18 (higher = closer), if a specific zoom is implied.",
+        },
+      },
+    },
   },
 ];
 
@@ -402,37 +434,107 @@ async function handleGetProactiveUpdates(): Promise<string> {
   }
 }
 
-export async function executeTool(name: string, input: unknown): Promise<string> {
+const MAP_DEFAULT_ZOOM = 12;
+const MAP_MIN_ZOOM = 2;
+const MAP_MAX_ZOOM = 18;
+
+// Reads/writes "current visual" state (lib/voice-session-store.ts) so a
+// bare "zoom in" — no location given — can act on whatever's already
+// showing, not just handle a fresh "show me X" request. The frontend reads
+// the returned visual field directly off the API response (see
+// app/api/v1/voice/respond/route.ts) to actually render the map; the
+// stringified copy below is only what Claude itself sees to narrate the
+// response.
+async function handleShowMap(
+  input: { location?: string; zoomDelta?: number; zoomLevel?: number },
+  sessionId: string
+): Promise<{ text: string; visual?: VisualState }> {
+  try {
+    const current = await loadVisualState(sessionId);
+
+    let lat: number;
+    let lon: number;
+    let location: string;
+
+    if (input.location && input.location.trim().length > 0) {
+      const geocoded = await geocodeLocation(input.location.trim());
+      if (!geocoded) {
+        return { text: `Couldn't find a location called "${input.location}" — ask for a more specific place name.` };
+      }
+      lat = geocoded.lat;
+      lon = geocoded.lon;
+      location = geocoded.displayName;
+    } else if (current) {
+      lat = current.lat;
+      lon = current.lon;
+      location = current.location;
+    } else {
+      return { text: "No map is currently showing and no location was given — ask which place to show." };
+    }
+
+    let zoom = current?.location === location ? current.zoom : MAP_DEFAULT_ZOOM;
+    if (typeof input.zoomLevel === "number") zoom = input.zoomLevel;
+    else if (typeof input.zoomDelta === "number") zoom = (current?.zoom ?? MAP_DEFAULT_ZOOM) + input.zoomDelta;
+    zoom = Math.max(MAP_MIN_ZOOM, Math.min(MAP_MAX_ZOOM, zoom));
+
+    const visual: VisualState = { type: "map", location, lat, lon, zoom };
+    await saveVisualState(sessionId, visual);
+
+    return { text: `Showing ${location} on the map.`, visual };
+  } catch (error) {
+    console.error("[tool-dispatcher] show_map failed:", error);
+    return { text: "Showing the map failed — tell Nishad to try again." };
+  }
+}
+
+// Returns { text, visual } uniformly — text is what goes back to Claude as
+// the tool_result content, visual is only ever set by show_map and is what
+// app/api/v1/voice/respond/route.ts lifts into the API response for the
+// frontend to actually render. sessionId is unused by every handler except
+// show_map (it's the only one with "current visual" state to read/write),
+// but threading it through executeTool uniformly is simpler than a
+// show_map-only special case at the call site.
+export async function executeTool(
+  name: string,
+  input: unknown,
+  sessionId: string
+): Promise<{ text: string; visual?: VisualState }> {
   switch (name) {
     case "create_task":
-      return handleCreateTask(input as { title: string });
+      return { text: await handleCreateTask(input as { title: string }) };
     case "check_email":
-      return handleCheckEmail(input as { query?: string });
+      return { text: await handleCheckEmail(input as { query?: string }) };
     case "search_email":
-      return handleSearchEmail(input as { query: string });
+      return { text: await handleSearchEmail(input as { query: string }) };
     case "send_email":
-      return handleSendEmail(input as { to: string; subject: string; body: string });
+      return { text: await handleSendEmail(input as { to: string; subject: string; body: string }) };
     case "delete_email":
-      return handleDeleteEmail(input as { messageId: string });
+      return { text: await handleDeleteEmail(input as { messageId: string }) };
     case "check_calendar":
-      return handleCheckCalendar(input as { withinHours?: number });
+      return { text: await handleCheckCalendar(input as { withinHours?: number }) };
     case "create_calendar_event":
-      return handleCreateCalendarEvent(
-        input as { title: string; start: string; end: string; attendees?: string[] }
-      );
+      return {
+        text: await handleCreateCalendarEvent(
+          input as { title: string; start: string; end: string; attendees?: string[] }
+        ),
+      };
     case "update_calendar_event":
-      return handleUpdateCalendarEvent(
-        input as { eventId: string; title?: string; start?: string; end?: string }
-      );
+      return {
+        text: await handleUpdateCalendarEvent(
+          input as { eventId: string; title?: string; start?: string; end?: string }
+        ),
+      };
     case "delete_calendar_event":
-      return handleDeleteCalendarEvent(input as { eventId: string });
+      return { text: await handleDeleteCalendarEvent(input as { eventId: string }) };
     case "check_notion":
-      return handleCheckNotion();
+      return { text: await handleCheckNotion() };
     case "get_decision_recommendation":
-      return handleGetDecisionRecommendation(input as { question: string });
+      return { text: await handleGetDecisionRecommendation(input as { question: string }) };
     case "get_proactive_updates":
-      return handleGetProactiveUpdates();
+      return { text: await handleGetProactiveUpdates() };
+    case "show_map":
+      return handleShowMap(input as { location?: string; zoomDelta?: number; zoomLevel?: number }, sessionId);
     default:
-      return `Unknown tool: ${name}`;
+      return { text: `Unknown tool: ${name}` };
   }
 }

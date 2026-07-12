@@ -3,46 +3,19 @@ import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { useEffect, useState } from "react";
 
+// Strategy/Execution/Intelligence/Finance are deliberately not listed here —
+// hidden from navigation, not removed. Their routes, data, and the tools
+// that write to them (e.g. create_task -> /tasks) are untouched; typing the
+// URL directly still reaches them. See
+// North_Vector_Sandbox_First_Simplification_Plan.md Section 1.2 — this is a
+// UI-only condensation, not a feature removal.
 const navGroups = [
   {
     label: "Command",
     items: [
+      { label: "North", href: "/sandbox", icon: "○" },
       { label: "Dashboard", href: "/dashboard", icon: "⊞" },
       { label: "Weekly Review", href: "/weekly-review", icon: "◈" },
-    ],
-  },
-  {
-    label: "Strategy",
-    items: [
-      { label: "Goals", href: "/goals", icon: "◎" },
-      { label: "Projects", href: "/projects", icon: "▦" },
-      { label: "Plans", href: "/plans", icon: "≡" },
-      { label: "Decisions", href: "/decisions", icon: "◇" },
-    ],
-  },
-  {
-    label: "Execution",
-    items: [
-      { label: "Tasks", href: "/tasks", icon: "✓" },
-      { label: "Reviews", href: "/reviews", icon: "◉" },
-    ],
-  },
-  {
-    label: "Intelligence",
-    items: [
-      { label: "Memories", href: "/memories", icon: "◐" },
-    ],
-  },
-  {
-    label: "Finance",
-    items: [
-      { label: "Accounts", href: "/accounts", icon: "$" },
-    ],
-  },
-  {
-    label: "Experimental",
-    items: [
-      { label: "Sandbox (beta)", href: "/sandbox", icon: "⚠" },
     ],
   },
 ];
@@ -89,7 +62,7 @@ function UserChip() {
         <div className="user-avatar">NB</div>
         <div>
           <div className="user-name">Nishad Basrur</div>
-          <div className="user-role">Pre-Med · UConn 2029</div>
+          <div className="user-role">Pre-Med · UConn 2030</div>
         </div>
       </Link>
     </div>

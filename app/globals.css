@@ -874,6 +874,84 @@ html, body {
   align-items: center;
   justify-content: center;
   padding: 64px 24px 40px;
+  transition: transform 0.3s ease;
+}
+
+/* show_map takeover: map fills the screen, the orb shrinks into a small
+   still-tappable widget in the bottom-right corner rather than disappearing
+   — barge-in/stop-listening/escape-to-dormant all keep working through it. */
+.hud-page-map-active .hud-ruler {
+  display: none;
+}
+
+.hud-page-map-active .hud-stage {
+  position: fixed;
+  bottom: 20px;
+  right: 20px;
+  z-index: 40;
+  padding: 0;
+  transform: scale(0.4);
+  transform-origin: bottom right;
+}
+
+.hud-page-map-active .hud-panel {
+  display: none;
+}
+
+.hud-map-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 20;
+  background: #04070f;
+}
+
+.hud-map-canvas {
+  position: absolute;
+  inset: 0;
+}
+
+/* Leaflet's default control chrome (attribution) is styled for a light
+   basemap by default — dim it down so it doesn't fight the app's dark HUD
+   look. This file is already plain global CSS (not CSS Modules), so no
+   :global() wrapper needed to reach into Leaflet's own markup. */
+.hud-map-canvas .leaflet-control-attribution {
+  background: rgba(4, 7, 15, 0.7);
+  color: rgba(255, 255, 255, 0.5);
+}
+
+.hud-map-label {
+  position: absolute;
+  top: 20px;
+  left: 20px;
+  z-index: 21;
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 12px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--hud-cyan);
+  background: rgba(4, 7, 15, 0.7);
+  padding: 6px 12px;
+  border: 1px solid rgba(58, 214, 255, 0.3);
+  border-radius: 4px;
+}
+
+.hud-map-close {
+  position: absolute;
+  top: 16px;
+  right: 16px;
+  z-index: 21;
+  width: 32px;
+  height: 32px;
+  border-radius: 50%;
+  border: 1px solid rgba(58, 214, 255, 0.3);
+  background: rgba(4, 7, 15, 0.7);
+  color: var(--hud-cyan);
+  font-size: 14px;
+  cursor: pointer;
+}
+
+.hud-map-close:hover {
+  background: rgba(58, 214, 255, 0.15);
 }
 
 .hud-ring-wrap {
@@ -1113,14 +1191,22 @@ html, body {
   gap: 14px;
 }
 
-.hud-warning {
+.hud-transcript-toggle {
+  align-self: center;
   font-family: 'JetBrains Mono', monospace;
   font-size: 10px;
-  color: var(--status-warning);
+  color: var(--hud-cyan);
   text-transform: uppercase;
-  letter-spacing: 0.1em;
-  text-align: center;
-  opacity: 0.8;
+  letter-spacing: 0.14em;
+  opacity: 0.55;
+  background: none;
+  border: none;
+  cursor: pointer;
+  padding: 4px 8px;
+}
+
+.hud-transcript-toggle:hover {
+  opacity: 0.9;
 }
 
 .hud-readout {

@@ -4,6 +4,12 @@ import { FieldValue } from "firebase-admin/firestore";
 
 export type VoiceTurn = { role: "user" | "assistant"; content: string };
 
+// "What's currently on screen," distinct from the turn history above — a
+// follow-up like "zoom in" needs to know a map is showing and where, which
+// isn't answerable from the spoken conversation text alone. Only one shape
+// today (map); a discriminated union once a second visual type exists.
+export type VisualState = { type: "map"; location: string; lat: number; lon: number; zoom: number };
+
 // Firestore-backed, not in-memory: Next.js API routes on serverless hosting
 // (Firebase App Hosting, this project's deploy target) are not guaranteed to
 // share memory across invocations/instances, so an in-memory session map
@@ -35,8 +41,35 @@ export async function loadSession(sessionId: string): Promise<VoiceTurn[]> {
 export async function saveSession(sessionId: string, turns: VoiceTurn[]): Promise<void> {
   const trimmed = turns.slice(-MAX_TURNS_KEPT);
 
-  await adminDb.collection("voice_sessions").doc(sessionId).set({
-    turns: trimmed,
-    updatedAt: FieldValue.serverTimestamp(),
-  });
+  // merge: true — without it, this overwrites the whole doc and would wipe
+  // out `visual` (see below) on every turn save, including within the same
+  // request that just wrote it via saveVisualState.
+  await adminDb.collection("voice_sessions").doc(sessionId).set(
+    {
+      turns: trimmed,
+      updatedAt: FieldValue.serverTimestamp(),
+    },
+    { merge: true }
+  );
+}
+
+export async function loadVisualState(sessionId: string): Promise<VisualState | null> {
+  const doc = await adminDb.collection("voice_sessions").doc(sessionId).get();
+  if (!doc.exists) return null;
+
+  const data = doc.data();
+  const updatedAtMs = data?.updatedAt?.toMillis?.() ?? 0;
+  if (Date.now() - updatedAtMs > SESSION_IDLE_TTL_MS) return null; // expired — treat as fresh
+
+  return (data?.visual as VisualState | undefined) ?? null;
+}
+
+export async function saveVisualState(sessionId: string, visual: VisualState | null): Promise<void> {
+  await adminDb.collection("voice_sessions").doc(sessionId).set(
+    {
+      visual,
+      updatedAt: FieldValue.serverTimestamp(),
+    },
+    { merge: true }
+  );
 }

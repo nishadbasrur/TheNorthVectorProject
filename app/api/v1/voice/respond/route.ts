@@ -4,7 +4,7 @@ import { requireOwner } from "@/lib/require-owner";
 import { askClaudeWithTools } from "@/lib/anthropic-client";
 import { getPreferences, formatPreferencesForPrompt } from "@/lib/preferences-store";
 import { detectAndStorePreference } from "@/lib/preference-detector";
-import { loadSession, saveSession, type VoiceTurn } from "@/lib/voice-session-store";
+import { loadSession, saveSession, type VoiceTurn, type VisualState } from "@/lib/voice-session-store";
 import { TOOL_DEFINITIONS, executeTool } from "@/lib/tool-dispatcher";
 
 // Backs the entire voice pipeline: real Anthropic tool-calling replaces the
@@ -48,10 +48,13 @@ function buildSystemPrompt(preferences: Awaited<ReturnType<typeof getPreferences
     "60 words total, as a complete finished thought — never trail off mid-sentence, never write " +
     "the kind of answer you'd put in a document.\n\n" +
 
-    "You have tools for checking email, calendar, and Notion, creating tasks, and getting a " +
-    "decision recommendation. Call a tool whenever the request genuinely needs current " +
-    "information or an action you have a tool for — don't guess or answer from stale assumptions " +
-    "when a tool can give a real answer. If get_decision_recommendation comes back with " +
+    "You have tools for checking/sending/searching/deleting email, checking/creating/updating/" +
+    "deleting calendar events, checking Notion, creating tasks, showing an interactive map on " +
+    "screen, and getting a decision recommendation. Call a tool whenever the request genuinely " +
+    "needs current information or an action you have a tool for — don't guess or answer from " +
+    "stale assumptions when a tool can give a real answer. When show_map runs, the map itself is " +
+    "the answer — keep your spoken response to a short acknowledgment (\"Here's Boston, sir\"), " +
+    "don't also describe the place in words. If get_decision_recommendation comes back with " +
     "\"specific\": false, give a real, honest opinion yourself rather than deflecting — this is " +
     "advisory only, you never move money or take financial action without explicit confirmation " +
     "(that boundary is the one exception to acting autonomously). If something's genuinely " +
@@ -166,6 +169,7 @@ export async function POST(request: Request) {
 
   const toolsUsed: string[] = [];
   let finalText: string | null = null;
+  let visual: VisualState | undefined; // set only if show_map ran — last call wins if it ran more than once
 
   for (let i = 0; i < MAX_TOOL_ITERATIONS; i++) {
     const callStart = performance.now();
@@ -205,8 +209,9 @@ export async function POST(request: Request) {
     const toolResults: Anthropic.ToolResultBlockParam[] = await Promise.all(
       toolUseBlocks.map(async (block) => {
         toolsUsed.push(block.name);
-        const content = await executeTool(block.name, block.input);
-        return { type: "tool_result" as const, tool_use_id: block.id, content };
+        const result = await executeTool(block.name, block.input, sessionId);
+        if (result.visual) visual = result.visual;
+        return { type: "tool_result" as const, tool_use_id: block.id, content: result.text };
       })
     );
     console.log(
@@ -241,5 +246,5 @@ export async function POST(request: Request) {
 
   console.log(`[voice-respond] Total request time: ${Math.round(performance.now() - requestStart)}ms`);
 
-  return NextResponse.json({ responseText, toolsUsed });
+  return NextResponse.json({ responseText, toolsUsed, visual });
 }
