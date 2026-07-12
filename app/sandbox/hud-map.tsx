@@ -3,7 +3,14 @@
 import { useEffect, useRef } from "react";
 import "leaflet/dist/leaflet.css";
 
-export type MapVisual = { type: "map"; location: string; lat: number; lon: number; zoom: number };
+export type MapVisual = {
+  type: "map";
+  location: string;
+  lat: number;
+  lon: number;
+  zoom: number;
+  highlightFootprint?: [number, number][];
+};
 
 // Leaflet touches `window`/`document` at import time in places, so it's
 // dynamically imported inside the effect below rather than statically at
@@ -15,6 +22,7 @@ export function HudMap({ visual, onClose }: { visual: MapVisual; onClose: () => 
   const containerRef = useRef<HTMLDivElement | null>(null);
   const mapRef = useRef<import("leaflet").Map | null>(null);
   const markerRef = useRef<import("leaflet").CircleMarker | null>(null);
+  const highlightRef = useRef<import("leaflet").Polygon | null>(null);
 
   useEffect(() => {
     let cancelled = false;
@@ -52,6 +60,15 @@ export function HudMap({ visual, onClose }: { visual: MapVisual; onClose: () => 
 
       mapRef.current = map;
       markerRef.current = marker;
+
+      if (visual.highlightFootprint) {
+        highlightRef.current = L.polygon(visual.highlightFootprint, {
+          color: "#3ad6ff",
+          weight: 2.5,
+          fillColor: "#3ad6ff",
+          fillOpacity: 0.18,
+        }).addTo(map);
+      }
     });
 
     return () => {
@@ -59,9 +76,11 @@ export function HudMap({ visual, onClose }: { visual: MapVisual; onClose: () => 
       mapRef.current?.remove();
       mapRef.current = null;
       markerRef.current = null;
+      highlightRef.current = null;
     };
-    // Map is created once per mount; location/zoom updates are handled by
-    // the effect below via setView/setLatLng instead of recreating it.
+    // Map is created once per mount; location/zoom/highlight updates are
+    // handled by the effects below via setView/setLatLng/setLatLngs instead
+    // of recreating the whole map.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
@@ -72,6 +91,31 @@ export function HudMap({ visual, onClose }: { visual: MapVisual; onClose: () => 
     map.setView([visual.lat, visual.lon], visual.zoom);
     marker.setLatLng([visual.lat, visual.lon]);
   }, [visual.lat, visual.lon, visual.zoom]);
+
+  useEffect(() => {
+    const map = mapRef.current;
+    if (!map) return; // still loading — the mount effect's initial draw already matches
+
+    if (highlightRef.current) {
+      highlightRef.current.remove();
+      highlightRef.current = null;
+    }
+
+    if (visual.highlightFootprint) {
+      import("leaflet").then((L) => {
+        if (!mapRef.current) return; // unmounted while the dynamic import was in flight
+        highlightRef.current = L.polygon(visual.highlightFootprint!, {
+          color: "#3ad6ff",
+          weight: 2.5,
+          fillColor: "#3ad6ff",
+          fillOpacity: 0.18,
+        }).addTo(mapRef.current);
+      });
+    }
+    // visual.highlightFootprint is an array — compared by reference here,
+    // which is fine since handleHighlightBuilding/handleShowMap always
+    // produce a fresh array rather than mutating one in place.
+  }, [visual.highlightFootprint]);
 
   return (
     <div className="hud-map-overlay">

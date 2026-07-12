@@ -15,8 +15,9 @@ import { evaluateDecision } from "./decision-engine";
 import { assembleSynthesisContext } from "./synthesis-context";
 import { runSynthesis } from "./synthesis-engine";
 import { deliveryChannel } from "./synthesis-priority";
-import { geocodeLocation } from "./map-client";
+import { geocodeLocation, getBuildingFootprint } from "./map-client";
 import { loadVisualState, saveVisualState, type VisualState } from "./voice-session-store";
+import { logCapabilityGap } from "./capability-gap-store";
 
 // Single source of truth for what North can do via voice — read directly by
 // Claude as tool schemas, not maintained separately as prose (that
@@ -224,6 +225,36 @@ export const TOOL_DEFINITIONS: Anthropic.Tool[] = [
           description: "Absolute zoom level 2-18 (higher = closer), if a specific zoom is implied.",
         },
       },
+    },
+  },
+  {
+    name: "highlight_building",
+    description:
+      "Outline/highlight the building or structure at the center of the map that's currently showing " +
+      "— use for \"illuminate/highlight/outline the building\", \"show me its structure\", \"trace the " +
+      "outline\", etc. Requires a map already on screen (call show_map first if nothing is showing). " +
+      "Not every location has a distinct building footprint in the map data (parks, open areas, " +
+      "natural landmarks) — if none is found, say so rather than pretending it worked.",
+    input_schema: { type: "object", properties: {} },
+  },
+  {
+    name: "note_capability_gap",
+    description:
+      "Log a request that's genuinely outside your current tools — instead of just declining, this " +
+      "flags it for Nishad to review and build later. Call this whenever a request needs a real " +
+      "action or capability you don't have a tool for (not a question answerable from general " +
+      "knowledge or reasoning alone). Still tell Nishad plainly in your spoken reply that you can't " +
+      "do it yet and that you've flagged it — this doesn't grant the capability immediately.",
+    input_schema: {
+      type: "object",
+      properties: {
+        request: { type: "string", description: "What was asked, verbatim or lightly cleaned up." },
+        capability: {
+          type: "string",
+          description: "Short description of the missing capability, e.g. \"highlight a building's interior layout on the map\".",
+        },
+      },
+      required: ["request", "capability"],
     },
   },
 ];
@@ -472,18 +503,63 @@ async function handleShowMap(
       return { text: "No map is currently showing and no location was given — ask which place to show." };
     }
 
-    let zoom = current?.location === location ? current.zoom : MAP_DEFAULT_ZOOM;
+    const sameLocation = current?.location === location;
+
+    let zoom = sameLocation ? current.zoom : MAP_DEFAULT_ZOOM;
     if (typeof input.zoomLevel === "number") zoom = input.zoomLevel;
     else if (typeof input.zoomDelta === "number") zoom = (current?.zoom ?? MAP_DEFAULT_ZOOM) + input.zoomDelta;
     zoom = Math.max(MAP_MIN_ZOOM, Math.min(MAP_MAX_ZOOM, zoom));
 
-    const visual: VisualState = { type: "map", location, lat, lon, zoom };
+    // A pure zoom/pan adjustment (no new location) keeps whatever building
+    // highlight_building already outlined; recentering to a genuinely new
+    // place drops it — a highlight from the last location doesn't apply
+    // once the map's moved on.
+    const visual: VisualState = {
+      type: "map",
+      location,
+      lat,
+      lon,
+      zoom,
+      ...(sameLocation && current?.highlightFootprint ? { highlightFootprint: current.highlightFootprint } : {}),
+    };
     await saveVisualState(sessionId, visual);
 
     return { text: `Showing ${location} on the map.`, visual };
   } catch (error) {
     console.error("[tool-dispatcher] show_map failed:", error);
     return { text: "Showing the map failed — tell Nishad to try again." };
+  }
+}
+
+async function handleHighlightBuilding(sessionId: string): Promise<{ text: string; visual?: VisualState }> {
+  try {
+    const current = await loadVisualState(sessionId);
+    if (!current) {
+      return { text: "No map is currently showing — show a map first, then ask to highlight the building." };
+    }
+
+    const footprint = await getBuildingFootprint(current.lat, current.lon);
+    if (!footprint) {
+      return { text: `No distinct building outline found for ${current.location} in the map data.` };
+    }
+
+    const visual: VisualState = { ...current, highlightFootprint: footprint.points };
+    await saveVisualState(sessionId, visual);
+
+    return { text: `Outlined the building at ${current.location}.`, visual };
+  } catch (error) {
+    console.error("[tool-dispatcher] highlight_building failed:", error);
+    return { text: "Highlighting the building failed — tell Nishad to try again." };
+  }
+}
+
+async function handleNoteCapabilityGap(input: { request: string; capability: string }): Promise<string> {
+  try {
+    await logCapabilityGap(input.request, input.capability);
+    return "Flagged for Nishad to review and build later.";
+  } catch (error) {
+    console.error("[tool-dispatcher] note_capability_gap failed:", error);
+    return "Couldn't flag that just now — tell Nishad directly.";
   }
 }
 
@@ -534,6 +610,10 @@ export async function executeTool(
       return { text: await handleGetProactiveUpdates() };
     case "show_map":
       return handleShowMap(input as { location?: string; zoomDelta?: number; zoomLevel?: number }, sessionId);
+    case "highlight_building":
+      return handleHighlightBuilding(sessionId);
+    case "note_capability_gap":
+      return { text: await handleNoteCapabilityGap(input as { request: string; capability: string }) };
     default:
       return { text: `Unknown tool: ${name}` };
   }

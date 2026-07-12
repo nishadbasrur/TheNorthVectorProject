@@ -8,7 +8,18 @@ export type VoiceTurn = { role: "user" | "assistant"; content: string };
 // follow-up like "zoom in" needs to know a map is showing and where, which
 // isn't answerable from the spoken conversation text alone. Only one shape
 // today (map); a discriminated union once a second visual type exists.
-export type VisualState = { type: "map"; location: string; lat: number; lon: number; zoom: number };
+export type VisualState = {
+  type: "map";
+  location: string;
+  lat: number;
+  lon: number;
+  zoom: number;
+  // Nearest building footprint to (lat, lon), set by highlight_building —
+  // [lat, lon] pairs tracing the outline. Cleared (undefined) whenever the
+  // map recenters to a new location via show_map, since a highlight from
+  // the previous place no longer applies.
+  highlightFootprint?: [number, number][];
+};
 
 // Firestore-backed, not in-memory: Next.js API routes on serverless hosting
 // (Firebase App Hosting, this project's deploy target) are not guaranteed to

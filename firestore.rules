@@ -147,5 +147,15 @@ service cloud.firestore {
       allow read: if isOwner();
       allow write: if false;
     }
+
+    // capability_gaps logs requests North couldn't fulfill with any current
+    // tool (see lib/capability-gap-store.ts, called via the
+    // note_capability_gap tool) — a human-reviewed backlog, not something
+    // that triggers any automatic code change. Written only by the voice
+    // respond route via the Admin SDK.
+    match /capability_gaps/{document=**} {
+      allow read: if isOwner();
+      allow write: if false;
+    }
   }
 }
