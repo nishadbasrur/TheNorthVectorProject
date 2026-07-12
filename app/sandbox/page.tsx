@@ -263,6 +263,22 @@ export default function SandboxPage() {
   const modeRef = useRef<Mode>("dormant");
   modeRef.current = mode;
 
+  // `status` (React state) is for rendering only. Control-flow decisions —
+  // specifically startListening's re-entrancy guard — must NOT read it
+  // directly: setState updates are batched and don't apply until the next
+  // render, but startListening gets called synchronously in the very next
+  // line after speak()'s finally block calls setStatus("idle"), before
+  // React has re-rendered. That gap made startListening see a stale
+  // "speaking" and silently refuse to start — confirmed live (both "had to
+  // tap before the sleep word worked" and "went to One moment... and stuck
+  // after barge-in" were the same bug). statusRef updates synchronously,
+  // in lockstep with every setStatus call, so it's never stale.
+  const statusRef = useRef<Status>("idle");
+  const updateStatus = useCallback((next: Status) => {
+    statusRef.current = next;
+    setStatus(next);
+  }, []);
+
   const mediaStreamRef = useRef<MediaStream | null>(null);
   const audioContextRef = useRef<AudioContext | null>(null);
   const processorRef = useRef<ScriptProcessorNode | null>(null);
@@ -413,8 +429,8 @@ export default function SandboxPage() {
     stopBargeInMonitor();
     audioRef.current?.pause();
     setMode("dormant");
-    setStatus("idle");
-  }, [clearInactivityTimer, teardownRecording, stopBargeInMonitor]);
+    updateStatus("idle");
+  }, [clearInactivityTimer, teardownRecording, stopBargeInMonitor, updateStatus]);
 
   const resetInactivityTimer = useCallback(() => {
     clearInactivityTimer();
@@ -425,7 +441,7 @@ export default function SandboxPage() {
 
   const speak = useCallback(
     async (text: string) => {
-      setStatus("speaking");
+      updateStatus("speaking");
 
       try {
         const idToken = await auth.currentUser?.getIdToken();
@@ -477,10 +493,10 @@ export default function SandboxPage() {
         setErrorMessage(error instanceof Error ? error.message : "Failed to play audio.");
       } finally {
         stopBargeInMonitor();
-        setStatus("idle");
+        updateStatus("idle");
       }
     },
-    [startBargeInMonitor, stopBargeInMonitor]
+    [startBargeInMonitor, stopBargeInMonitor, updateStatus]
   );
 
   const handleTranscript = useCallback(
@@ -488,7 +504,7 @@ export default function SandboxPage() {
       setTranscript(text);
       setResponseText("");
       setToolsUsed([]);
-      setStatus("processing");
+      updateStatus("processing");
       setErrorMessage(null);
       resetInactivityTimer(); // real interaction — push back the dormant deadline
 
@@ -499,7 +515,7 @@ export default function SandboxPage() {
         await speak(result.responseText);
       } catch (error) {
         setErrorMessage(error instanceof Error ? error.message : "Something went wrong.");
-        setStatus("idle");
+        updateStatus("idle");
       }
 
       // Loop back to listening for the next turn — no tap needed, this is
@@ -509,12 +525,12 @@ export default function SandboxPage() {
         startListeningRef.current();
       }
     },
-    [speak, resetInactivityTimer]
+    [speak, resetInactivityTimer, updateStatus]
   );
 
   const transcribeAndRoute = useCallback(
     async (sampleRate: number) => {
-      setStatus("transcribing");
+      updateStatus("transcribing");
 
       const samples = mergeSamples(recordedChunksRef.current);
       recordedChunksRef.current = [];
@@ -545,7 +561,7 @@ export default function SandboxPage() {
 
         if (!text) {
           setErrorMessage("Didn't catch anything — try again.");
-          setStatus("idle");
+          updateStatus("idle");
           if (modeRef.current === "active") startListeningRef.current();
           return;
         }
@@ -566,13 +582,13 @@ export default function SandboxPage() {
         } else {
           setErrorMessage(error instanceof Error ? error.message : "Couldn't transcribe — try again.");
         }
-        setStatus("idle");
+        updateStatus("idle");
         if (modeRef.current === "active") startListeningRef.current();
       } finally {
         clearTimeout(timeoutId);
       }
     },
-    [handleTranscript, speak, goDormant]
+    [handleTranscript, speak, goDormant, updateStatus]
   );
 
   // The core recording loop. Auto-stops on ~1.4s of silence after real
@@ -582,7 +598,7 @@ export default function SandboxPage() {
   // resetInactivityTimer only pushes back on actual captured speech), and
   // keeps the original 60s hard watchdog as an absolute backstop.
   const startListening = useCallback(async () => {
-    if (status !== "idle") return;
+    if (statusRef.current !== "idle") return;
 
     if (!navigator.mediaDevices?.getUserMedia) {
       setErrorMessage("Microphone access isn't supported in this browser.");
@@ -650,12 +666,12 @@ export default function SandboxPage() {
     audioContextRef.current = audioContext;
     processorRef.current = processor;
 
-    setStatus("listening");
+    updateStatus("listening");
 
     noSpeechTimerRef.current = setTimeout(() => {
       if (modeRef.current !== "active") return;
       teardownRecording();
-      setStatus("idle");
+      updateStatus("idle");
       startListeningRef.current();
     }, NO_SPEECH_GIVEUP_MS);
 
@@ -666,10 +682,11 @@ export default function SandboxPage() {
         const sr = audioContextRef.current?.sampleRate ?? 16000;
         teardownRecording();
         transcribeAndRoute(sr);
+        statusRef.current = "transcribing";
         return "transcribing";
       });
     }, 60000);
-  }, [status, teardownRecording, clearRecordingWatchdog, clearSilenceTimer, clearNoSpeechTimer, transcribeAndRoute, goDormant]);
+  }, [teardownRecording, clearRecordingWatchdog, clearSilenceTimer, clearNoSpeechTimer, transcribeAndRoute, goDormant, updateStatus]);
 
   startListeningRef.current = () => {
     startListening();
@@ -684,13 +701,13 @@ export default function SandboxPage() {
 
     if (recordedChunksRef.current.length === 0 || !hasSpeechRef.current) {
       setErrorMessage("Didn't catch anything — try again.");
-      setStatus("idle");
+      updateStatus("idle");
       if (modeRef.current === "active") startListeningRef.current();
       return;
     }
 
     transcribeAndRoute(sampleRate);
-  }, [teardownRecording, transcribeAndRoute]);
+  }, [teardownRecording, transcribeAndRoute, updateStatus]);
 
   // First-ever tap: just confirms mic permission (stops the probe stream
   // immediately, doesn't keep it open) so the wake-word engine's own
