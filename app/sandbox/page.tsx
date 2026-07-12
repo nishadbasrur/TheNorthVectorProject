@@ -4,6 +4,22 @@ import { useCallback, useRef, useState } from "react";
 import { AppShell } from "@/components/layout/app-shell";
 import { auth } from "@/lib/firebase";
 
+// TEMPORARY — lets Nishad grab a real ID token from the browser console for
+// manual curl testing of owner-gated endpoints (e.g. triggerSynthesisScan),
+// without having to fish through devtools for internal SDK variable names.
+// This app uses the modular Firebase SDK (no global `firebase` object), so
+// there's nothing to call directly from the console otherwise. Logs the
+// resolved token directly (not just returning a Promise) so it's copyable
+// without unwrapping anything. Remove once Synthesis Engine manual testing
+// is done — this has no reason to exist in shipped code.
+if (typeof window !== "undefined") {
+  (window as unknown as { getNorthToken: () => Promise<string | undefined> }).getNorthToken = async () => {
+    const token = await auth.currentUser?.getIdToken();
+    console.log(token ?? "No signed-in user — sign in first.");
+    return token;
+  };
+}
+
 type Status = "idle" | "listening" | "transcribing" | "processing" | "speaking";
 
 // getUserMedia rejection names mapped to copy a person can actually act on —
