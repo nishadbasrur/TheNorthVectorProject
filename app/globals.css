@@ -92,17 +92,28 @@ html, body {
   width: 220px;
   min-width: 220px;
   background: var(--bg-sidebar);
-  border-right: 1px solid var(--border-default);
+  border-right: 1px solid rgba(58, 214, 255, 0.14);
   display: flex;
   flex-direction: column;
   overflow-y: auto;
   overflow-x: hidden;
 }
 
+/* Shared HUD grid texture, app-wide — see the "Sandbox HUD" block below
+   for the --hud-* variables this references. Chrome only (background,
+   sidebar, header) per explicit scope: individual pages' cards/tables/
+   components are intentionally untouched, since several of these pages
+   (Goals/Projects/Plans/Decisions) may be reduced or removed once the
+   voice-first direction matures — not worth re-skinning components that
+   might not exist much longer. */
 .main-content {
   flex: 1;
   overflow-y: auto;
-  background: var(--bg-base);
+  background:
+    linear-gradient(rgba(3, 7, 17, 0.82), rgba(3, 7, 17, 0.94)),
+    repeating-linear-gradient(0deg, rgba(58, 130, 165, 0.1) 0, rgba(58, 130, 165, 0.1) 1px, transparent 1px, transparent 40px),
+    repeating-linear-gradient(90deg, rgba(58, 130, 165, 0.1) 0, rgba(58, 130, 165, 0.1) 1px, transparent 1px, transparent 40px),
+    var(--bg-base);
 }
 
 /* Sidebar */
@@ -127,7 +138,8 @@ html, body {
   color: white;
   font-weight: 400;
   flex-shrink: 0;
-  border: 1px solid rgba(77, 202, 188, 0.3);
+  border: 1px solid rgba(58, 214, 255, 0.4);
+  box-shadow: 0 0 10px rgba(58, 214, 255, 0.35);
 }
 
 .sidebar-brand-text {
@@ -185,8 +197,9 @@ html, body {
 .nav-item.active {
   color: var(--white);
   background: rgba(59, 91, 219, 0.2);
-  border-left: 2px solid var(--cyan);
+  border-left: 2px solid #3ad6ff;
   padding-left: 6px;
+  box-shadow: -1px 0 8px rgba(58, 214, 255, 0.25);
 }
 
 .nav-icon {
@@ -235,7 +248,7 @@ html, body {
 /* Page */
 .page-header {
   padding: 28px 32px 0;
-  border-bottom: 1px solid var(--border-default);
+  border-bottom: 1px solid rgba(58, 214, 255, 0.16);
   padding-bottom: 20px;
 }
 
@@ -244,7 +257,8 @@ html, body {
   font-weight: 600;
   letter-spacing: 0.14em;
   text-transform: uppercase;
-  color: var(--cyan);
+  color: #3ad6ff;
+  text-shadow: 0 0 10px rgba(58, 214, 255, 0.4);
   margin-bottom: 6px;
 }
 
@@ -800,12 +814,14 @@ html, body {
 }
 
 /* ============================================================
-   Sandbox HUD — scoped to app/sandbox/page.tsx only. Not part of
-   the shared design system above; deliberately a different visual
-   language (bright electric cyan vs. the app's muted --cyan teal)
-   per the reference-image ticket's explicit Sandbox-only scope.
-   Do not reuse .hud-* classes on other pages without a separate,
-   explicit go-ahead to extend this look app-wide.
+   Sandbox HUD. The --hud-cyan accent and grid-texture pattern are now
+   also used by the shared shell above (.main-content, .sidebar,
+   .page-header) per explicit go-ahead to unify the app's chrome —
+   but the .hud-ring-* / .hud-particles / .hud-glow* classes below
+   (the ring itself, its animated states) remain Sandbox-only. Do not
+   reuse those specific classes elsewhere without a separate go-ahead —
+   individual pages' cards/tables/components are deliberately still
+   untouched (see .main-content's comment for why).
    ============================================================ */
 
 :root {
