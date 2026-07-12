@@ -11,6 +11,7 @@
     "deploy": "firebase deploy --only functions"
   },
   "dependencies": {
+    "@anthropic-ai/sdk": "^0.110.0",
     "@googleapis/calendar": "^15.0.0",
     "@googleapis/gmail": "^17.0.0",
     "@notionhq/client": "^5.22.0",

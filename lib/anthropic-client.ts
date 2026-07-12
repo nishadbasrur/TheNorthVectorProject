@@ -1,11 +1,17 @@
-import "server-only";
+// Deliberately no "server-only" guard — shared with the esbuild-bundled
+// Cloud Functions runtime (functions/src/synthesis-scan.ts, via
+// lib/synthesis-engine.ts), same reasoning already established for
+// lib/google-calendar-client.ts, lib/notion-client.ts, and
+// lib/gmail-client.ts. Removing the guard doesn't change any Next.js
+// server-side behavior — it only relaxes a client-bundle safety net that
+// was never relevant here to begin with.
 import Anthropic from "@anthropic-ai/sdk";
 
 const client = new Anthropic({
   apiKey: process.env.ANTHROPIC_API_KEY,
 });
 
-const MODEL = process.env.ANTHROPIC_MODEL || "claude-haiku-4-5-20251001";
+const DEFAULT_MODEL = process.env.ANTHROPIC_MODEL || "claude-haiku-4-5-20251001";
 
 // Simple in-memory daily counter — not persisted, resets on redeploy/restart.
 // Good enough as a first-pass sanity check; a real budget tracker against
@@ -17,6 +23,12 @@ export async function askClaude(params: {
   systemPrompt: string;
   userMessage: string;
   maxTokens?: number;
+  // Optional override for callers that deliberately want a stronger model
+  // than the shared Haiku default for a specific reasoning task — e.g.
+  // lib/synthesis-engine.ts's cross-source connection-finding pass, per
+  // North_Vector_Synthesis_Engine_Plan.md Section 5.4. Omit to use the
+  // global default.
+  model?: string;
 }): Promise<{ text: string; ok: true } | { ok: false; error: string }> {
   if (!process.env.ANTHROPIC_API_KEY) {
     return { ok: false, error: "ANTHROPIC_API_KEY not configured" };
@@ -30,7 +42,7 @@ export async function askClaude(params: {
   try {
     callsToday += 1;
     const response = await client.messages.create({
-      model: MODEL,
+      model: params.model ?? DEFAULT_MODEL,
       max_tokens: params.maxTokens ?? 300,
       system: params.systemPrompt,
       messages: [{ role: "user", content: params.userMessage }],
@@ -79,7 +91,7 @@ export async function askClaudeWithTools(params: {
   try {
     callsToday += 1;
     const response = await client.messages.create({
-      model: MODEL,
+      model: DEFAULT_MODEL,
       max_tokens: params.maxTokens ?? 400,
       system: params.systemPrompt,
       messages: params.messages,

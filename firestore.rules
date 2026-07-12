@@ -125,5 +125,27 @@ service cloud.firestore {
       allow read: if isOwner();
       allow write: if false;
     }
+
+    // synthesis_runs is the audit trail for each Synthesis Engine pass —
+    // source counts and which connections were found/delivered, never raw
+    // source content (same boundary Gmail already enforces). Written only
+    // by the scheduled scan (functions/src/synthesis-scan.ts) and the
+    // on-demand check (app/api/v1/synthesis/check-now) via the Admin SDK.
+    // See North_Vector_Synthesis_Engine_Plan.md Section 8/9.
+    match /synthesis_runs/{document=**} {
+      allow read: if isOwner();
+      allow write: if false;
+    }
+
+    // synthesis_connections de-duplicates cross-source connections the
+    // Synthesis Engine has already surfaced — one doc per distinct
+    // source-pair combination, re-surfaced after 6 hours rather than a
+    // one-shot flag (a connection can become more or less relevant between
+    // runs). Written only by the same trusted server code as
+    // synthesis_runs.
+    match /synthesis_connections/{document=**} {
+      allow read: if isOwner();
+      allow write: if false;
+    }
   }
 }

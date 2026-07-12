@@ -7,6 +7,9 @@ import { getUrgentItems } from "./notion-client";
 import { checkUrgentEmails } from "./gmail-urgency";
 import { getRecentInboxMessages } from "./gmail-client";
 import { evaluateDecision } from "./decision-engine";
+import { assembleSynthesisContext } from "./synthesis-context";
+import { runSynthesis } from "./synthesis-engine";
+import { deliveryChannel } from "./synthesis-priority";
 
 // Single source of truth for what North can do via voice — read directly by
 // Claude as tool schemas, not maintained separately as prose (that
@@ -82,6 +85,16 @@ export const TOOL_DEFINITIONS: Anthropic.Tool[] = [
       },
       required: ["question"],
     },
+  },
+  {
+    name: "get_proactive_updates",
+    description:
+      "Check for anything worth knowing that's been surfaced by cross-source reasoning — " +
+      "connections between calendar, email, tasks, goals, and Notion that aren't answerable by " +
+      "checking a single source alone. Call this for open-ended asks like 'what should I know', " +
+      "'anything I should know about', 'catch me up', or 'what's going on' — not for specific " +
+      "single-source questions, which have their own tools.",
+    input_schema: { type: "object", properties: {} },
   },
 ];
 
@@ -182,6 +195,36 @@ async function handleGetDecisionRecommendation(input: { question: string }): Pro
   }
 }
 
+// Reuses the same pipeline as app/api/v1/synthesis/check-now/route.ts and
+// functions/src/synthesis-scan.ts directly rather than an internal HTTP
+// call — same "don't self-call over HTTP" precedent already established
+// for Calendar/Notion. Caps to the top 2-3 connections by urgency for a
+// spoken answer; the persona's existing 60-word/1-4-sentence brevity rule
+// (baked into the system prompt directly) governs the final spoken output,
+// not a separate truncation step here.
+const URGENCY_RANK: Record<string, number> = { now: 0, today: 1, this_week: 2, fyi: 3 };
+
+async function handleGetProactiveUpdates(): Promise<string> {
+  try {
+    const context = await assembleSynthesisContext();
+    const connections = await runSynthesis(context);
+    const worthMentioning = connections
+      .filter((c) => deliveryChannel(c) !== "suppress")
+      .sort((a, b) => URGENCY_RANK[a.urgency] - URGENCY_RANK[b.urgency])
+      .slice(0, 3);
+
+    if (worthMentioning.length === 0) {
+      return "Nothing worth flagging right now — nothing unusual connecting across your calendar, email, tasks, goals, or Notion.";
+    }
+
+    const formatted = worthMentioning.map((c) => `${c.connection} ${c.whyItMatters}`).join(" ");
+    return formatted;
+  } catch (error) {
+    console.error("[tool-dispatcher] get_proactive_updates failed:", error);
+    return "Proactive check failed — tell Nishad to try again in a bit.";
+  }
+}
+
 export async function executeTool(name: string, input: unknown): Promise<string> {
   switch (name) {
     case "create_task":
@@ -194,6 +237,8 @@ export async function executeTool(name: string, input: unknown): Promise<string>
       return handleCheckNotion();
     case "get_decision_recommendation":
       return handleGetDecisionRecommendation(input as { question: string });
+    case "get_proactive_updates":
+      return handleGetProactiveUpdates();
     default:
       return `Unknown tool: ${name}`;
   }

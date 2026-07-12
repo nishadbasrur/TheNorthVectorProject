@@ -8,6 +8,7 @@ import { evaluateRisks, type RiskEvaluationTask, type RiskEvaluationGoal } from 
 import { resendApiKey, sendEmail, sendRiskSummaryEmail } from "./email";
 import { verifyOwner } from "./require-owner";
 import { runUrgencyScan } from "./urgency-scan";
+import { runSynthesisScan } from "./synthesis-scan";
 import { sendPushNotification } from "./push";
 
 if (!getApps().length) {
@@ -137,6 +138,45 @@ export const sendTestUrgency = onRequest(
       res.status(200).json({ ok: true });
     } else {
       res.status(500).json({ ok: false, error: "Push send failed — check function logs, and confirm a device has enabled alerts in Settings." });
+    }
+  }
+);
+
+// Synthesis Engine — cross-source reasoning, see
+// North_Vector_Synthesis_Engine_Plan.md. Needs every existing integration's
+// credentials (Calendar, Notion, Gmail) plus the Anthropic API for the
+// reasoning pass itself.
+const gmailRefreshToken = defineSecret("GMAIL_REFRESH_TOKEN");
+const anthropicApiKey = defineSecret("ANTHROPIC_API_KEY");
+
+const synthesisScanSecrets = [
+  googleCalendarClientId,
+  googleCalendarClientSecret,
+  googleCalendarRefreshToken,
+  notionApiToken,
+  gmailRefreshToken,
+  anthropicApiKey,
+];
+
+// Deliberately NOT an onSchedule trigger yet — the plan's own checklist
+// (Section 12, items 8 and 12) calls for manually-triggered runs first,
+// inspecting synthesis_runs output by hand for a few days before enabling
+// any recurring schedule. This mirrors sendTestEmail/sendTestUrgency's
+// existing manual-trigger pattern rather than introducing a new one.
+// Wiring an onSchedule(...) export here is the deliberate last step, once
+// manual runs look sane — not something to add preemptively in this pass.
+export const triggerSynthesisScan = onRequest(
+  { secrets: synthesisScanSecrets, timeoutSeconds: 120 },
+  async (req, res) => {
+    const isOwner = await verifyOwner(req, res);
+    if (!isOwner) return;
+
+    try {
+      const summary = await runSynthesisScan();
+      res.status(200).json({ ok: true, ...summary });
+    } catch (error) {
+      logger.error("Synthesis scan failed:", error);
+      res.status(500).json({ ok: false, error: "Synthesis scan failed — check function logs." });
     }
   }
 );
