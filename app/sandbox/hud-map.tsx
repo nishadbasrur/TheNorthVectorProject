@@ -29,9 +29,17 @@ export function HudMap({ visual, onClose }: { visual: MapVisual; onClose: () => 
         attributionControl: true,
       });
 
-      L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png", {
-        maxZoom: 19,
-        attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors',
+      // CARTO's dark basemap — free, no API key/account (unlike Mapbox/
+      // MapTiler's dark styles), and matches the HUD's own dark theme far
+      // better than OSM's default light tiles did. Requires crediting both
+      // CARTO and OSM (the underlying data source) per their attribution
+      // terms.
+      L.tileLayer("https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png", {
+        subdomains: "abcd",
+        maxZoom: 20,
+        attribution:
+          '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors ' +
+          '&copy; <a href="https://carto.com/attributions">CARTO</a>',
       }).addTo(map);
 
       const marker = L.circleMarker([visual.lat, visual.lon], {
@@ -67,7 +75,14 @@ export function HudMap({ visual, onClose }: { visual: MapVisual; onClose: () => 
 
   return (
     <div className="hud-map-overlay">
-      <div ref={containerRef} className="hud-map-canvas" />
+      {/* Leaflet manages containerRef's own drag/zoom math relative to
+          itself, so the perspective tilt lives on this wrapper ancestor
+          rather than on containerRef directly — panning/zooming still work
+          correctly, the tilt is purely a visual presentation layer on top. */}
+      <div className="hud-map-tilt">
+        <div ref={containerRef} className="hud-map-canvas" />
+      </div>
+      <div className="hud-map-fade" />
       <div className="hud-map-label">{visual.location}</div>
       <button type="button" className="hud-map-close" onClick={onClose} aria-label="Close map">
         ✕

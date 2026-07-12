@@ -833,6 +833,13 @@ export default function SandboxPage() {
 
         <div className="hud-stage">
           <div className={`hud-ring-wrap hud-ring-${ringState}`}>
+            {/* Solid-ish dark backing behind the glow — without it the
+                mostly-transparent orb blended into light backgrounds (e.g.
+                a light map, before the map switched to a dark theme).
+                Independent of what's underneath, not just a fix for the
+                map specifically. */}
+            <div className="hud-orb-backing" />
+
             <svg className="hud-ticks" viewBox="0 0 200 200">
               {HUD_TICKS.map(({ angle, major }) => (
                 <line
