@@ -8,14 +8,35 @@ import { auth } from "@/lib/firebase";
 // manual curl testing of owner-gated endpoints (e.g. triggerSynthesisScan),
 // without having to fish through devtools for internal SDK variable names.
 // This app uses the modular Firebase SDK (no global `firebase` object), so
-// there's nothing to call directly from the console otherwise. Logs the
-// resolved token directly (not just returning a Promise) so it's copyable
-// without unwrapping anything. Remove once Synthesis Engine manual testing
-// is done — this has no reason to exist in shipped code.
+// there's nothing to call directly from the console otherwise. Writes the
+// resolved token straight to the clipboard rather than relying on manually
+// selecting console output — Safari's console visually truncates long
+// string previews inside object inspectors (e.g. a resolved Promise's
+// `result` field), and copying that truncated preview produces a token
+// that looks plausible but silently fails auth. Still also logs the raw
+// string as a fallback in case clipboard access is blocked. Remove once
+// Synthesis Engine manual testing is done — this has no reason to exist in
+// shipped code.
 if (typeof window !== "undefined") {
   (window as unknown as { getNorthToken: () => Promise<string | undefined> }).getNorthToken = async () => {
     const token = await auth.currentUser?.getIdToken();
-    console.log(token ?? "No signed-in user — sign in first.");
+
+    if (!token) {
+      console.log("No signed-in user — sign in first.");
+      return undefined;
+    }
+
+    console.log(token);
+
+    try {
+      await navigator.clipboard.writeText(token);
+      console.log("^ full token copied to your clipboard — just paste it, no need to select the text above.");
+    } catch {
+      console.log(
+        "Clipboard write failed — triple-click the token line directly above (not any collapsed Promise/object view) to select the whole line, then copy."
+      );
+    }
+
     return token;
   };
 }
