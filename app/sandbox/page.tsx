@@ -139,13 +139,30 @@ function mergeSamples(chunks: Float32Array[]): Float32Array {
 }
 
 // Tick marks around the HUD ring, generated rather than hand-authored 24
-// <line> elements — every 4th tick is "major" (longer, brighter), matching
-// the reference images' compass-style ring treatment.
+// <line> elements — kept subtle (see globals.css) since the reference
+// photo reads as a soft glowing orb, not a compass instrument.
 const HUD_TICK_COUNT = 24;
 const HUD_TICKS = Array.from({ length: HUD_TICK_COUNT }, (_, i) => ({
   angle: (360 / HUD_TICK_COUNT) * i,
   major: i % 4 === 0,
 }));
+
+// Scattered particle specks around the ring, matching the star-like flecks
+// visible around the glow in the reference photo. Fixed positions (not
+// Math.random() at render time) so server/client markup matches exactly —
+// hand-placed for a natural, non-gridlike scatter, not procedurally random.
+const HUD_PARTICLES = [
+  { x: 18, y: 22, size: 2, blur: 2 },
+  { x: 82, y: 16, size: 1.5, blur: 1.5 },
+  { x: 90, y: 38, size: 2.5, blur: 3 },
+  { x: 12, y: 58, size: 1.5, blur: 1.5 },
+  { x: 8, y: 78, size: 2, blur: 2 },
+  { x: 76, y: 88, size: 1.5, blur: 1.5 },
+  { x: 92, y: 68, size: 2, blur: 2 },
+  { x: 30, y: 6, size: 1.5, blur: 1.5 },
+  { x: 60, y: 92, size: 2, blur: 2 },
+  { x: 4, y: 40, size: 1.5, blur: 1.5 },
+];
 
 type VoiceRespondResult = { responseText: string; toolsUsed: string[] };
 
@@ -500,6 +517,25 @@ export default function SandboxPage() {
             </svg>
 
             <div className="hud-glow" />
+            <div className="hud-glow-core" />
+
+            <div className="hud-particles">
+              {HUD_PARTICLES.map((p, i) => (
+                <div
+                  key={i}
+                  style={{
+                    position: "absolute",
+                    left: `${p.x}%`,
+                    top: `${p.y}%`,
+                    width: p.size,
+                    height: p.size,
+                    borderRadius: "50%",
+                    background: "var(--white)",
+                    boxShadow: `0 0 ${p.blur}px var(--hud-cyan)`,
+                  }}
+                />
+              ))}
+            </div>
 
             <svg className="hud-ring-svg" viewBox="0 0 200 200">
               <circle className="hud-ring-outer" cx="100" cy="100" r="94" />
