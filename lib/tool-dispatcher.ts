@@ -1,11 +1,16 @@
 import "server-only";
 import type Anthropic from "@anthropic-ai/sdk";
 import { createTaskAsAdmin } from "./task-store-admin";
-import { getUpcomingEvents } from "./google-calendar-client";
+import {
+  getUpcomingEvents,
+  createCalendarEvent,
+  updateCalendarEvent,
+  deleteCalendarEvent,
+} from "./google-calendar-client";
 import { summarizeUpcomingEvents } from "./calendar-summary";
 import { getUrgentItems } from "./notion-client";
 import { checkUrgentEmails } from "./gmail-urgency";
-import { getRecentInboxMessages } from "./gmail-client";
+import { getRecentInboxMessages, searchEmails, sendEmail, trashEmail } from "./gmail-client";
 import { evaluateDecision } from "./decision-engine";
 import { assembleSynthesisContext } from "./synthesis-context";
 import { runSynthesis } from "./synthesis-engine";
@@ -34,12 +39,11 @@ export const TOOL_DEFINITIONS: Anthropic.Tool[] = [
   {
     name: "check_email",
     description:
-      "Check Gmail (read-only). With no query, checks for anything urgent or time-sensitive right " +
-      "now. With a query (e.g. \"anything from Dr. Bala\", \"what was my last email\"), looks up " +
-      "recent messages to answer that specific lookup question instead of judging urgency. Only " +
-      "covers the ~25 most recent inbox messages, not full-text search across the whole inbox. Only " +
-      "call this when explicitly asked about email — never proactively, never to send or modify " +
-      "anything.",
+      "Check Gmail. With no query, checks for anything urgent or time-sensitive right now. With a " +
+      "query (e.g. \"anything from Dr. Bala\", \"what was my last email\"), looks up recent messages " +
+      "to answer that specific lookup question instead of judging urgency. Only covers the ~25 most " +
+      "recent inbox messages — use search_email instead for anything further back. Read-only; use " +
+      "send_email/delete_email to act on the inbox.",
     input_schema: {
       type: "object",
       properties: {
@@ -52,10 +56,54 @@ export const TOOL_DEFINITIONS: Anthropic.Tool[] = [
     },
   },
   {
+    name: "search_email",
+    description:
+      "Search the full inbox history using Gmail's own search syntax — not limited to recent " +
+      "messages. Use for anything asking about an email that isn't necessarily recent (e.g. \"find " +
+      "that email from a few months ago\", \"emails from GradGuard\"). Supports Gmail operators like " +
+      "from:, subject:, older_than:3m, newer_than:1y, has:attachment.",
+    input_schema: {
+      type: "object",
+      properties: {
+        query: { type: "string", description: "Gmail search query syntax." },
+      },
+      required: ["query"],
+    },
+  },
+  {
+    name: "send_email",
+    description:
+      "Draft and send an email on Nishad's behalf. Executes immediately once you decide it's the " +
+      "right action — no confirmation step. Use good judgment on tone and content since this sends " +
+      "as Nishad, to a real recipient, with no review before it goes out.",
+    input_schema: {
+      type: "object",
+      properties: {
+        to: { type: "string", description: "Recipient email address." },
+        subject: { type: "string" },
+        body: { type: "string" },
+      },
+      required: ["to", "subject", "body"],
+    },
+  },
+  {
+    name: "delete_email",
+    description:
+      "Move an email to Trash (recoverable for 30 days, not a permanent erase). Requires the " +
+      "specific message id — use check_email or search_email first to find it.",
+    input_schema: {
+      type: "object",
+      properties: { messageId: { type: "string" } },
+      required: ["messageId"],
+    },
+  },
+  {
     name: "check_calendar",
     description:
-      "Check Google Calendar (read-only) for upcoming events. Defaults to the next 48 hours; pass a " +
-      "narrower or wider window if the request implies one (e.g. \"today\" -> 24, \"this week\" -> 168).",
+      "Check Google Calendar for upcoming events. Defaults to the next 48 hours; pass a narrower or " +
+      "wider window if the request implies one (e.g. \"today\" -> 24, \"this week\" -> 168). " +
+      "Read-only; use create_calendar_event/update_calendar_event/delete_calendar_event to act on " +
+      "the calendar.",
     input_schema: {
       type: "object",
       properties: {
@@ -64,6 +112,56 @@ export const TOOL_DEFINITIONS: Anthropic.Tool[] = [
           description: "Lookahead window in hours. Omit to use the default (48).",
         },
       },
+    },
+  },
+  {
+    name: "create_calendar_event",
+    description:
+      "Create a new calendar event on the primary calendar. Executes immediately, no confirmation. " +
+      "Other attendees are NOT notified by Google of this change (silent by design) — tell Nishad " +
+      "explicitly if anyone else needs to know.",
+    input_schema: {
+      type: "object",
+      properties: {
+        title: { type: "string" },
+        start: { type: "string", description: "ISO datetime." },
+        end: { type: "string", description: "ISO datetime." },
+        attendees: {
+          type: "array",
+          items: { type: "string" },
+          description: "Attendee email addresses, optional.",
+        },
+      },
+      required: ["title", "start", "end"],
+    },
+  },
+  {
+    name: "update_calendar_event",
+    description:
+      "Modify an existing calendar event's time or title. Requires the event id from check_calendar. " +
+      "Other attendees are NOT notified by Google of this change (silent by design) — tell Nishad " +
+      "explicitly if anyone else needs to know, e.g. a shared tutoring session that just moved.",
+    input_schema: {
+      type: "object",
+      properties: {
+        eventId: { type: "string" },
+        title: { type: "string" },
+        start: { type: "string", description: "ISO datetime." },
+        end: { type: "string", description: "ISO datetime." },
+      },
+      required: ["eventId"],
+    },
+  },
+  {
+    name: "delete_calendar_event",
+    description:
+      "Delete an existing calendar event. Requires the event id from check_calendar. Other attendees " +
+      "are NOT notified by Google of this cancellation (silent by design) — tell Nishad explicitly if " +
+      "anyone else needs to know.",
+    input_schema: {
+      type: "object",
+      properties: { eventId: { type: "string" } },
+      required: ["eventId"],
     },
   },
   {
@@ -164,6 +262,85 @@ async function handleCheckCalendar(input: { withinHours?: number }): Promise<str
   }
 }
 
+async function handleSearchEmail(input: { query: string }): Promise<string> {
+  try {
+    const messages = await searchEmails(input.query);
+
+    if (messages.length === 0) {
+      return `No messages found for "${input.query}".`;
+    }
+
+    const formatted = messages
+      .map((m) => `From: ${m.from}\nDate: ${m.date}\nSubject: ${m.subject}\nSnippet: ${m.bodyText.slice(0, 300)}`)
+      .join("\n\n---\n\n");
+
+    return `Search results for "${input.query}":\n\n${formatted}`;
+  } catch (error) {
+    console.error("[tool-dispatcher] search_email failed:", error);
+    return "Email search failed — tell Nishad to try again in a bit.";
+  }
+}
+
+async function handleSendEmail(input: { to: string; subject: string; body: string }): Promise<string> {
+  try {
+    await sendEmail(input.to, input.subject, input.body);
+    return `Sent email to ${input.to}: "${input.subject}".`;
+  } catch (error) {
+    console.error("[tool-dispatcher] send_email failed:", error);
+    return "Sending the email failed — tell Nishad to try again.";
+  }
+}
+
+async function handleDeleteEmail(input: { messageId: string }): Promise<string> {
+  try {
+    await trashEmail(input.messageId);
+    return "Moved that email to Trash — recoverable for 30 days.";
+  } catch (error) {
+    console.error("[tool-dispatcher] delete_email failed:", error);
+    return "Deleting the email failed — tell Nishad to try again.";
+  }
+}
+
+async function handleCreateCalendarEvent(input: {
+  title: string;
+  start: string;
+  end: string;
+  attendees?: string[];
+}): Promise<string> {
+  try {
+    const event = await createCalendarEvent(input);
+    return `Created "${event.title}" on the calendar (${input.start} to ${input.end}).`;
+  } catch (error) {
+    console.error("[tool-dispatcher] create_calendar_event failed:", error);
+    return "Creating the calendar event failed — tell Nishad to try again.";
+  }
+}
+
+async function handleUpdateCalendarEvent(input: {
+  eventId: string;
+  title?: string;
+  start?: string;
+  end?: string;
+}): Promise<string> {
+  try {
+    const event = await updateCalendarEvent(input);
+    return `Updated "${event.title}" on the calendar.`;
+  } catch (error) {
+    console.error("[tool-dispatcher] update_calendar_event failed:", error);
+    return "Updating the calendar event failed — tell Nishad to try again.";
+  }
+}
+
+async function handleDeleteCalendarEvent(input: { eventId: string }): Promise<string> {
+  try {
+    await deleteCalendarEvent(input.eventId);
+    return "Deleted that calendar event.";
+  } catch (error) {
+    console.error("[tool-dispatcher] delete_calendar_event failed:", error);
+    return "Deleting the calendar event failed — tell Nishad to try again.";
+  }
+}
+
 async function handleCheckNotion(): Promise<string> {
   try {
     const items = await getUrgentItems();
@@ -231,8 +408,24 @@ export async function executeTool(name: string, input: unknown): Promise<string>
       return handleCreateTask(input as { title: string });
     case "check_email":
       return handleCheckEmail(input as { query?: string });
+    case "search_email":
+      return handleSearchEmail(input as { query: string });
+    case "send_email":
+      return handleSendEmail(input as { to: string; subject: string; body: string });
+    case "delete_email":
+      return handleDeleteEmail(input as { messageId: string });
     case "check_calendar":
       return handleCheckCalendar(input as { withinHours?: number });
+    case "create_calendar_event":
+      return handleCreateCalendarEvent(
+        input as { title: string; start: string; end: string; attendees?: string[] }
+      );
+    case "update_calendar_event":
+      return handleUpdateCalendarEvent(
+        input as { eventId: string; title?: string; start?: string; end?: string }
+      );
+    case "delete_calendar_event":
+      return handleDeleteCalendarEvent(input as { eventId: string });
     case "check_notion":
       return handleCheckNotion();
     case "get_decision_recommendation":

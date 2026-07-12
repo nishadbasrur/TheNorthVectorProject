@@ -1,4 +1,17 @@
-# Calendar + Notion + Gmail (Read-Only) with Proactive Urgency Alerts
+# Calendar + Notion + Gmail with Proactive Urgency Alerts
+
+**Update (Full Read-Write Calendar + Gmail Access):** Section 2's "hard constraint: read-only" below
+no longer holds for Calendar and Gmail — superseded by
+`North_Vector_Full_Read_Write_Calendar_Gmail_Access_Plan.md`. Gmail now sends
+(`sendEmail`), searches full history (`searchEmails`), and trashes
+(`trashEmail`, not permanent erase) via `gmail.modify`. Calendar now creates,
+updates, and deletes events via `calendar.events`, always with
+`sendUpdates: "none"` — North's calendar writes never generate a Google
+notification email to other attendees as a side effect. Notion remains
+read-only; that part of Section 2 still applies. See
+`lib/gmail-client.ts`, `lib/google-calendar-client.ts`, and
+`lib/tool-dispatcher.ts` for the actual implementation. The rest of this doc
+is left as-is as the historical record of the original read-only design.
 
 ## 1. Context
 

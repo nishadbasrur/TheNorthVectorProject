@@ -30,3 +30,7 @@ functions/.env
 # into git history would be pure bloat for files npm already manages.
 public/models/
 public/ort/
+
+# One-time throwaway OAuth re-consent script (see its own header comment) —
+# a local tool to run once when widening Gmail/Calendar scopes, not app code.
+scripts/oauth-widen-scopes.js

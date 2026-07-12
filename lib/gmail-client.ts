@@ -6,9 +6,12 @@ import { gmail, auth as googleAuth, type gmail_v1 } from "@googleapis/gmail";
 
 let cachedClient: gmail_v1.Gmail | null = null;
 
-// gmail.readonly only, deliberately covering the whole inbox (not scoped to
-// a label) — see docs/integrations/calendar-notion-gmail-task.md Section 3.
-// This client must never mark read/unread, archive, label, or reply.
+// gmail.modify, deliberately covering the whole inbox (not scoped to a
+// label) — see docs/integrations/calendar-notion-gmail-task.md and
+// North_Vector_Full_Read_Write_Calendar_Gmail_Access_Plan.md. Widened from
+// gmail.readonly to support sendEmail/searchEmails/trashEmail. Deliberately
+// NOT the broader https://mail.google.com/ scope — trashEmail() moves mail
+// to Trash (recoverable for 30 days), never permanently erases it.
 function getGmailClient(): gmail_v1.Gmail {
   if (cachedClient) {
     return cachedClient;
@@ -76,22 +79,15 @@ function getHeader(payload: gmail_v1.Schema$MessagePart | undefined, name: strin
   return header?.value ?? "";
 }
 
-// Fetches recent inbox messages (full inbox — not label-scoped, per the
-// explicit read-only-full-inbox decision) with subject + body text extracted
-// for urgency evaluation. `maxResults` bounds each on-demand check's cost.
-export async function getRecentInboxMessages(maxResults = 25): Promise<InboxMessage[]> {
-  const client = getGmailClient();
-
-  const listResponse = await client.users.messages.list({
-    userId: "me",
-    labelIds: ["INBOX"],
-    maxResults,
-  });
-
-  const messageRefs = listResponse.data.messages ?? [];
-
-  const messages = await Promise.all(
-    messageRefs
+// Shared by getRecentInboxMessages and searchEmails — both end up with a
+// list of message refs from Gmail and need the same full-fetch + field
+// extraction to turn them into InboxMessage.
+async function fetchMessagesByRefs(
+  client: gmail_v1.Gmail,
+  refs: { id?: string | null }[]
+): Promise<InboxMessage[]> {
+  return Promise.all(
+    refs
       .filter((ref): ref is { id: string } => Boolean(ref.id))
       .map(async (ref) => {
         const full = await client.users.messages.get({
@@ -108,6 +104,73 @@ export async function getRecentInboxMessages(maxResults = 25): Promise<InboxMess
         return { id: ref.id, subject, from, date, bodyText };
       })
   );
+}
 
-  return messages;
+// Fetches recent inbox messages (full inbox — not label-scoped, per the
+// explicit full-inbox decision) with subject + body text extracted for
+// urgency evaluation. `maxResults` bounds each on-demand check's cost.
+export async function getRecentInboxMessages(maxResults = 25): Promise<InboxMessage[]> {
+  const client = getGmailClient();
+
+  const listResponse = await client.users.messages.list({
+    userId: "me",
+    labelIds: ["INBOX"],
+    maxResults,
+  });
+
+  return fetchMessagesByRefs(client, listResponse.data.messages ?? []);
+}
+
+// Full-history search using Gmail's own search syntax (from:, subject:,
+// older_than:, etc.) via the API's `q` param — not a client-side filter over
+// a recent window, so this actually reaches messages getRecentInboxMessages
+// never sees.
+export async function searchEmails(query: string, maxResults = 10): Promise<InboxMessage[]> {
+  const client = getGmailClient();
+
+  const listResponse = await client.users.messages.list({
+    userId: "me",
+    q: query,
+    maxResults,
+  });
+
+  return fetchMessagesByRefs(client, listResponse.data.messages ?? []);
+}
+
+// Header values go straight into a raw RFC 2822 message below — stripping
+// CR/LF prevents a crafted `to`/`subject` value from injecting extra
+// headers (e.g. a second Bcc: line) into the outgoing message.
+function sanitizeHeaderValue(value: string): string {
+  return value.replace(/[\r\n]+/g, " ").trim();
+}
+
+// Sends a new email as the authenticated user. No confirmation step, no
+// draft/review stage — see North_Vector_Full_Read_Write_Calendar_Gmail_Access_Plan.md
+// Section 4 for the autonomy decision this implements.
+export async function sendEmail(to: string, subject: string, body: string): Promise<void> {
+  const client = getGmailClient();
+
+  const message = [
+    `To: ${sanitizeHeaderValue(to)}`,
+    `Subject: ${sanitizeHeaderValue(subject)}`,
+    "Content-Type: text/plain; charset=utf-8",
+    "MIME-Version: 1.0",
+    "",
+    body,
+  ].join("\r\n");
+
+  const raw = Buffer.from(message).toString("base64url");
+
+  await client.users.messages.send({
+    userId: "me",
+    requestBody: { raw },
+  });
+}
+
+// Moves a message to Trash (recoverable for 30 days) — deliberately not a
+// permanent delete, see the gmail.modify-not-mail.google.com scope note atop
+// getGmailClient().
+export async function trashEmail(messageId: string): Promise<void> {
+  const client = getGmailClient();
+  await client.users.messages.trash({ userId: "me", id: messageId });
 }

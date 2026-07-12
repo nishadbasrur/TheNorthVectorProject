@@ -7,9 +7,9 @@ import { calendar, auth as googleAuth, type calendar_v3 } from "@googleapis/cale
 
 let cachedClient: calendar_v3.Calendar | null = null;
 
-// calendar.readonly only — this integration must never create, modify, or
-// delete calendar events. If a future feature needs write access, that's a
-// separate, explicitly-approved task.
+// calendar.events — widened from calendar.readonly to support
+// createCalendarEvent/updateCalendarEvent/deleteCalendarEvent. See
+// North_Vector_Full_Read_Write_Calendar_Gmail_Access_Plan.md.
 function getCalendarClient(): calendar_v3.Calendar {
   if (cachedClient) {
     return cachedClient;
@@ -31,6 +31,14 @@ function getCalendarClient(): calendar_v3.Calendar {
   cachedClient = calendar({ version: "v3", auth: oauth2Client });
   return cachedClient;
 }
+
+// Deliberately hardcoded "none" everywhere below, not a caller-supplied
+// param — per the explicit decision that North's autonomous calendar writes
+// must never generate a Google notification email to other attendees as a
+// side effect. Nishad still sees/hears the change through North itself;
+// external attendees (e.g. a tutor sharing a session event) simply don't
+// get an automatic email unless he tells them himself.
+const SEND_UPDATES = "none" as const;
 
 export type UpcomingEvent = {
   id: string;
@@ -82,5 +90,80 @@ export function eventsStartingSoon(events: UpcomingEvent[], withinMinutes = 15):
   return events.filter((event) => {
     const startMs = event.start.getTime();
     return startMs >= now && startMs <= cutoff;
+  });
+}
+
+function mapEvent(event: calendar_v3.Schema$Event, fallbackNow: Date): UpcomingEvent {
+  const startRaw = event.start?.dateTime ?? event.start?.date;
+  const endRaw = event.end?.dateTime ?? event.end?.date;
+
+  return {
+    id: event.id ?? "",
+    title: event.summary ?? "(untitled event)",
+    start: startRaw ? new Date(startRaw) : fallbackNow,
+    end: endRaw ? new Date(endRaw) : null,
+  };
+}
+
+export type CreateEventInput = {
+  title: string;
+  start: string; // ISO datetime
+  end: string; // ISO datetime
+  attendees?: string[]; // email addresses, optional
+};
+
+// Creates a new event on the primary calendar. No confirmation step — see
+// the standing autonomy decision in
+// North_Vector_Full_Read_Write_Calendar_Gmail_Access_Plan.md Section 4.
+export async function createCalendarEvent(input: CreateEventInput): Promise<UpcomingEvent> {
+  const client = getCalendarClient();
+
+  const response = await client.events.insert({
+    calendarId: "primary",
+    sendUpdates: SEND_UPDATES,
+    requestBody: {
+      summary: input.title,
+      start: { dateTime: input.start },
+      end: { dateTime: input.end },
+      attendees: input.attendees?.map((email) => ({ email })),
+    },
+  });
+
+  return mapEvent(response.data, new Date());
+}
+
+export type UpdateEventInput = {
+  eventId: string;
+  title?: string;
+  start?: string; // ISO datetime
+  end?: string; // ISO datetime
+};
+
+// Patches only the fields provided — an omitted title/start/end is left
+// untouched on the existing event, not cleared.
+export async function updateCalendarEvent(input: UpdateEventInput): Promise<UpcomingEvent> {
+  const client = getCalendarClient();
+
+  const requestBody: calendar_v3.Schema$Event = {};
+  if (input.title !== undefined) requestBody.summary = input.title;
+  if (input.start !== undefined) requestBody.start = { dateTime: input.start };
+  if (input.end !== undefined) requestBody.end = { dateTime: input.end };
+
+  const response = await client.events.patch({
+    calendarId: "primary",
+    eventId: input.eventId,
+    sendUpdates: SEND_UPDATES,
+    requestBody,
+  });
+
+  return mapEvent(response.data, new Date());
+}
+
+export async function deleteCalendarEvent(eventId: string): Promise<void> {
+  const client = getCalendarClient();
+  await client.events.delete({
+    calendarId: "primary",
+    eventId,
+    sendUpdates: SEND_UPDATES,
   });
 }
