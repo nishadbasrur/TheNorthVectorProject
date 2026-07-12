@@ -1027,14 +1027,30 @@ html, body {
   opacity: 0.75;
 }
 
-/* State: idle — dim, static, dormant-like (Part B's real wake-word
-   dormant state will reuse this look; for now it's just the resting
-   state of tap-to-talk). */
+/* State: idle — the brief gap between turns while ACTIVE (post-response,
+   about to auto-relisten), not the same as true DORMANT below. Same look
+   as dormant was originally, kept as a distinct class since the two are
+   now genuinely different states (see app/sandbox/page.tsx's `mode`). */
 .hud-ring-idle .hud-ticks line { opacity: 0.06; }
 .hud-ring-idle .hud-glow { opacity: 0.32; }
 .hud-ring-idle .hud-glow-core { opacity: 0.25; }
 .hud-ring-idle .hud-ring-outer { stroke-opacity: 0.3; }
 .hud-ring-idle .hud-particles { opacity: 0.25; }
+
+/* State: dormant — wake-word-only, no full speech capture happening.
+   Dimmer than the active-mode idle gap above, breathing very slowly to
+   read as "quietly waiting," not "off." Part B's real state, per the
+   original ticket's acceptance criteria. */
+.hud-ring-dormant .hud-ticks line { opacity: 0.04; }
+.hud-ring-dormant .hud-glow { opacity: 0.2; animation: hud-dormant-breathe 5s ease-in-out infinite; }
+.hud-ring-dormant .hud-glow-core { opacity: 0.14; animation: hud-dormant-breathe 5s ease-in-out infinite; }
+.hud-ring-dormant .hud-ring-outer { stroke-opacity: 0.18; }
+.hud-ring-dormant .hud-particles { opacity: 0.15; }
+
+@keyframes hud-dormant-breathe {
+  0%, 100% { opacity: 0.6; }
+  50% { opacity: 1; }
+}
 
 /* State: listening — bright, slow breathing pulse. */
 .hud-ring-listening .hud-glow { opacity: 0.85; animation: hud-breathe 2.2s ease-in-out infinite; }

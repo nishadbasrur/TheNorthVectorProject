@@ -3,6 +3,7 @@
 import { useCallback, useRef, useState } from "react";
 import { AppShell } from "@/components/layout/app-shell";
 import { auth } from "@/lib/firebase";
+import { useWakeWord } from "./use-wake-word";
 
 // TEMPORARY — lets Nishad grab a real ID token from the browser console for
 // manual curl testing of owner-gated endpoints (e.g. triggerSynthesisScan),
@@ -42,6 +43,41 @@ if (typeof window !== "undefined") {
 }
 
 type Status = "idle" | "listening" | "transcribing" | "processing" | "speaking";
+type Mode = "dormant" | "active";
+
+// Human-readable form of the wake-word engine's internal keyword id — see
+// app/sandbox/use-wake-word.ts for why "hey_mycroft" is today's placeholder
+// rather than the real "Hey North" (custom wake words need training this
+// environment can't run).
+const WAKE_WORD_DISPLAY_NAME = "Hey Mycroft";
+
+// Sleep phrase — loose/tolerant match against the raw transcript, not an
+// exact string compare, since STT won't always transcribe "North" cleanly.
+// Checked client-side before ever calling askNorth, so saying it doesn't
+// cost an LLM call just to end the conversation.
+const SLEEP_PHRASES = ["go to sleep, north", "go to sleep north", "go to sleep"];
+function isSleepPhrase(text: string): boolean {
+  const lower = text.toLowerCase().trim();
+  return SLEEP_PHRASES.some((phrase) => lower.includes(phrase));
+}
+
+// Hardcoded, not routed through askNorth/the persona prompt — same reasoning
+// as above. Reuses the exact phrasing from the persona's own "that's all for
+// now" example (app/api/v1/voice/respond/route.ts) for tonal consistency.
+const SLEEP_ACKNOWLEDGMENT = "Understood, sir. I'll be here when something's worth mentioning.";
+
+// Auto-stop-on-silence and barge-in thresholds — hand-tuned starting points
+// against a Float32 [-1, 1] signal's RMS, not derived from any formal
+// calibration. Expect these to need adjustment once tested against a real
+// mic/room; that's expected, not a sign something's broken.
+const SPEECH_RMS_THRESHOLD = 0.02;
+const SILENCE_DURATION_MS = 1400;
+const NO_SPEECH_GIVEUP_MS = 8000;
+const INACTIVITY_TIMEOUT_MS = 75000; // real inactivity -> back to DORMANT
+// Higher bar than SPEECH_RMS_THRESHOLD — without headphones, TTS audio
+// bleeding into the mic (imperfect echo cancellation) needs a firmer floor
+// than normal speech detection to avoid the system barging in on itself.
+const BARGE_IN_RMS_THRESHOLD = 0.045;
 
 // getUserMedia rejection names mapped to copy a person can actually act on —
 // the raw DOMException name alone (e.g. "NotAllowedError") is accurate but
@@ -94,9 +130,9 @@ function writeWavHeader(
 }
 
 // Builds a 1-sample silent WAV as a blob URL. Used only to "unlock" the
-// reused <audio> element inside a real user gesture (see startListening) —
-// Safari blocks .play() on any element that hasn't successfully played
-// something from directly within a user-gesture call stack at least once.
+// reused <audio> element inside a real user gesture (see armMic) — Safari
+// blocks .play() on any element that hasn't successfully played something
+// from directly within a user-gesture call stack at least once.
 function createSilentAudioUrl(): string {
   const sampleRate = 8000;
   const header = new ArrayBuffer(44);
@@ -138,6 +174,12 @@ function mergeSamples(chunks: Float32Array[]): Float32Array {
   return merged;
 }
 
+function rms(data: Float32Array): number {
+  let sumSquares = 0;
+  for (let i = 0; i < data.length; i++) sumSquares += data[i] * data[i];
+  return Math.sqrt(sumSquares / data.length);
+}
+
 // Tick marks around the HUD ring, generated rather than hand-authored 24
 // <line> elements — kept subtle (see globals.css) since the reference
 // photo reads as a soft glowing orb, not a compass instrument.
@@ -166,10 +208,8 @@ const HUD_PARTICLES = [
 
 type VoiceRespondResult = { responseText: string; toolsUsed: string[] };
 
-// Calls the tool-calling voice endpoint directly — replaces
-// lib/voice-intent-router.ts's client-side rule-based dispatch, deleted as
-// part of the JARVIS tool-calling migration. sessionId carries multi-turn
-// continuity across separate spoken utterances (see
+// Calls the tool-calling voice endpoint directly. sessionId carries
+// multi-turn continuity across separate spoken utterances (see
 // lib/voice-session-store.ts); the endpoint itself decides which tool(s), if
 // any, the transcript needs.
 async function askNorth(text: string, sessionId: string): Promise<VoiceRespondResult> {
@@ -185,13 +225,6 @@ async function askNorth(text: string, sessionId: string): Promise<VoiceRespondRe
   });
 
   if (!response.ok) {
-    // Throw with the real status + server detail instead of silently
-    // returning the generic fallback string — every failure (bad request,
-    // auth failure, model error, a deleted route) used to collapse into the
-    // identical "I didn't catch that clearly" text, which made three
-    // different real bugs look indistinguishable from the transcript alone.
-    // handleTranscript's existing catch block routes this into the same
-    // errorMessage display already used for mic/auth/TTS failures.
     let detail = "";
     try {
       const errorBody = await response.json();
@@ -212,6 +245,8 @@ async function askNorth(text: string, sessionId: string): Promise<VoiceRespondRe
 
 export default function SandboxPage() {
   const [status, setStatus] = useState<Status>("idle");
+  const [mode, setMode] = useState<Mode>("dormant");
+  const [micArmed, setMicArmed] = useState(false);
   const [transcript, setTranscript] = useState("");
   const [responseText, setResponseText] = useState("");
   const [toolsUsed, setToolsUsed] = useState<string[]>([]);
@@ -222,19 +257,35 @@ export default function SandboxPage() {
   // carries conversational context for.
   const sessionIdRef = useRef<string>(crypto.randomUUID());
 
+  // Mirrors `mode` for use inside timers/event handlers, which otherwise
+  // close over whatever `mode` was at the time they were created rather
+  // than its current value.
+  const modeRef = useRef<Mode>("dormant");
+  modeRef.current = mode;
+
   const mediaStreamRef = useRef<MediaStream | null>(null);
   const audioContextRef = useRef<AudioContext | null>(null);
   const processorRef = useRef<ScriptProcessorNode | null>(null);
   const recordedChunksRef = useRef<Float32Array[]>([]);
+  const hasSpeechRef = useRef(false);
   // Reused across the page session (not recreated per response) — once this
   // exact element has played from within a user gesture, Safari allows later
   // programmatic .play() calls on it even outside a gesture call stack.
   const audioRef = useRef<HTMLAudioElement | null>(null);
-  // Backstop against forgetting to tap stop (or the tap handler somehow not
-  // firing) — raw recording has no auto-stop-on-silence the way
-  // SpeechRecognition did, so without this a session could record
-  // indefinitely.
+
   const recordingWatchdogRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const silenceTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const noSpeechTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const inactivityTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  const bargeInStreamRef = useRef<MediaStream | null>(null);
+  const bargeInContextRef = useRef<AudioContext | null>(null);
+  const bargeInProcessorRef = useRef<ScriptProcessorNode | null>(null);
+
+  // startListening calls itself again (no-speech giveup, post-response
+  // loop) — a ref avoids stale closures inside setTimeout callbacks without
+  // fighting useCallback's dependency array for a self-referencing function.
+  const startListeningRef = useRef<() => void>(() => {});
 
   const clearRecordingWatchdog = useCallback(() => {
     if (recordingWatchdogRef.current) {
@@ -243,11 +294,34 @@ export default function SandboxPage() {
     }
   }, []);
 
+  const clearSilenceTimer = useCallback(() => {
+    if (silenceTimerRef.current) {
+      clearTimeout(silenceTimerRef.current);
+      silenceTimerRef.current = null;
+    }
+  }, []);
+
+  const clearNoSpeechTimer = useCallback(() => {
+    if (noSpeechTimerRef.current) {
+      clearTimeout(noSpeechTimerRef.current);
+      noSpeechTimerRef.current = null;
+    }
+  }, []);
+
+  const clearInactivityTimer = useCallback(() => {
+    if (inactivityTimerRef.current) {
+      clearTimeout(inactivityTimerRef.current);
+      inactivityTimerRef.current = null;
+    }
+  }, []);
+
   // Disconnects/stops everything from the current (or a leftover, half-torn
   // -down previous) recording session. Safe to call multiple times or when
   // nothing is active.
   const teardownRecording = useCallback(() => {
     clearRecordingWatchdog();
+    clearSilenceTimer();
+    clearNoSpeechTimer();
 
     try {
       processorRef.current?.disconnect();
@@ -265,45 +339,149 @@ export default function SandboxPage() {
 
     mediaStreamRef.current?.getTracks().forEach((track) => track.stop());
     mediaStreamRef.current = null;
-  }, [clearRecordingWatchdog]);
+  }, [clearRecordingWatchdog, clearSilenceTimer, clearNoSpeechTimer]);
 
-  const speak = useCallback(async (text: string) => {
-    setStatus("speaking");
+  const stopBargeInMonitor = useCallback(() => {
+    try {
+      bargeInProcessorRef.current?.disconnect();
+    } catch {
+      // Nothing to disconnect.
+    }
+    bargeInProcessorRef.current = null;
 
     try {
-      const idToken = await auth.currentUser?.getIdToken();
+      bargeInContextRef.current?.close();
+    } catch {
+      // Already closed.
+    }
+    bargeInContextRef.current = null;
 
-      const response = await fetch("/api/v1/tts", {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          Authorization: `Bearer ${idToken}`,
-        },
-        body: JSON.stringify({ text }),
+    bargeInStreamRef.current?.getTracks().forEach((track) => track.stop());
+    bargeInStreamRef.current = null;
+  }, []);
+
+  // Barge-in v1: stop-then-relisten, not true simultaneous capture. Opens a
+  // separate lightweight mic stream just to watch RMS while North is
+  // speaking; on a sustained loud chunk, fires the callback (which pauses
+  // TTS and starts a fresh recording). A few hundred ms of the very start
+  // of what's said is likely lost in that handoff — a real, known
+  // limitation, not a bug, of not running true overlapping audio capture.
+  // Reliability will also vary a lot with hardware — headphones avoid the
+  // TTS-echo-into-mic problem entirely; open speakers don't.
+  const startBargeInMonitor = useCallback(async (onBargeIn: () => void) => {
+    if (modeRef.current !== "active") return;
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({
+        audio: { echoCancellation: true, noiseSuppression: true },
       });
+      const AudioContextCtor =
+        window.AudioContext ?? (window as unknown as { webkitAudioContext: typeof AudioContext }).webkitAudioContext;
+      const context = new AudioContextCtor();
+      const source = context.createMediaStreamSource(stream);
+      const processor = context.createScriptProcessor(2048, 1, 1);
+      const silentGain = context.createGain();
+      silentGain.gain.value = 0;
 
-      if (!response.ok) {
-        throw new Error("Text-to-speech request failed.");
-      }
+      let loudChunks = 0;
+      processor.onaudioprocess = (event) => {
+        const level = rms(event.inputBuffer.getChannelData(0));
+        if (level > BARGE_IN_RMS_THRESHOLD) {
+          loudChunks += 1;
+          if (loudChunks >= 2) onBargeIn();
+        } else {
+          loudChunks = 0;
+        }
+      };
 
-      const blob = await response.blob();
-      const url = URL.createObjectURL(blob);
-      const audioElement = audioRef.current ?? new Audio();
-      audioElement.src = url;
+      source.connect(processor);
+      processor.connect(silentGain);
+      silentGain.connect(context.destination);
 
-      await new Promise<void>((resolve, reject) => {
-        audioElement.onended = () => resolve();
-        audioElement.onerror = () => reject(new Error("Audio playback failed."));
-        audioElement.play().catch(reject);
-      });
-
-      URL.revokeObjectURL(url);
+      bargeInStreamRef.current = stream;
+      bargeInContextRef.current = context;
+      bargeInProcessorRef.current = processor;
     } catch (error) {
-      setErrorMessage(error instanceof Error ? error.message : "Failed to play audio.");
-    } finally {
-      setStatus("idle");
+      // Barge-in is a nice-to-have on top of the core flow — a mic failure
+      // here shouldn't block or error out the actual spoken response.
+      console.warn("[Sandbox] Barge-in monitor failed to start:", error);
     }
   }, []);
+
+  const goDormant = useCallback(() => {
+    clearInactivityTimer();
+    teardownRecording();
+    stopBargeInMonitor();
+    audioRef.current?.pause();
+    setMode("dormant");
+    setStatus("idle");
+  }, [clearInactivityTimer, teardownRecording, stopBargeInMonitor]);
+
+  const resetInactivityTimer = useCallback(() => {
+    clearInactivityTimer();
+    inactivityTimerRef.current = setTimeout(() => {
+      if (modeRef.current === "active") goDormant();
+    }, INACTIVITY_TIMEOUT_MS);
+  }, [clearInactivityTimer, goDormant]);
+
+  const speak = useCallback(
+    async (text: string) => {
+      setStatus("speaking");
+
+      try {
+        const idToken = await auth.currentUser?.getIdToken();
+
+        const response = await fetch("/api/v1/tts", {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            Authorization: `Bearer ${idToken}`,
+          },
+          body: JSON.stringify({ text }),
+        });
+
+        if (!response.ok) {
+          throw new Error("Text-to-speech request failed.");
+        }
+
+        const blob = await response.blob();
+        const url = URL.createObjectURL(blob);
+        const audioElement = audioRef.current ?? new Audio();
+        audioElement.src = url;
+
+        await new Promise<void>((resolve, reject) => {
+          let settled = false;
+          const finish = () => {
+            if (settled) return;
+            settled = true;
+            resolve();
+          };
+
+          audioElement.onended = finish;
+          audioElement.onerror = () => {
+            if (settled) return;
+            settled = true;
+            reject(new Error("Audio playback failed."));
+          };
+
+          startBargeInMonitor(() => {
+            if (settled) return;
+            audioElement.pause();
+            finish();
+          });
+
+          audioElement.play().catch(reject);
+        });
+
+        URL.revokeObjectURL(url);
+      } catch (error) {
+        setErrorMessage(error instanceof Error ? error.message : "Failed to play audio.");
+      } finally {
+        stopBargeInMonitor();
+        setStatus("idle");
+      }
+    },
+    [startBargeInMonitor, stopBargeInMonitor]
+  );
 
   const handleTranscript = useCallback(
     async (text: string) => {
@@ -312,6 +490,7 @@ export default function SandboxPage() {
       setToolsUsed([]);
       setStatus("processing");
       setErrorMessage(null);
+      resetInactivityTimer(); // real interaction — push back the dormant deadline
 
       try {
         const result = await askNorth(text, sessionIdRef.current);
@@ -322,8 +501,15 @@ export default function SandboxPage() {
         setErrorMessage(error instanceof Error ? error.message : "Something went wrong.");
         setStatus("idle");
       }
+
+      // Loop back to listening for the next turn — no tap needed, this is
+      // the whole point of ACTIVE mode. Sleep word / inactivity timeout are
+      // the only ways out (see isSleepPhrase and resetInactivityTimer).
+      if (modeRef.current === "active") {
+        startListeningRef.current();
+      }
     },
-    [speak]
+    [speak, resetInactivityTimer]
   );
 
   const transcribeAndRoute = useCallback(
@@ -358,8 +544,18 @@ export default function SandboxPage() {
         const text = typeof data.transcript === "string" ? data.transcript.trim() : "";
 
         if (!text) {
-          setErrorMessage("Didn't catch anything — try holding a bit longer before you speak.");
+          setErrorMessage("Didn't catch anything — try again.");
           setStatus("idle");
+          if (modeRef.current === "active") startListeningRef.current();
+          return;
+        }
+
+        if (modeRef.current === "active" && isSleepPhrase(text)) {
+          setTranscript(text);
+          setResponseText(SLEEP_ACKNOWLEDGMENT);
+          setToolsUsed([]);
+          await speak(SLEEP_ACKNOWLEDGMENT);
+          goDormant();
           return;
         }
 
@@ -371,13 +567,20 @@ export default function SandboxPage() {
           setErrorMessage(error instanceof Error ? error.message : "Couldn't transcribe — try again.");
         }
         setStatus("idle");
+        if (modeRef.current === "active") startListeningRef.current();
       } finally {
         clearTimeout(timeoutId);
       }
     },
-    [handleTranscript]
+    [handleTranscript, speak, goDormant]
   );
 
+  // The core recording loop. Auto-stops on ~1.4s of silence after real
+  // speech was detected (replacing the old manual tap-to-stop), gives up
+  // and restarts if nothing is said within 8s (not the same as the longer
+  // 75s inactivityTimer — this just retries the current listening attempt;
+  // resetInactivityTimer only pushes back on actual captured speech), and
+  // keeps the original 60s hard watchdog as an absolute backstop.
   const startListening = useCallback(async () => {
     if (status !== "idle") return;
 
@@ -386,14 +589,13 @@ export default function SandboxPage() {
       return;
     }
 
-    // A leftover session from a previous cycle can leave audio nodes/stream
-    // tracks half-torn-down if cleanup didn't fully complete — tearing down
-    // first gives the new session a clean handoff.
     teardownRecording();
+    hasSpeechRef.current = false;
 
     setErrorMessage(null);
     setTranscript("");
     setResponseText("");
+    setToolsUsed([]);
 
     if (!audioRef.current) {
       const audio = new Audio(createSilentAudioUrl());
@@ -403,21 +605,18 @@ export default function SandboxPage() {
 
     let stream: MediaStream;
     try {
-      stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      stream = await navigator.mediaDevices.getUserMedia({ audio: { echoCancellation: true } });
     } catch (error) {
       console.warn("getUserMedia failed:", error);
       setErrorMessage(describeMicError(error));
+      if (modeRef.current === "active") goDormant(); // can't listen at all — don't strand in active mode
       return;
     }
 
-    // webkitAudioContext: older Safari's prefixed name, not in lib.dom.d.ts.
     const AudioContextCtor =
       window.AudioContext ?? (window as unknown as { webkitAudioContext: typeof AudioContext }).webkitAudioContext;
     const audioContext = new AudioContextCtor();
     const source = audioContext.createMediaStreamSource(stream);
-    // ScriptProcessorNode requires reaching the destination to reliably fire
-    // onaudioprocess in some browsers — routed through a zero-gain node so
-    // the raw mic input is never actually audible (no feedback/echo).
     const processor = audioContext.createScriptProcessor(4096, 1, 1);
     const silentGain = audioContext.createGain();
     silentGain.gain.value = 0;
@@ -425,7 +624,22 @@ export default function SandboxPage() {
     recordedChunksRef.current = [];
 
     processor.onaudioprocess = (event) => {
-      recordedChunksRef.current.push(new Float32Array(event.inputBuffer.getChannelData(0)));
+      const data = event.inputBuffer.getChannelData(0);
+      recordedChunksRef.current.push(new Float32Array(data));
+
+      if (rms(data) > SPEECH_RMS_THRESHOLD) {
+        if (!hasSpeechRef.current) {
+          hasSpeechRef.current = true;
+          clearNoSpeechTimer();
+        }
+        // Real speech — push back the silence deadline.
+        clearSilenceTimer();
+        silenceTimerRef.current = setTimeout(() => {
+          const sr = audioContextRef.current?.sampleRate ?? 16000;
+          teardownRecording();
+          transcribeAndRoute(sr);
+        }, SILENCE_DURATION_MS);
+      }
     };
 
     source.connect(processor);
@@ -438,48 +652,129 @@ export default function SandboxPage() {
 
     setStatus("listening");
 
+    noSpeechTimerRef.current = setTimeout(() => {
+      if (modeRef.current !== "active") return;
+      teardownRecording();
+      setStatus("idle");
+      startListeningRef.current();
+    }, NO_SPEECH_GIVEUP_MS);
+
     clearRecordingWatchdog();
     recordingWatchdogRef.current = setTimeout(() => {
       setStatus((current) => {
         if (current !== "listening") return current;
-        const sampleRate = audioContextRef.current?.sampleRate ?? 16000;
+        const sr = audioContextRef.current?.sampleRate ?? 16000;
         teardownRecording();
-        transcribeAndRoute(sampleRate);
+        transcribeAndRoute(sr);
         return "transcribing";
       });
     }, 60000);
-  }, [status, teardownRecording, clearRecordingWatchdog, transcribeAndRoute]);
+  }, [status, teardownRecording, clearRecordingWatchdog, clearSilenceTimer, clearNoSpeechTimer, transcribeAndRoute, goDormant]);
 
-  const stopListening = useCallback(() => {
+  startListeningRef.current = () => {
+    startListening();
+  };
+
+  // Manual "stop and process now" override — auto-stop-on-silence should
+  // usually fire first, but this stays available in case detection is slow
+  // or picks up ambient noise oddly.
+  const stopListeningManual = useCallback(() => {
     const sampleRate = audioContextRef.current?.sampleRate ?? 16000;
     teardownRecording();
 
-    if (recordedChunksRef.current.length === 0) {
-      setErrorMessage("Didn't catch anything — try holding a bit longer before you speak.");
+    if (recordedChunksRef.current.length === 0 || !hasSpeechRef.current) {
+      setErrorMessage("Didn't catch anything — try again.");
       setStatus("idle");
+      if (modeRef.current === "active") startListeningRef.current();
       return;
     }
 
     transcribeAndRoute(sampleRate);
   }, [teardownRecording, transcribeAndRoute]);
 
-  const handleMicTap = useCallback(() => {
-    if (status === "idle") {
-      startListening();
-    } else if (status === "listening") {
-      stopListening();
+  // First-ever tap: just confirms mic permission (stops the probe stream
+  // immediately, doesn't keep it open) so the wake-word engine's own
+  // getUserMedia call resolves instantly afterward instead of prompting.
+  const armMic = useCallback(async () => {
+    if (!navigator.mediaDevices?.getUserMedia) {
+      setErrorMessage("Microphone access isn't supported in this browser.");
+      return;
     }
-  }, [status, startListening, stopListening]);
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      stream.getTracks().forEach((track) => track.stop());
+      setMicArmed(true);
+      setErrorMessage(null);
+    } catch (error) {
+      setErrorMessage(describeMicError(error));
+    }
+  }, []);
 
-  const statusLabel: Record<Status, string> = {
-    idle: "Tap to talk",
-    listening: "Listening… (tap to stop)",
-    transcribing: "Transcribing…",
-    processing: "Thinking…",
-    speaking: "Speaking…",
-  };
+  const handleWakeWordDetected = useCallback(() => {
+    if (modeRef.current !== "dormant") return; // ignore late events mid-transition
+    setMode("active");
+    setErrorMessage(null);
+    resetInactivityTimer();
+    startListeningRef.current();
+  }, [resetInactivityTimer]);
 
-  const ringDisabled = status === "transcribing" || status === "processing" || status === "speaking";
+  const { status: wakeWordStatus } = useWakeWord({
+    enabled: mode === "dormant" && micArmed,
+    onDetect: handleWakeWordDetected,
+    onError: (error) => console.warn("[Sandbox] Wake-word engine error:", error),
+  });
+
+  const handleMicTap = useCallback(() => {
+    if (mode === "dormant") {
+      if (!micArmed) {
+        armMic();
+      } else {
+        // Manual bypass — skip the wake word, go straight to active.
+        setMode("active");
+        setErrorMessage(null);
+        resetInactivityTimer();
+        startListeningRef.current();
+      }
+      return;
+    }
+
+    // mode === "active"
+    if (status === "listening") {
+      stopListeningManual();
+    } else {
+      // Escape hatch from any other active sub-state (transcribing,
+      // processing, speaking, or the brief idle gap between turns).
+      goDormant();
+    }
+  }, [mode, micArmed, armMic, resetInactivityTimer, status, stopListeningManual, goDormant]);
+
+  function getStatusLabel(): string {
+    if (mode === "dormant") {
+      if (!micArmed) return "Tap to enable voice";
+      if (wakeWordStatus === "loading") return "Loading wake-word model…";
+      if (wakeWordStatus === "unsupported") return "Wake word unsupported — tap to talk";
+      if (wakeWordStatus === "error") return "Wake-word engine failed — tap to talk";
+      return `Say "${WAKE_WORD_DISPLAY_NAME}"`;
+    }
+
+    switch (status) {
+      case "idle":
+        return "One moment…";
+      case "listening":
+        return "Listening… (tap to stop)";
+      case "transcribing":
+        return "Transcribing…";
+      case "processing":
+        return "Thinking…";
+      case "speaking":
+        return "Speaking… (tap to stop)";
+      default:
+        return "";
+    }
+  }
+
+  const ringState = mode === "dormant" ? "dormant" : status;
+  const statusLabel = getStatusLabel();
 
   return (
     <AppShell>
@@ -487,9 +782,9 @@ export default function SandboxPage() {
         <div className="page-eyebrow">Experimental</div>
         <div className="page-title">Sandbox</div>
         <div className="page-meta">
-          Voice input prototype · tap to talk, tap again to stop → Cloud Speech-to-Text → Claude with
-          tool-calling (checks email/calendar/Notion, creates tasks, or answers directly, as needed) →
-          spoken response
+          Voice input prototype · say &quot;{WAKE_WORD_DISPLAY_NAME}&quot; (placeholder for &quot;Hey
+          North&quot; — see code) to wake, talk freely, say &quot;go to sleep, North&quot; or pause 75s to
+          end → Cloud Speech-to-Text → Claude with tool-calling → spoken response
         </div>
       </div>
 
@@ -501,7 +796,7 @@ export default function SandboxPage() {
         </div>
 
         <div className="hud-stage">
-          <div className={`hud-ring-wrap hud-ring-${status}`}>
+          <div className={`hud-ring-wrap hud-ring-${ringState}`}>
             <svg className="hud-ticks" viewBox="0 0 200 200">
               {HUD_TICKS.map(({ angle, major }) => (
                 <line
@@ -547,14 +842,9 @@ export default function SandboxPage() {
               />
             </svg>
 
-            <button
-              className="hud-ring-hit"
-              onClick={handleMicTap}
-              disabled={ringDisabled}
-              aria-label={statusLabel[status]}
-            >
+            <button className="hud-ring-hit" onClick={handleMicTap} aria-label={statusLabel}>
               <span className="hud-wordmark">NORTH</span>
-              <span className="hud-status-label">{statusLabel[status]}</span>
+              <span className="hud-status-label">{statusLabel}</span>
             </button>
           </div>
 

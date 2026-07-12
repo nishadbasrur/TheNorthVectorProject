@@ -23,3 +23,10 @@ functions/lib/
 
 # Cloud Functions plain (non-secret) env vars, same treatment as .env.local
 functions/.env
+
+# Wake-word ONNX models + onnxruntime-web WASM binaries — copied from
+# node_modules by scripts/copy-wake-word-assets.js (predev/prebuild), not
+# source. node_modules is already gitignored; duplicating ~80MB of binaries
+# into git history would be pure bloat for files npm already manages.
+public/models/
+public/ort/

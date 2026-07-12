@@ -3,7 +3,9 @@
   "version": "0.1.0",
   "private": true,
   "scripts": {
+    "predev": "node scripts/copy-wake-word-assets.js",
     "dev": "next dev",
+    "prebuild": "node scripts/copy-wake-word-assets.js",
     "build": "next build",
     "start": "next start",
     "lint": "echo lint skipped for scaffold",
@@ -25,6 +27,7 @@
     "firebase-admin": "^14.1.0",
     "next": "latest",
     "next-auth": "latest",
+    "openwakeword-wasm-browser": "^0.1.1",
     "plaid": "^43.0.0",
     "react": "latest",
     "react-dom": "latest",
