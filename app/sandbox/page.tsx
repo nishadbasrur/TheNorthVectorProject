@@ -138,6 +138,15 @@ function mergeSamples(chunks: Float32Array[]): Float32Array {
   return merged;
 }
 
+// Tick marks around the HUD ring, generated rather than hand-authored 24
+// <line> elements — every 4th tick is "major" (longer, brighter), matching
+// the reference images' compass-style ring treatment.
+const HUD_TICK_COUNT = 24;
+const HUD_TICKS = Array.from({ length: HUD_TICK_COUNT }, (_, i) => ({
+  angle: (360 / HUD_TICK_COUNT) * i,
+  major: i % 4 === 0,
+}));
+
 type VoiceRespondResult = { responseText: string; toolsUsed: string[] };
 
 // Calls the tool-calling voice endpoint directly — replaces
@@ -453,6 +462,8 @@ export default function SandboxPage() {
     speaking: "Speaking…",
   };
 
+  const ringDisabled = status === "transcribing" || status === "processing" || status === "speaking";
+
   return (
     <AppShell>
       <div className="page-header">
@@ -465,61 +476,80 @@ export default function SandboxPage() {
         </div>
       </div>
 
-      <div className="page-body">
-        <div className="card" style={{ maxWidth: 480, textAlign: "center" }}>
-          <div
-            style={{
-              fontSize: 11,
-              color: "var(--status-warning)",
-              textTransform: "uppercase",
-              letterSpacing: "0.08em",
-              marginBottom: 16,
-            }}
-          >
-            ⚠ Experimental — voice recognition quality and routing accuracy are not guaranteed
+      <div className="hud-page">
+        <div className="hud-ruler">
+          {Array.from({ length: 48 }, (_, i) => (
+            <div key={i} className="hud-ruler-tick" />
+          ))}
+        </div>
+
+        <div className="hud-stage">
+          <div className={`hud-ring-wrap hud-ring-${status}`}>
+            <svg className="hud-ticks" viewBox="0 0 200 200">
+              {HUD_TICKS.map(({ angle, major }) => (
+                <line
+                  key={angle}
+                  className={major ? "hud-tick-major" : undefined}
+                  x1="100"
+                  y1="6"
+                  x2="100"
+                  y2={major ? "18" : "13"}
+                  transform={`rotate(${angle} 100 100)`}
+                />
+              ))}
+            </svg>
+
+            <div className="hud-glow" />
+
+            <svg className="hud-ring-svg" viewBox="0 0 200 200">
+              <circle className="hud-ring-outer" cx="100" cy="100" r="94" />
+              <circle className="hud-ring-inner" cx="100" cy="100" r="80" />
+              <path
+                className="hud-ring-arc"
+                d="M 100 22 A 78 78 0 0 1 178 100"
+                pathLength={100}
+              />
+            </svg>
+
+            <button
+              className="hud-ring-hit"
+              onClick={handleMicTap}
+              disabled={ringDisabled}
+              aria-label={statusLabel[status]}
+            >
+              <span className="hud-wordmark">NORTH</span>
+              <span className="hud-status-label">{statusLabel[status]}</span>
+            </button>
           </div>
 
-          <button
-            className="nv-button"
-            style={{ width: 160, height: 160, borderRadius: "50%", fontSize: 14 }}
-            onClick={handleMicTap}
-            disabled={status === "transcribing" || status === "processing" || status === "speaking"}
-          >
-            {statusLabel[status]}
-          </button>
-
-          {errorMessage && (
-            <div style={{ marginTop: 16, fontSize: 12, color: "var(--status-warning)" }}>
-              {errorMessage}
+          <div className="hud-panel">
+            <div className="hud-warning">
+              Experimental — voice recognition quality and routing accuracy are not guaranteed
             </div>
-          )}
 
-          {transcript && (
-            <div style={{ marginTop: 20, textAlign: "left" }}>
-              <div style={{ fontSize: 11, color: "var(--text-faint)", textTransform: "uppercase", letterSpacing: "0.05em" }}>
-                You said
+            {errorMessage && <div className="hud-error">{errorMessage}</div>}
+
+            {transcript && (
+              <div className="hud-readout">
+                <div className="hud-readout-label">You said</div>
+                <div className="hud-readout-text">{transcript}</div>
               </div>
-              <div style={{ fontSize: 13, color: "var(--text-primary)", marginTop: 4 }}>{transcript}</div>
-            </div>
-          )}
+            )}
 
-          {responseText && (
-            <div style={{ marginTop: 16, textAlign: "left" }}>
-              <div style={{ fontSize: 11, color: "var(--text-faint)", textTransform: "uppercase", letterSpacing: "0.05em" }}>
-                North
+            {responseText && (
+              <div className="hud-readout">
+                <div className="hud-readout-label">North</div>
+                <div className="hud-readout-text">{responseText}</div>
               </div>
-              <div style={{ fontSize: 13, color: "var(--text-primary)", marginTop: 4 }}>{responseText}</div>
-            </div>
-          )}
+            )}
 
-          {toolsUsed.length > 0 && (
-            <div style={{ marginTop: 12, textAlign: "left" }}>
-              <div style={{ fontSize: 11, color: "var(--text-faint)", textTransform: "uppercase", letterSpacing: "0.05em" }}>
-                Tools used
+            {toolsUsed.length > 0 && (
+              <div className="hud-readout">
+                <div className="hud-readout-label">Tools used</div>
+                <div className="hud-readout-text">{toolsUsed.join(", ")}</div>
               </div>
-              <div style={{ fontSize: 12, color: "var(--text-faint)", marginTop: 4 }}>{toolsUsed.join(", ")}</div>
-            </div>
-          )}
+            )}
+          </div>
         </div>
       </div>
     </AppShell>
