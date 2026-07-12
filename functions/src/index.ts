@@ -165,6 +165,17 @@ const synthesisScanSecrets = [
 // existing manual-trigger pattern rather than introducing a new one.
 // Wiring an onSchedule(...) export here is the deliberate last step, once
 // manual runs look sane — not something to add preemptively in this pass.
+//
+// Operational note, not fixable in code: lib/notion-client.ts also reads
+// process.env.NOTION_URGENT_DATABASE_ID directly (not via defineSecret) —
+// urgencyScan already has this set as a plain runtime environment variable
+// configured out-of-band through the Firebase/GCP console (not tracked
+// anywhere in this repo, per docs/integrations/calendar-notion-gmail-task.md's
+// own note that the database ID was deliberately kept out of source rather
+// than hardcoded). A newly created function like this one does not inherit
+// another function's console-configured env vars — it must be set on
+// *this* function too, by hand, in the console, the same way it was set on
+// urgencyScan.
 export const triggerSynthesisScan = onRequest(
   { secrets: synthesisScanSecrets, timeoutSeconds: 120 },
   async (req, res) => {
