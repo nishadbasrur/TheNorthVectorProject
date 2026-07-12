@@ -21,7 +21,9 @@ const SYNTHESIS_MODEL = "claude-sonnet-5";
 // and let lib/synthesis-priority.ts's delivery-channel logic (not this
 // prompt) decide what interrupts versus what waits for a summary.
 const SYNTHESIS_SYSTEM_PROMPT = `
-You are North's synthesis reasoning pass. You will be given a snapshot of everything currently active across Nishad's calendar, inbox, Notion urgent items, tasks, goals, and relevant stored memories.
+You are North's synthesis reasoning pass. You will be given a snapshot of everything currently active across Nishad's calendar, inbox, Notion urgent items, tasks, goals, and relevant stored memories, starting with a CURRENT TIME line.
+
+Ground every timing claim in the actual timestamps given (CURRENT TIME, calendar event start times, email received times) — never say something "just arrived," "is starting soon," or similar unless the real timestamps support it. It's fine to connect an old email to a current situation (e.g. "an email from three days ago about X is still relevant now that Y is happening") — just describe the actual elapsed time honestly rather than implying immediacy that isn't there. A connection can be genuinely worth surfacing without being urgent; don't manufacture urgency to make it sound more pressing than the timestamps actually support.
 
 Your job is NOT to summarize each source individually — a separate part of the system already does that. Your job is to find CONNECTIONS: places where two or more sources relate to each other in a way that matters, or where a pattern across multiple items (not any single one) suggests something worth knowing.
 
@@ -59,8 +61,15 @@ function serializeContextForPrompt(context: SynthesisContext): string {
     .map((e) => `- [calendar:${e.id}] "${e.title}" starts ${e.start.toISOString()}`)
     .join("\n");
 
+  // Includes the actual received date/time — without it, the model has no
+  // way to honestly judge how recent or time-sensitive an email is, and
+  // (confirmed against real output) will still produce confident-sounding
+  // temporal language ("arrives right as...") inferred from subject-line
+  // content alone rather than the real timestamp. That's exactly the kind
+  // of ungrounded claim Section 0.1's "score honestly" principle argues
+  // against, even when the underlying connection itself is reasonable.
   const emailBlock = context.inboxMessages
-    .map((m) => `- [email:${m.id}] From: ${m.from} — "${m.subject}" — ${m.bodyText.slice(0, 500)}`)
+    .map((m) => `- [email:${m.id}] From: ${m.from} — Received: ${m.date || "(unknown)"} — "${m.subject}" — ${m.bodyText.slice(0, 500)}`)
     .join("\n");
 
   const notionBlock = context.notionUrgentItems.map((i) => `- [notion:${i.id}] "${i.title}"`).join("\n");
@@ -75,7 +84,15 @@ function serializeContextForPrompt(context: SynthesisContext): string {
 
   const memoryBlock = context.relevantMemories.map((m) => `- ${m}`).join("\n");
 
+  // CURRENT TIME is the ground-truth anchor every other timestamp in this
+  // prompt needs to be judged against — without it, "starts in 40 minutes"
+  // or "just arrived" style urgency claims (the exact kind Section 1's
+  // examples call for) are structurally impossible to assess honestly, and
+  // the model has no reliable substitute (training-data awareness of "the
+  // current date" is not the same as knowing the actual moment this run
+  // happened).
   return [
+    `CURRENT TIME: ${context.generatedAt.toISOString()}`,
     `CALENDAR (next 72h):\n${calendarBlock || "(none)"}`,
     `INBOX (recent):\n${emailBlock || "(none)"}`,
     `NOTION URGENT ITEMS:\n${notionBlock || "(none)"}`,
