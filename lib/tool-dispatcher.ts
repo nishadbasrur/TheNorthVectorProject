@@ -18,6 +18,7 @@ import { deliveryChannel } from "./synthesis-priority";
 import { geocodeLocation, getBuildingFootprint } from "./map-client";
 import { loadVisualState, saveVisualState, type VisualState } from "./voice-session-store";
 import { logCapabilityGap } from "./capability-gap-store";
+import { logTechnicalError } from "./error-log-store";
 
 // Single source of truth for what North can do via voice — read directly by
 // Claude as tool schemas, not maintained separately as prose (that
@@ -271,6 +272,32 @@ export const TOOL_DEFINITIONS: Anthropic.Tool[] = [
         numPeople: { type: "number", description: "Number of people splitting the bill, e.g. 3." },
       },
       required: ["billAmount", "tipPercent", "numPeople"],
+    },
+  },
+  {
+    name: "log_technical_error",
+    description:
+      "Log a backend error, bug, or technical issue to a secure internal review area for later " +
+      "diagnosis and repair. Use when Nishad reports something technically broken (an error, a " +
+      "crash, a failure, unexpected behavior) that engineering should look at — not for a general " +
+      "missing feature (use note_capability_gap) and not for a personal to-do (use create_task).",
+    input_schema: {
+      type: "object",
+      properties: {
+        description: {
+          type: "string",
+          description: "Short plain-sentence summary of the error or issue, e.g. \"calendar sync throwing 500s on update\".",
+        },
+        details: {
+          type: "string",
+          description: "Any extra context — error message, when it happened, what was being done, steps to reproduce. Omit if none given.",
+        },
+        source: {
+          type: "string",
+          description: "Where the error occurred, e.g. \"calendar sync\", \"voice respond API\", \"email tool\". Omit if unclear.",
+        },
+      },
+      required: ["description"],
     },
   },
 ];
@@ -613,6 +640,24 @@ async function handleSplitBillWithTip(input: {
   }
 }
 
+async function handleLogTechnicalError(input: {
+  description: string;
+  details?: string;
+  source?: string;
+}): Promise<string> {
+  try {
+    await logTechnicalError({
+      summary: input.description,
+      details: input.details,
+      source: input.source,
+    });
+    return "Logged that technical error to the review area for diagnosis and fixing.";
+  } catch (error) {
+    console.error("[tool-dispatcher] log_technical_error failed:", error);
+    return "Couldn't log that error just now — tell Nishad directly so it doesn't get lost.";
+  }
+}
+
 // Returns { text, visual } uniformly — text is what goes back to Claude as
 // the tool_result content, visual is only ever set by show_map and is what
 // app/api/v1/voice/respond/route.ts lifts into the API response for the
@@ -668,6 +713,12 @@ export async function executeTool(
       return {
         text: await handleSplitBillWithTip(
           input as { billAmount: number; tipPercent: number; numPeople: number }
+        ),
+      };
+    case "log_technical_error":
+      return {
+        text: await handleLogTechnicalError(
+          input as { description: string; details?: string; source?: string }
         ),
       };
     default:
