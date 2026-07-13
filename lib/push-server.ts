@@ -7,7 +7,15 @@ import { adminDb, adminMessaging } from "./firebase-admin";
 // but usable from lib/tool-dispatcher.ts, which runs in the Next.js app, not
 // the Cloud Functions bundle. Never throws — delivery failure shouldn't
 // block whatever Firestore write the caller already made.
-export async function sendPushNotification(title: string, body: string): Promise<boolean> {
+// `data` is optional, plain string-to-string FCM data payload — used to
+// carry a deep-link URL (see public/firebase-messaging-sw.js's
+// notificationclick handler) without putting it in the visible notification
+// body.
+export async function sendPushNotification(
+  title: string,
+  body: string,
+  data?: Record<string, string>
+): Promise<boolean> {
   const subscriptions = await adminDb.collection("push_subscriptions").get();
   if (subscriptions.empty) return false;
 
@@ -17,7 +25,7 @@ export async function sendPushNotification(title: string, body: string): Promise
     if (!token) continue;
 
     try {
-      await adminMessaging.send({ token, notification: { title, body } });
+      await adminMessaging.send({ token, notification: { title, body }, ...(data ? { data } : {}) });
       sentCount += 1;
     } catch (error) {
       console.error(`[push-server] Push send failed for a registered device (doc ${doc.id}):`, error);

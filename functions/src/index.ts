@@ -12,6 +12,7 @@ import { runUrgencyScan } from "./urgency-scan";
 import { runSynthesisScan } from "./synthesis-scan";
 import { sendPushNotification } from "./push";
 import { dispatchCapabilityDraft } from "./capability-gap-dispatch";
+import { verifyPipelineCallback } from "./verify-pipeline-callback";
 
 if (!getApps().length) {
   // No explicit credential — the deployed function runs under its own
@@ -220,5 +221,41 @@ export const onCapabilityGap = onDocumentCreated(
     if (!ok) {
       logger.error(`Failed to dispatch capability-draft workflow for gap ${event.params.gapId}`);
     }
+  }
+);
+
+// Called from the last step of autonomous-capability-draft.yml once it's
+// opened a PR — this is the "ping me on the phone" half of the loop
+// (the workflow already ran unattended; this is just telling Nishad it's
+// done). Shared-secret auth (verifyPipelineCallback), not verifyOwner —
+// GitHub Actions has no Firebase user to authenticate as. Sends the PR URL
+// as the notification's `data.url`, which public/firebase-messaging-sw.js's
+// notificationclick handler opens on tap — lands Nishad on GitHub's own PR
+// page (real diff, real merge button), not a rubber-stamp auto-merge.
+const pipelineCallbackToken = defineSecret("PIPELINE_CALLBACK_TOKEN");
+
+export const notifyCapabilityDraftReady = onRequest(
+  { secrets: [pipelineCallbackToken] },
+  async (req, res) => {
+    if (!verifyPipelineCallback(req, res, pipelineCallbackToken.value())) return;
+
+    const { prUrl, toolName, summary } = (req.body ?? {}) as {
+      prUrl?: unknown;
+      toolName?: unknown;
+      summary?: unknown;
+    };
+
+    if (typeof prUrl !== "string" || !prUrl) {
+      res.status(400).json({ ok: false, error: "Missing prUrl." });
+      return;
+    }
+
+    const sent = await sendPushNotification(
+      `North: "${typeof toolName === "string" ? toolName : "new capability"}" ready for review`,
+      typeof summary === "string" && summary ? summary : "Tap to review and merge on GitHub.",
+      { url: prUrl }
+    );
+
+    res.status(200).json({ ok: sent });
   }
 );

@@ -102,6 +102,7 @@ jobs:
 
       - name: Open PR for review
         if: steps.draft.outputs.drafted == 'true'
+        id: pr
         uses: peter-evans/create-pull-request@v6
         with:
           branch: auto/capability-${{ inputs.gapId }}
@@ -120,3 +121,23 @@ jobs:
             touched. Still needs your review before this does anything: merging this PR is what makes
             it live (Firebase App Hosting deploys on push to `main`).
           labels: autonomous-draft
+
+      - name: Notify Nishad the draft is ready
+        if: steps.draft.outputs.drafted == 'true' && steps.pr.outputs.pull-request-url != ''
+        # PIPELINE_CALLBACK_TOKEN authenticates this call (functions/src's
+        # verifyPipelineCallback) -- it can only trigger a push notification,
+        # nothing code-related. A failed notification shouldn't fail the
+        # whole run (the PR already exists and is reviewable regardless), so
+        # this doesn't check curl's exit code.
+        run: |
+          curl -s -X POST "https://us-central1-the-north-vector-project.cloudfunctions.net/notifyCapabilityDraftReady" \
+            -H "Authorization: Bearer ${{ secrets.PIPELINE_CALLBACK_TOKEN }}" \
+            -H "Content-Type: application/json" \
+            -d "$(node -e '
+              console.log(JSON.stringify({
+                prUrl: process.argv[1],
+                toolName: process.argv[2],
+                summary: process.argv[3],
+              }));
+            ' "${{ steps.pr.outputs.pull-request-url }}" "${{ steps.draft.outputs.tool-name }}" "${{ steps.draft.outputs.summary }}")" \
+            || echo "Notification call failed -- PR is still open at ${{ steps.pr.outputs.pull-request-url }}"

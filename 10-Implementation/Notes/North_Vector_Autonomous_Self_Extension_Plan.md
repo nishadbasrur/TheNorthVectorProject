@@ -60,26 +60,42 @@ This is a real platform restriction, not extra effort being avoided — confirme
 
 5. **What's deliberately still out of scope for an autonomous draft:** new npm dependencies, any edit to an existing file's existing content, `firestore.rules`, auth, secrets, CI config itself. A capability needing any of those still needs a normal human-written PR — the autonomous path only ever *adds* a self-contained new tool.
 
+6. **PR-ready push notification, with tap-to-open.** Added after Nishad asked for it directly: the workflow's last step calls a new Cloud Function, `notifyCapabilityDraftReady` (`functions/src/index.ts`), which sends a push notification carrying the PR's URL as FCM `data.url`. `public/firebase-messaging-sw.js` gained a `notificationclick` handler that opens that URL on tap (`lib/push-client.ts` got the same behavior for the foreground case). Tapping the notification lands on the actual GitHub PR page — the real diff, GitHub's own merge button — not a one-tap auto-merge with no review surface. That's a deliberate choice, not a default I picked without thinking about it: a true zero-visibility "tap notification → auto-merge" would functionally collapse back into Option A's risk (nothing meaningfully reviewed before shipping) with just a thinner UI on top. If less friction than "tap notification, glance at the diff, tap merge" turns out to matter more than that visibility once this is actually being used, a fuller in-app approve button is a follow-on build, not this one.
+   - `notifyCapabilityDraftReady` uses its own shared-secret check (`functions/src/verify-pipeline-callback.ts`, `PIPELINE_CALLBACK_TOKEN`), not `verifyOwner` — GitHub Actions has no Firebase Auth user to authenticate as. That token can only trigger a push notification; it has no code, deploy, or data access of its own.
+
 ## 4. Setup — one-time manual steps (still needed before this is live)
 
-Two credentials Claude Code cannot create on Nishad's behalf, plus one deploy step:
+Three credentials Claude Code cannot create on Nishad's behalf, plus two deploy steps:
 
-1. **Create the GitHub token.** github.com → Settings → Developer settings → Personal access tokens → Fine-grained tokens → Generate new token.
+1. **Create the GitHub dispatch token.** github.com → Settings → Developer settings → Personal access tokens → Fine-grained tokens → Generate new token.
    - Repository access: **Only select repositories** → `TheNorthVectorProject`. (Not "all repositories" — no reason this token should see anything else.)
    - Permissions → Repository permissions → **Actions: Read and write**. Leave everything else at "No access," including Contents — this token should never be able to push code, only start a workflow run.
    - Set an expiration (GitHub pushes you toward this) and put a reminder to rotate it — same hygiene as any other long-lived secret in this project.
 
-2. **Store it as a Cloud Functions secret** (not an App Hosting secret — this is used by a Cloud Function, `onCapabilityGap`, a different deploy target from the Next.js app):
+2. **Store it as a Cloud Functions secret** (not an App Hosting secret — this is used by Cloud Functions, a different deploy target from the Next.js app):
    ```
    firebase functions:secrets:set GITHUB_DISPATCH_TOKEN
    ```
    Paste the token when prompted.
 
-3. **Add the Anthropic key as a GitHub Actions secret.** The workflow runs on GitHub's infrastructure, which can't reach Firebase Secret Manager — it needs its own copy. github.com → the repo → Settings → Secrets and variables → Actions → New repository secret → name `ANTHROPIC_API_KEY`, paste the same value already used elsewhere in this project.
-
-4. **Deploy the new Cloud Function.** Unlike the Next.js app (git-push-triggers-auto-deploy via Firebase App Hosting), Cloud Functions deploy explicitly:
+3. **Create the pipeline callback token.** This one isn't a GitHub token at all — just a random secret string only your Cloud Function and your GitHub Actions workflow both know, so the notify endpoint can tell a legitimate call from anyone else on the internet. Generate one yourself, e.g.:
    ```
-   firebase deploy --only functions:onCapabilityGap
+   openssl rand -hex 32
+   ```
+   Store it as a Cloud Functions secret:
+   ```
+   firebase functions:secrets:set PIPELINE_CALLBACK_TOKEN
    ```
 
-5. **Test before trusting the live path.** The workflow has a `workflow_dispatch` trigger with the same inputs (`gapId`, `request`, `capability`) for exactly this reason — go to the repo's Actions tab → "Autonomous Capability Draft" → Run workflow, fill in a made-up gap, and watch it actually draft something, typecheck, build, and open a PR before relying on a real capability gap to trigger it end-to-end. If something's misconfigured (wrong token scope, missing secret), this is where it'll show up, with real logs to debug from — cheaper than finding out from a live gap.
+4. **Add two GitHub Actions repository secrets.** The workflow runs on GitHub's infrastructure, which can't reach Firebase Secret Manager — it needs its own copies. github.com → the repo → Settings → Secrets and variables → Actions → New repository secret, twice:
+   - `ANTHROPIC_API_KEY` — same value already used elsewhere in this project.
+   - `PIPELINE_CALLBACK_TOKEN` — the exact same random string from step 3.
+
+5. **Deploy the new Cloud Functions.** Unlike the Next.js app (git-push-triggers-auto-deploy via Firebase App Hosting), Cloud Functions deploy explicitly:
+   ```
+   firebase deploy --only functions:onCapabilityGap,functions:notifyCapabilityDraftReady
+   ```
+
+6. **Verify the function URL matches what the workflow calls.** The workflow assumes `https://us-central1-the-north-vector-project.cloudfunctions.net/notifyCapabilityDraftReady` (the default Cloud Functions v2 region/URL pattern for this project). After deploying, run `firebase functions:list` (or check the Firebase Console) and confirm that URL is actually right — if the function ended up in a different region, update the URL in `.github/workflows/autonomous-capability-draft.yml`'s "Notify Nishad" step to match.
+
+7. **Test before trusting the live path.** The workflow has a `workflow_dispatch` trigger with the same inputs (`gapId`, `request`, `capability`) for exactly this reason — go to the repo's Actions tab → "Autonomous Capability Draft" → Run workflow, fill in a made-up gap, and watch it actually draft something, typecheck, build, open a PR, and (if you've enabled push notifications in Settings) ping your phone with a tap-through link — before relying on a real capability gap to trigger it end-to-end. If something's misconfigured (wrong token scope, missing secret, wrong function URL), this is where it'll show up, with real logs to debug from.

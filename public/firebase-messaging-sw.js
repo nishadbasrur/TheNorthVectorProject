@@ -25,5 +25,29 @@ messaging.onBackgroundMessage((payload) => {
   self.registration.showNotification(title ?? "North Vector", {
     body: body ?? "",
     icon: "/icon-192.png",
+    // Carries payload.data (e.g. { url: "https://github.com/.../pull/123" })
+    // through to the notificationclick handler below — FCM's `data` field
+    // isn't otherwise attached to the shown notification automatically.
+    data: payload.data ?? {},
   });
+});
+
+// Tapping a notification with a data.url (currently only the capability-
+// draft-ready ping, see functions/src/index.ts's notifyCapabilityDraftReady)
+// opens that URL — lands on the actual GitHub PR page, not just the app.
+// Without this handler, tapping a background notification does nothing
+// beyond the browser's own default (usually just focusing the origin).
+self.addEventListener("notificationclick", (event) => {
+  event.notification.close();
+  const url = event.notification.data?.url;
+  if (!url) return;
+
+  event.waitUntil(
+    clients.matchAll({ type: "window", includeUncontrolled: true }).then((windowClients) => {
+      for (const client of windowClients) {
+        if (client.url === url && "focus" in client) return client.focus();
+      }
+      return clients.openWindow(url);
+    })
+  );
 });

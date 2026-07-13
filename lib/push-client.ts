@@ -32,7 +32,14 @@ async function registerForegroundListener(): Promise<void> {
   onMessage(messaging, (payload) => {
     const { title, body } = payload.notification ?? {};
     if (title) {
-      new Notification(title, { body, icon: "/icon-192.png" });
+      const notification = new Notification(title, { body, icon: "/icon-192.png" });
+      // Foreground counterpart to firebase-messaging-sw.js's
+      // notificationclick handler — same "tap opens the PR" behavior when
+      // the app happens to be focused when the push arrives.
+      const url = payload.data?.url;
+      if (url) {
+        notification.onclick = () => window.open(url, "_blank");
+      }
     }
   });
 

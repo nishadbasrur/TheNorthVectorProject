@@ -6,7 +6,16 @@ import { logger } from "firebase-functions";
 // delivery succeeded, and let the caller decide what to do if it didn't —
 // the underlying alert/alert_state Firestore write must never be lost just
 // because notification delivery had a bad day.
-export async function sendPushNotification(title: string, body: string): Promise<boolean> {
+//
+// `data` is optional, plain string-to-string FCM data payload (FCM's own
+// requirement — no nested objects) — used to carry a deep-link URL (see
+// public/firebase-messaging-sw.js's notificationclick handler) without
+// putting it in the visible notification body.
+export async function sendPushNotification(
+  title: string,
+  body: string,
+  data?: Record<string, string>
+): Promise<boolean> {
   const db = getFirestore();
   const subscriptions = await db.collection("push_subscriptions").get();
 
@@ -23,7 +32,7 @@ export async function sendPushNotification(title: string, body: string): Promise
     if (!token) continue;
 
     try {
-      await messaging.send({ token, notification: { title, body } });
+      await messaging.send({ token, notification: { title, body }, ...(data ? { data } : {}) });
       sentCount += 1;
     } catch (error) {
       logger.error(`Push send failed for a registered device (doc ${doc.id})`, error);
