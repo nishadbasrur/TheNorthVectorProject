@@ -18,6 +18,21 @@ firebase.initializeApp({
   appId: "1:1011959080844:web:9273e8b816e7831c35d8a9",
 });
 
+// Without these, a browser that already has an older version of this file
+// active keeps running it — service workers only take over from a prior
+// version once every tab/client controlled by the old one closes, which
+// for an installed PWA that's rarely fully quit can mean "never." That's a
+// real trap: a fix landing here doesn't help anyone still on the stale
+// worker. skipWaiting + clients.claim force the new version to take over
+// as soon as it's installed, on the very next push/click.
+self.addEventListener("install", () => {
+  self.skipWaiting();
+});
+
+self.addEventListener("activate", (event) => {
+  event.waitUntil(clients.claim());
+});
+
 const messaging = firebase.messaging();
 
 // payload has no top-level `notification` field on purpose — see
