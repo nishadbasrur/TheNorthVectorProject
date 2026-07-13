@@ -16,10 +16,48 @@ export async function logCapabilityGap(request: string, capability: string): Pro
     request,
     capability,
     createdAt: FieldValue.serverTimestamp(),
+    status: "pending_gap",
   });
 
   await sendPushNotification(
     "North: capability gap",
     `${capability} — asked: "${request}"`
   );
+}
+
+export type CapabilityGap = {
+  request: string;
+  capability: string;
+  status: "pending_gap" | "pending_review" | "approved" | "denied";
+  prNumber: number | null;
+  prUrl: string | null;
+  toolName: string | null;
+  summary: string | null;
+};
+
+// Backs app/api/v1/capability-gap/[gapId] (the in-app review page's data
+// source) — read by an owner-gated route, so no Firestore rule change
+// needed beyond the existing owner-read/admin-write-only capability_gaps
+// rule.
+export async function getCapabilityGap(gapId: string): Promise<CapabilityGap | null> {
+  const doc = await adminDb.collection("capability_gaps").doc(gapId).get();
+  if (!doc.exists) return null;
+
+  const data = doc.data() ?? {};
+  return {
+    request: typeof data.request === "string" ? data.request : "",
+    capability: typeof data.capability === "string" ? data.capability : "",
+    status: (data.status as CapabilityGap["status"]) ?? "pending_gap",
+    prNumber: typeof data.prNumber === "number" ? data.prNumber : null,
+    prUrl: typeof data.prUrl === "string" ? data.prUrl : null,
+    toolName: typeof data.toolName === "string" ? data.toolName : null,
+    summary: typeof data.summary === "string" ? data.summary : null,
+  };
+}
+
+export async function setCapabilityGapStatus(
+  gapId: string,
+  status: "approved" | "denied"
+): Promise<void> {
+  await adminDb.collection("capability_gaps").doc(gapId).set({ status }, { merge: true });
 }

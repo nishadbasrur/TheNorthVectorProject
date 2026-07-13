@@ -7,15 +7,16 @@ import { logger } from "firebase-functions";
 // the underlying alert/alert_state Firestore write must never be lost just
 // because notification delivery had a bad day.
 //
-// `data` is optional, plain string-to-string FCM data payload (FCM's own
-// requirement — no nested objects) — used to carry a deep-link URL (see
-// public/firebase-messaging-sw.js's notificationclick handler) without
-// putting it in the visible notification body.
-export async function sendPushNotification(
-  title: string,
-  body: string,
-  data?: Record<string, string>
-): Promise<boolean> {
+// Deliberately a DATA-ONLY message (no top-level `notification` field) —
+// when a message has both `notification` and `data`, some browsers/SDK
+// paths auto-display the notification and handle its click themselves
+// before public/firebase-messaging-sw.js's own onBackgroundMessage/
+// notificationclick handlers run, silently dropping any custom link
+// (confirmed live: a PR-ready notification opened the app but ignored its
+// target URL). Data-only messages guarantee onBackgroundMessage always
+// fires, so this app's own code — not the browser's default — controls
+// both what's shown and what tapping it does.
+export async function sendPushNotification(title: string, body: string, link?: string): Promise<boolean> {
   const db = getFirestore();
   const subscriptions = await db.collection("push_subscriptions").get();
 
@@ -32,7 +33,7 @@ export async function sendPushNotification(
     if (!token) continue;
 
     try {
-      await messaging.send({ token, notification: { title, body }, ...(data ? { data } : {}) });
+      await messaging.send({ token, data: { title, body, ...(link ? { link } : {}) } });
       sentCount += 1;
     } catch (error) {
       logger.error(`Push send failed for a registered device (doc ${doc.id})`, error);

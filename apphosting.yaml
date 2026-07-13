@@ -91,3 +91,5 @@ env:
     secret: NOTION_API_TOKEN
   - variable: GMAIL_REFRESH_TOKEN
     secret: GMAIL_REFRESH_TOKEN
+  - variable: GITHUB_MERGE_TOKEN
+    secret: GITHUB_MERGE_TOKEN

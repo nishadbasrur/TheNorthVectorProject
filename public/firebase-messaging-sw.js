@@ -20,23 +20,26 @@ firebase.initializeApp({
 
 const messaging = firebase.messaging();
 
+// payload has no top-level `notification` field on purpose — see
+// functions/src/push.ts's sendPushNotification for why (data-only messages
+// are the only way to guarantee this handler — not the browser's own
+// default notification/click behavior — is what actually runs).
 messaging.onBackgroundMessage((payload) => {
-  const { title, body } = payload.notification ?? {};
+  const { title, body, link } = payload.data ?? {};
   self.registration.showNotification(title ?? "North Vector", {
     body: body ?? "",
     icon: "/icon-192.png",
-    // Carries payload.data (e.g. { url: "https://github.com/.../pull/123" })
-    // through to the notificationclick handler below — FCM's `data` field
-    // isn't otherwise attached to the shown notification automatically.
-    data: payload.data ?? {},
+    data: { url: link },
   });
 });
 
-// Tapping a notification with a data.url (currently only the capability-
-// draft-ready ping, see functions/src/index.ts's notifyCapabilityDraftReady)
-// opens that URL — lands on the actual GitHub PR page, not just the app.
-// Without this handler, tapping a background notification does nothing
-// beyond the browser's own default (usually just focusing the origin).
+// Tapping a notification with a data.url (currently the capability-gap-
+// logged and capability-draft-ready pings, see lib/capability-gap-store.ts
+// and functions/src/index.ts's notifyCapabilityDraftReady) opens that URL
+// — lands on the actual in-app review page, not just the app's default
+// screen. Without this handler, tapping a background notification does
+// nothing beyond the browser's own default (usually just focusing the
+// origin, which is exactly the bug this replaced).
 self.addEventListener("notificationclick", (event) => {
   event.notification.close();
   const url = event.notification.data?.url;

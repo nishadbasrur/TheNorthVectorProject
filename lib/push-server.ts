@@ -7,15 +7,16 @@ import { adminDb, adminMessaging } from "./firebase-admin";
 // but usable from lib/tool-dispatcher.ts, which runs in the Next.js app, not
 // the Cloud Functions bundle. Never throws — delivery failure shouldn't
 // block whatever Firestore write the caller already made.
-// `data` is optional, plain string-to-string FCM data payload — used to
-// carry a deep-link URL (see public/firebase-messaging-sw.js's
-// notificationclick handler) without putting it in the visible notification
-// body.
-export async function sendPushNotification(
-  title: string,
-  body: string,
-  data?: Record<string, string>
-): Promise<boolean> {
+// Deliberately a DATA-ONLY message (no top-level `notification` field) —
+// when a message has both `notification` and `data`, some browsers/SDK
+// paths auto-display the notification and handle its click themselves
+// before public/firebase-messaging-sw.js's own onBackgroundMessage/
+// notificationclick handlers run, silently dropping any custom link
+// (confirmed live: a PR-ready notification opened the app but ignored its
+// target URL). Data-only messages guarantee onBackgroundMessage always
+// fires, so this app's own code — not the browser's default — controls
+// both what's shown and what tapping it does.
+export async function sendPushNotification(title: string, body: string, link?: string): Promise<boolean> {
   const subscriptions = await adminDb.collection("push_subscriptions").get();
   if (subscriptions.empty) return false;
 
@@ -25,7 +26,7 @@ export async function sendPushNotification(
     if (!token) continue;
 
     try {
-      await adminMessaging.send({ token, notification: { title, body }, ...(data ? { data } : {}) });
+      await adminMessaging.send({ token, data: { title, body, ...(link ? { link } : {}) } });
       sentCount += 1;
     } catch (error) {
       console.error(`[push-server] Push send failed for a registered device (doc ${doc.id}):`, error);

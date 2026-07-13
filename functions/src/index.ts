@@ -224,14 +224,23 @@ export const onCapabilityGap = onDocumentCreated(
   }
 );
 
+// Public production URL — hardcoded rather than read from a secret/env var
+// since it's not sensitive (same treatment public/firebase-messaging-sw.js
+// already gives its own Firebase project identifiers).
+const APP_URL = "https://north-vector--the-north-vector-project.us-east4.hosted.app";
+
 // Called from the last step of autonomous-capability-draft.yml once it's
 // opened a PR — this is the "ping me on the phone" half of the loop
 // (the workflow already ran unattended; this is just telling Nishad it's
 // done). Shared-secret auth (verifyPipelineCallback), not verifyOwner —
-// GitHub Actions has no Firebase user to authenticate as. Sends the PR URL
-// as the notification's `data.url`, which public/firebase-messaging-sw.js's
-// notificationclick handler opens on tap — lands Nishad on GitHub's own PR
-// page (real diff, real merge button), not a rubber-stamp auto-merge.
+// GitHub Actions has no Firebase user to authenticate as.
+//
+// Writes the PR info back onto the capability_gaps/{gapId} doc so the
+// in-app review page (app/capability-review/[gapId]) has something to
+// read, then sends a push notification linking to that page — not
+// straight to GitHub. Tapping it lands Nishad on North's own
+// approve/deny screen (which shows the real diff before either button
+// does anything), not a rubber-stamp auto-merge with no review surface.
 const pipelineCallbackToken = defineSecret("PIPELINE_CALLBACK_TOKEN");
 
 export const notifyCapabilityDraftReady = onRequest(
@@ -239,21 +248,36 @@ export const notifyCapabilityDraftReady = onRequest(
   async (req, res) => {
     if (!verifyPipelineCallback(req, res, pipelineCallbackToken.value())) return;
 
-    const { prUrl, toolName, summary } = (req.body ?? {}) as {
+    const { gapId, prUrl, toolName, summary } = (req.body ?? {}) as {
+      gapId?: unknown;
       prUrl?: unknown;
       toolName?: unknown;
       summary?: unknown;
     };
 
-    if (typeof prUrl !== "string" || !prUrl) {
-      res.status(400).json({ ok: false, error: "Missing prUrl." });
+    if (typeof gapId !== "string" || !gapId || typeof prUrl !== "string" || !prUrl) {
+      res.status(400).json({ ok: false, error: "Missing gapId or prUrl." });
       return;
     }
 
+    const prNumberMatch = prUrl.match(/\/pull\/(\d+)/);
+    const prNumber = prNumberMatch ? Number(prNumberMatch[1]) : null;
+
+    await db.collection("capability_gaps").doc(gapId).set(
+      {
+        status: "pending_review",
+        prUrl,
+        prNumber,
+        toolName: typeof toolName === "string" ? toolName : null,
+        summary: typeof summary === "string" ? summary : null,
+      },
+      { merge: true }
+    );
+
     const sent = await sendPushNotification(
       `North: "${typeof toolName === "string" ? toolName : "new capability"}" ready for review`,
-      typeof summary === "string" && summary ? summary : "Tap to review and merge on GitHub.",
-      { url: prUrl }
+      typeof summary === "string" && summary ? summary : "Tap to review and approve.",
+      `${APP_URL}/capability-review/${gapId}`
     );
 
     res.status(200).json({ ok: sent });

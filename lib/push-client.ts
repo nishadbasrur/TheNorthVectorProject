@@ -29,16 +29,19 @@ async function registerForegroundListener(): Promise<void> {
 
   const messaging = getMessaging(app);
 
+  // payload has no top-level `notification` field — see
+  // functions/src/push.ts's sendPushNotification for why this app always
+  // sends data-only messages now (guarantees this handler runs instead of
+  // racing the browser's own default notification/click behavior).
   onMessage(messaging, (payload) => {
-    const { title, body } = payload.notification ?? {};
+    const { title, body, link } = payload.data ?? {};
     if (title) {
       const notification = new Notification(title, { body, icon: "/icon-192.png" });
       // Foreground counterpart to firebase-messaging-sw.js's
-      // notificationclick handler — same "tap opens the PR" behavior when
-      // the app happens to be focused when the push arrives.
-      const url = payload.data?.url;
-      if (url) {
-        notification.onclick = () => window.open(url, "_blank");
+      // notificationclick handler — same "tap opens the review page"
+      // behavior when the app happens to be focused when the push arrives.
+      if (link) {
+        notification.onclick = () => window.open(link, "_blank");
       }
     }
   });
