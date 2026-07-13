@@ -257,6 +257,22 @@ export const TOOL_DEFINITIONS: Anthropic.Tool[] = [
       required: ["request", "capability"],
     },
   },
+  {
+    name: "split_bill_with_tip",
+    description:
+      "Calculate a tip and split a bill evenly among a number of people. Use for requests like " +
+      "\"split $84 three ways with 20% tip\" or \"what's a 18 percent tip on $50 split two ways\". " +
+      "Pure arithmetic — no external data needed.",
+    input_schema: {
+      type: "object",
+      properties: {
+        billAmount: { type: "number", description: "Pre-tip bill total in dollars, e.g. 84." },
+        tipPercent: { type: "number", description: "Tip percentage, e.g. 20 for 20%." },
+        numPeople: { type: "number", description: "Number of people splitting the bill, e.g. 3." },
+      },
+      required: ["billAmount", "tipPercent", "numPeople"],
+    },
+  },
 ];
 
 // Every handler catches its own errors and returns a describable failure
@@ -563,6 +579,40 @@ async function handleNoteCapabilityGap(input: { request: string; capability: str
   }
 }
 
+async function handleSplitBillWithTip(input: {
+  billAmount: number;
+  tipPercent: number;
+  numPeople: number;
+}): Promise<string> {
+  try {
+    const { billAmount, tipPercent, numPeople } = input;
+
+    if (!Number.isFinite(billAmount) || billAmount <= 0) {
+      return "That bill amount doesn't look valid — tell me the pre-tip total in dollars.";
+    }
+    if (!Number.isFinite(tipPercent) || tipPercent < 0) {
+      return "That tip percentage doesn't look valid — give me a percentage like 20 for 20%.";
+    }
+    if (!Number.isFinite(numPeople) || numPeople <= 0 || !Number.isInteger(numPeople)) {
+      return "That number of people doesn't look valid — give me a whole number of people to split among.";
+    }
+
+    const tipAmount = billAmount * (tipPercent / 100);
+    const total = billAmount + tipAmount;
+    const perPerson = total / numPeople;
+
+    const fmt = (n: number) => n.toFixed(2);
+
+    return (
+      `Bill: ${fmt(billAmount)}, tip ${tipPercent}%: ${fmt(tipAmount)}, ` +
+      `total: ${fmt(total)}. Split ${numPeople} ways: ${fmt(perPerson)} per person.`
+    );
+  } catch (error) {
+    console.error("[tool-dispatcher] split_bill_with_tip failed:", error);
+    return "Couldn't calculate that split — tell Nishad to try again.";
+  }
+}
+
 // Returns { text, visual } uniformly — text is what goes back to Claude as
 // the tool_result content, visual is only ever set by show_map and is what
 // app/api/v1/voice/respond/route.ts lifts into the API response for the
@@ -614,6 +664,12 @@ export async function executeTool(
       return handleHighlightBuilding(sessionId);
     case "note_capability_gap":
       return { text: await handleNoteCapabilityGap(input as { request: string; capability: string }) };
+    case "split_bill_with_tip":
+      return {
+        text: await handleSplitBillWithTip(
+          input as { billAmount: number; tipPercent: number; numPeople: number }
+        ),
+      };
     default:
       return { text: `Unknown tool: ${name}` };
   }
