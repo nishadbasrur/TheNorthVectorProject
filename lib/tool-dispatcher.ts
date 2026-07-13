@@ -18,6 +18,7 @@ import { deliveryChannel } from "./synthesis-priority";
 import { geocodeLocation, getBuildingFootprint } from "./map-client";
 import { loadVisualState, saveVisualState, type VisualState } from "./voice-session-store";
 import { logCapabilityGap } from "./capability-gap-store";
+import { convertCurrency } from "./currency-client";
 
 // Single source of truth for what North can do via voice — read directly by
 // Claude as tool schemas, not maintained separately as prose (that
@@ -255,6 +256,23 @@ export const TOOL_DEFINITIONS: Anthropic.Tool[] = [
         },
       },
       required: ["request", "capability"],
+    },
+  },
+  {
+    name: "convert_currency",
+    description:
+      "Convert an amount from one currency to another using current exchange rates (e.g. \"how much is " +
+      "100 dollars in euros\", \"convert 50 GBP to JPY\"). Use ISO currency codes when known (USD, " +
+      "EUR, GBP, JPY, etc.) — infer the code from common currency names if the user doesn't give one " +
+      "(e.g. \"dollars\" -> USD, \"euros\" -> EUR).",
+    input_schema: {
+      type: "object",
+      properties: {
+        amount: { type: "number", description: "The amount to convert." },
+        from: { type: "string", description: "Source currency code, e.g. USD." },
+        to: { type: "string", description: "Target currency code, e.g. EUR." },
+      },
+      required: ["amount", "from", "to"],
     },
   },
 ];
@@ -563,6 +581,19 @@ async function handleNoteCapabilityGap(input: { request: string; capability: str
   }
 }
 
+async function handleConvertCurrency(input: { amount: number; from: string; to: string }): Promise<string> {
+  try {
+    const result = await convertCurrency(input.amount, input.from, input.to);
+    if (!result) {
+      return `Couldn't convert ${input.from.toUpperCase()} to ${input.to.toUpperCase()} — check the currency codes and try again.`;
+    }
+    return `${input.amount} ${input.from.toUpperCase()} is about ${result.converted.toFixed(2)} ${input.to.toUpperCase()} (rate: ${result.rate.toFixed(4)}).`;
+  } catch (error) {
+    console.error("[tool-dispatcher] convert_currency failed:", error);
+    return "Currency conversion failed — tell Nishad to try again in a bit.";
+  }
+}
+
 // Returns { text, visual } uniformly — text is what goes back to Claude as
 // the tool_result content, visual is only ever set by show_map and is what
 // app/api/v1/voice/respond/route.ts lifts into the API response for the
@@ -614,6 +645,8 @@ export async function executeTool(
       return handleHighlightBuilding(sessionId);
     case "note_capability_gap":
       return { text: await handleNoteCapabilityGap(input as { request: string; capability: string }) };
+    case "convert_currency":
+      return { text: await handleConvertCurrency(input as { amount: number; from: string; to: string }) };
     default:
       return { text: `Unknown tool: ${name}` };
   }
