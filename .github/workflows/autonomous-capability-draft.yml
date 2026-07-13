@@ -1,0 +1,122 @@
+name: Autonomous Capability Draft
+
+# Triggered by functions/src/capability-gap-dispatch.ts whenever North logs
+# a capability gap (lib/capability-gap-store.ts). This workflow drafts a new
+# voice tool, verifies it (typecheck + build), and opens a PR — it NEVER
+# pushes to main directly. See
+# North_Vector_Autonomous_Self_Extension_Plan.md Section 3 for the full
+# design and why the credential is scoped this way.
+on:
+  # Deliberately workflow_dispatch, not repository_dispatch — see
+  # functions/src/capability-gap-dispatch.ts's header comment for why.
+  # functions/src/index.ts's onCapabilityGap trigger calls this same
+  # workflow_dispatch API with real gap data; this also doubles as the way
+  # Nishad (or I) can trigger a manual test run from the Actions tab with a
+  # made-up gap, without needing a real Firestore write first.
+  workflow_dispatch:
+    inputs:
+      gapId:
+        description: "Gap id (arbitrary for manual runs)"
+        required: true
+        default: manual-test
+      request:
+        description: "What was asked"
+        required: true
+      capability:
+        description: "Missing capability, short description"
+        required: true
+
+# Only what this workflow actually needs: push a branch, open a PR. No
+# permission to modify branch protection, no permission to merge — merging
+# is Nishad's action, taken through GitHub's normal PR review UI.
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  draft:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - run: npm ci
+
+      - name: Draft capability
+        id: draft
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          GAP_ID: ${{ inputs.gapId }}
+          CAPABILITY_REQUEST: ${{ inputs.request }}
+          CAPABILITY_DESCRIPTION: ${{ inputs.capability }}
+        run: node scripts/draft-capability.js
+
+      - name: Typecheck
+        if: steps.draft.outputs.drafted == 'true'
+        run: npm run typecheck
+
+      - name: Generate throwaway build credentials
+        if: steps.draft.outputs.drafted == 'true'
+        # Same fake-but-well-formed-credential technique used for every
+        # local build verification this session — confirms the app compiles
+        # and Next.js can render the page tree, not that it works against
+        # real Firebase. No real secret involved.
+        run: |
+          node -e "
+          const crypto = require('crypto');
+          const { privateKey } = crypto.generateKeyPairSync('rsa', {
+            modulusLength: 2048,
+            publicKeyEncoding: { type: 'spki', format: 'pem' },
+            privateKeyEncoding: { type: 'pkcs8', format: 'pem' },
+          });
+          const sa = {
+            type: 'service_account',
+            project_id: 'ci-fake-project',
+            private_key_id: 'fake',
+            private_key: privateKey,
+            client_email: 'fake@ci-fake-project.iam.gserviceaccount.com',
+            client_id: 'fake',
+            auth_uri: 'https://accounts.google.com/o/oauth2/auth',
+            token_uri: 'https://oauth2.googleapis.com/token',
+          };
+          console.log(JSON.stringify(sa));
+          " > /tmp/fake_sa.json
+          echo "FIREBASE_SERVICE_ACCOUNT_KEY_FILE=/tmp/fake_sa.json" >> "$GITHUB_ENV"
+
+      - name: Build
+        if: steps.draft.outputs.drafted == 'true'
+        env:
+          NEXT_PUBLIC_FIREBASE_API_KEY: fake-api-key
+          NEXT_PUBLIC_FIREBASE_AUTH_DOMAIN: fake.firebaseapp.com
+          NEXT_PUBLIC_FIREBASE_PROJECT_ID: ci-fake-project
+          NEXT_PUBLIC_FIREBASE_STORAGE_BUCKET: ci-fake-project.appspot.com
+          NEXT_PUBLIC_FIREBASE_MESSAGING_SENDER_ID: "123456789"
+          NEXT_PUBLIC_FIREBASE_APP_ID: "1:123456789:web:fakeappid"
+        run: |
+          export FIREBASE_SERVICE_ACCOUNT_KEY="$(cat "$FIREBASE_SERVICE_ACCOUNT_KEY_FILE")"
+          npm run build
+
+      - name: Open PR for review
+        if: steps.draft.outputs.drafted == 'true'
+        uses: peter-evans/create-pull-request@v6
+        with:
+          branch: auto/capability-${{ inputs.gapId }}
+          commit-message: "Auto-draft capability: ${{ steps.draft.outputs.tool-name }}"
+          title: "Auto-draft: ${{ steps.draft.outputs.tool-name }}"
+          body: |
+            Autonomously drafted by North in response to a logged capability gap — **not yet merged, not deployed**.
+
+            **Asked:** ${{ inputs.request }}
+            **Missing capability:** ${{ inputs.capability }}
+            **What this adds:** ${{ steps.draft.outputs.summary }}
+
+            Typecheck and build both passed in this run. The new code only ever came from three fixed
+            insertion points in `lib/tool-dispatcher.ts` (a new `TOOL_DEFINITIONS` entry, a new handler
+            function, a new `switch` case) plus optional new files under `lib/` — nothing else was
+            touched. Still needs your review before this does anything: merging this PR is what makes
+            it live (Firebase App Hosting deploys on push to `main`).
+          labels: autonomous-draft

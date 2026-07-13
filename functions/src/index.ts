@@ -1,5 +1,6 @@
 import { onSchedule } from "firebase-functions/v2/scheduler";
 import { onRequest } from "firebase-functions/v2/https";
+import { onDocumentCreated } from "firebase-functions/v2/firestore";
 import { defineSecret } from "firebase-functions/params";
 import { initializeApp, getApps } from "firebase-admin/app";
 import { getFirestore, FieldValue } from "firebase-admin/firestore";
@@ -10,6 +11,7 @@ import { verifyOwner } from "./require-owner";
 import { runUrgencyScan } from "./urgency-scan";
 import { runSynthesisScan } from "./synthesis-scan";
 import { sendPushNotification } from "./push";
+import { dispatchCapabilityDraft } from "./capability-gap-dispatch";
 
 if (!getApps().length) {
   // No explicit credential — the deployed function runs under its own
@@ -188,6 +190,35 @@ export const triggerSynthesisScan = onRequest(
     } catch (error) {
       logger.error("Synthesis scan failed:", error);
       res.status(500).json({ ok: false, error: "Synthesis scan failed — check function logs." });
+    }
+  }
+);
+
+// Autonomous Self-Extension, Option B (see
+// North_Vector_Autonomous_Self_Extension_Plan.md Section 3) — fires
+// whenever North logs something it couldn't do (lib/capability-gap-store.ts's
+// note_capability_gap tool writes a capability_gaps doc). This function's
+// only job is triggering .github/workflows/autonomous-capability-draft.yml;
+// it holds no code-push permission at all. The workflow itself drafts the
+// new tool, verifies it (typecheck + build), and opens a PR for Nishad to
+// review — nothing here or in that workflow can push straight to main.
+const githubDispatchToken = defineSecret("GITHUB_DISPATCH_TOKEN");
+
+export const onCapabilityGap = onDocumentCreated(
+  { document: "capability_gaps/{gapId}", secrets: [githubDispatchToken] },
+  async (event) => {
+    const data = event.data?.data();
+    if (!data) return;
+
+    const ok = await dispatchCapabilityDraft(
+      githubDispatchToken.value(),
+      event.params.gapId,
+      typeof data.request === "string" ? data.request : "",
+      typeof data.capability === "string" ? data.capability : ""
+    );
+
+    if (!ok) {
+      logger.error(`Failed to dispatch capability-draft workflow for gap ${event.params.gapId}`);
     }
   }
 );
