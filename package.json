@@ -25,6 +25,7 @@
     "@notionhq/client": "^5.22.0",
     "firebase": "^12.14.0",
     "firebase-admin": "^14.1.0",
+    "imapflow": "^1.4.7",
     "leaflet": "^1.9.4",
     "next": "latest",
     "next-auth": "latest",

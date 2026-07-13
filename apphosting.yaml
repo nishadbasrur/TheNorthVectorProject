@@ -93,3 +93,7 @@ env:
     secret: GMAIL_REFRESH_TOKEN
   - variable: GITHUB_MERGE_TOKEN
     secret: GITHUB_MERGE_TOKEN
+  - variable: ICLOUD_EMAIL_ADDRESS
+    secret: ICLOUD_EMAIL_ADDRESS
+  - variable: ICLOUD_APP_PASSWORD
+    secret: ICLOUD_APP_PASSWORD

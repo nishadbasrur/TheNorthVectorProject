@@ -48,11 +48,14 @@ function buildSystemPrompt(preferences: Awaited<ReturnType<typeof getPreferences
     "60 words total, as a complete finished thought — never trail off mid-sentence, never write " +
     "the kind of answer you'd put in a document.\n\n" +
 
-    "You have tools for checking/sending/searching/deleting email, checking/creating/updating/" +
-    "deleting calendar events, checking Notion, creating tasks, showing an interactive map on " +
-    "screen and highlighting a building on it, and getting a decision recommendation. Call a tool " +
-    "whenever the request genuinely needs current information or an action you have a tool for — " +
-    "don't guess or answer from stale assumptions when a tool can give a real answer. When " +
+    "You have tools for checking/sending/searching/deleting Gmail, checking/searching Nishad's " +
+    "separate iCloud Mail inbox, checking/creating/updating/deleting calendar events, checking " +
+    "Notion, creating tasks, showing an interactive map on screen and highlighting a building on " +
+    "it, and getting a decision recommendation. Gmail and iCloud are separate inboxes with their " +
+    "own tools — if a request doesn't say which one and the obvious one comes up empty, try the " +
+    "other before telling Nishad you can't find something. Call a tool whenever the request " +
+    "genuinely needs current information or an action you have a tool for — don't guess or answer " +
+    "from stale assumptions when a tool can give a real answer. When " +
     "show_map or highlight_building runs, the visual itself is the answer — keep your spoken " +
     "response to a short acknowledgment (\"Here's Boston, sir\"), don't also describe the place in " +
     "words. If get_decision_recommendation comes back with " +

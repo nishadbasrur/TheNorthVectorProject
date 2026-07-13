@@ -18,6 +18,7 @@ import { deliveryChannel } from "./synthesis-priority";
 import { geocodeLocation, getBuildingFootprint } from "./map-client";
 import { loadVisualState, saveVisualState, type VisualState } from "./voice-session-store";
 import { logCapabilityGap } from "./capability-gap-store";
+import { getRecentIcloudMessages, searchIcloudEmails } from "./icloud-mail-client";
 
 // Single source of truth for what North can do via voice — read directly by
 // Claude as tool schemas, not maintained separately as prose (that
@@ -271,6 +272,38 @@ export const TOOL_DEFINITIONS: Anthropic.Tool[] = [
         numPeople: { type: "number", description: "Number of people splitting the bill, e.g. 3." },
       },
       required: ["billAmount", "tipPercent", "numPeople"],
+    },
+  },
+  {
+    name: "check_icloud_email",
+    description:
+      "Check Nishad's iCloud Mail inbox (separate account from Gmail — use this specifically when " +
+      "asked about iCloud/Apple Mail, or when a request doesn't specify which inbox and Gmail alone " +
+      "didn't answer it). With no query, returns the most recent messages. With a query, looks up " +
+      "recent messages to answer that specific question. Only covers the ~25 most recent messages — " +
+      "use search_icloud_email for anything further back. Read-only.",
+    input_schema: {
+      type: "object",
+      properties: {
+        query: {
+          type: "string",
+          description: "What to look up (sender, subject, topic). Omit for the most recent messages.",
+        },
+      },
+    },
+  },
+  {
+    name: "search_icloud_email",
+    description:
+      "Search Nishad's iCloud Mail inbox history for something not in the most recent messages. Less " +
+      "expressive than Gmail search (no from:/subject: operators) — plain keyword/phrase matching " +
+      "against headers and body.",
+    input_schema: {
+      type: "object",
+      properties: {
+        query: { type: "string", description: "Keywords or phrase to search for." },
+      },
+      required: ["query"],
     },
   },
 ];
@@ -613,6 +646,54 @@ async function handleSplitBillWithTip(input: {
   }
 }
 
+// Mirrors lookupEmails' formatting exactly (same "recent inbox, most
+// recent first" shape) so Claude answers iCloud lookups the same way it
+// already answers Gmail ones — deliberately not deduplicated across the
+// two inboxes yet; see North_Vector_Multi_Provider_Email_Plan.md for why
+// that's a separate, later step.
+async function lookupIcloudEmails(query: string): Promise<string> {
+  const messages = await getRecentIcloudMessages(25);
+
+  if (messages.length === 0) {
+    return "iCloud inbox is empty or unreachable — nothing to look up.";
+  }
+
+  const formatted = messages
+    .map((m) => `From: ${m.from}\nDate: ${m.date}\nSubject: ${m.subject}\nSnippet: ${m.bodyText.slice(0, 300)}`)
+    .join("\n\n---\n\n");
+
+  return `Recent iCloud messages (most recent first), for answering "${query}":\n\n${formatted}`;
+}
+
+async function handleCheckIcloudEmail(input: { query?: string }): Promise<string> {
+  try {
+    const query = input.query?.trim() || "your most recent iCloud messages";
+    return await lookupIcloudEmails(query);
+  } catch (error) {
+    console.error("[tool-dispatcher] check_icloud_email failed:", error);
+    return "iCloud email check failed — tell Nishad to try again in a bit.";
+  }
+}
+
+async function handleSearchIcloudEmail(input: { query: string }): Promise<string> {
+  try {
+    const messages = await searchIcloudEmails(input.query);
+
+    if (messages.length === 0) {
+      return `No iCloud messages found for "${input.query}".`;
+    }
+
+    const formatted = messages
+      .map((m) => `From: ${m.from}\nDate: ${m.date}\nSubject: ${m.subject}\nSnippet: ${m.bodyText.slice(0, 300)}`)
+      .join("\n\n---\n\n");
+
+    return `iCloud search results for "${input.query}":\n\n${formatted}`;
+  } catch (error) {
+    console.error("[tool-dispatcher] search_icloud_email failed:", error);
+    return "iCloud email search failed — tell Nishad to try again in a bit.";
+  }
+}
+
 // Returns { text, visual } uniformly — text is what goes back to Claude as
 // the tool_result content, visual is only ever set by show_map and is what
 // app/api/v1/voice/respond/route.ts lifts into the API response for the
@@ -670,6 +751,10 @@ export async function executeTool(
           input as { billAmount: number; tipPercent: number; numPeople: number }
         ),
       };
+    case "check_icloud_email":
+      return { text: await handleCheckIcloudEmail(input as { query?: string }) };
+    case "search_icloud_email":
+      return { text: await handleSearchIcloudEmail(input as { query: string }) };
     default:
       return { text: `Unknown tool: ${name}` };
   }
