@@ -18,6 +18,7 @@ import { deliveryChannel } from "./synthesis-priority";
 import { geocodeLocation, getBuildingFootprint } from "./map-client";
 import { loadVisualState, saveVisualState, type VisualState } from "./voice-session-store";
 import { logCapabilityGap } from "./capability-gap-store";
+import { getWeatherForecast } from "./weather-client";
 
 // Single source of truth for what North can do via voice — read directly by
 // Claude as tool schemas, not maintained separately as prose (that
@@ -255,6 +256,25 @@ export const TOOL_DEFINITIONS: Anthropic.Tool[] = [
         },
       },
       required: ["request", "capability"],
+    },
+  },
+  {
+    name: "check_weather",
+    description:
+      "Check the weather forecast for a location. Use for any forecast-shaped question (\"what's the weather this weekend\", \"will it rain tomorrow in Boston\", \"do I need a jacket Friday\"). Requires a location — if none is given and none was implied by context, ask which city or place before calling this. Defaults to a 3-day outlook; pass a larger days value if the request implies a longer window (e.g. \"this weekend\" from a Thursday -> 4, \"this week\" -> 7). Read-only, current/forecast conditions only — no historical weather.",
+    input_schema: {
+      type: "object",
+      properties: {
+        location: {
+          type: "string",
+          description: "City or place name to check the forecast for, e.g. \"Boston\" or \"Chicago, IL\".",
+        },
+        days: {
+          type: "number",
+          description: "How many days ahead to include (1-7). Omit to use the default (3).",
+        },
+      },
+      required: ["location"],
     },
   },
 ];
@@ -563,6 +583,38 @@ async function handleNoteCapabilityGap(input: { request: string; capability: str
   }
 }
 
+async function handleCheckWeather(input: { location: string; days?: number }): Promise<string> {
+  try {
+    if (!input.location || input.location.trim().length === 0) {
+      return "No location given — ask which city or place to check the forecast for.";
+    }
+
+    const geocoded = await geocodeLocation(input.location.trim());
+    if (!geocoded) {
+      return `Couldn't find a location called "${input.location}" — ask for a more specific place name.`;
+    }
+
+    const days = Math.max(1, Math.min(7, input.days ?? 3));
+    const forecast = await getWeatherForecast(geocoded.lat, geocoded.lon, days);
+
+    if (!forecast || forecast.length === 0) {
+      return `Couldn't retrieve a weather forecast for ${geocoded.displayName} right now.`;
+    }
+
+    const formatted = forecast
+      .map(
+        (d) =>
+          `${d.date}: ${d.condition}, high ${d.tempMaxF}°F / low ${d.tempMinF}°F, ${d.precipitationChance}% chance of precipitation`
+      )
+      .join("; ");
+
+    return `Forecast for ${geocoded.displayName}: ${formatted}.`;
+  } catch (error) {
+    console.error("[tool-dispatcher] check_weather failed:", error);
+    return "Weather check failed — tell Nishad to try again in a bit.";
+  }
+}
+
 // Returns { text, visual } uniformly — text is what goes back to Claude as
 // the tool_result content, visual is only ever set by show_map and is what
 // app/api/v1/voice/respond/route.ts lifts into the API response for the
@@ -614,6 +666,8 @@ export async function executeTool(
       return handleHighlightBuilding(sessionId);
     case "note_capability_gap":
       return { text: await handleNoteCapabilityGap(input as { request: string; capability: string }) };
+    case "check_weather":
+      return { text: await handleCheckWeather(input as { location: string; days?: number }) };
     default:
       return { text: `Unknown tool: ${name}` };
   }
