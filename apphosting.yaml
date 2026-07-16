@@ -1,6 +1,12 @@
 # Settings for Backend (on Cloud Run).
 runConfig:
-  minInstances: 0
+  # 1, not 0 — a live voice assistant needs a warm instance ready to go, not
+  # scale-to-zero cost savings at the price of a ~10s+ cold-start delay on
+  # the first request after any idle period (observed directly: a ~12s
+  # transcribe call that was really a cold Cloud Run boot, not slow STT).
+  # Small ongoing hosting cost, deliberate tradeoff over the default $0-
+  # when-idle behavior.
+  minInstances: 1
 
 # Environment variables and secrets.
 env:
