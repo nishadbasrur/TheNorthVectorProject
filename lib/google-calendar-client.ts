@@ -40,6 +40,15 @@ function getCalendarClient(): calendar_v3.Calendar {
 // get an automatic email unless he tells them himself.
 const SEND_UPDATES = "none" as const;
 
+// Claude generates start/end as bare wall-clock ISO strings (e.g.
+// "2025-07-25T19:00:00", no offset) — the Google Calendar API rejects a
+// dateTime with neither a UTC offset nor an explicit timeZone ("Missing time
+// zone definition for start time", the actual root cause of the repeated
+// create_calendar_event failures logged 2026-07-16). Single-user app,
+// Nishad's own calendar is always Eastern, so this is hardcoded rather than
+// inferred per-request.
+const EVENT_TIME_ZONE = "America/New_York";
+
 export type UpcomingEvent = {
   id: string;
   title: string;
@@ -123,8 +132,8 @@ export async function createCalendarEvent(input: CreateEventInput): Promise<Upco
     sendUpdates: SEND_UPDATES,
     requestBody: {
       summary: input.title,
-      start: { dateTime: input.start },
-      end: { dateTime: input.end },
+      start: { dateTime: input.start, timeZone: EVENT_TIME_ZONE },
+      end: { dateTime: input.end, timeZone: EVENT_TIME_ZONE },
       attendees: input.attendees?.map((email) => ({ email })),
     },
   });
@@ -146,8 +155,8 @@ export async function updateCalendarEvent(input: UpdateEventInput): Promise<Upco
 
   const requestBody: calendar_v3.Schema$Event = {};
   if (input.title !== undefined) requestBody.summary = input.title;
-  if (input.start !== undefined) requestBody.start = { dateTime: input.start };
-  if (input.end !== undefined) requestBody.end = { dateTime: input.end };
+  if (input.start !== undefined) requestBody.start = { dateTime: input.start, timeZone: EVENT_TIME_ZONE };
+  if (input.end !== undefined) requestBody.end = { dateTime: input.end, timeZone: EVENT_TIME_ZONE };
 
   const response = await client.events.patch({
     calendarId: "primary",

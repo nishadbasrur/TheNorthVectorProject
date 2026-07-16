@@ -157,5 +157,15 @@ service cloud.firestore {
       allow read: if isOwner();
       allow write: if false;
     }
+
+    // tool_errors is the automatic structured-failure log every tool
+    // handler writes to on its own catch block (see lib/tool-error-log.ts,
+    // called from lib/tool-dispatcher.ts) — pure observability, no
+    // AI/agent decision involved. Written only by trusted server code via
+    // the Admin SDK; the owner may browse it at /tool-errors.
+    match /tool_errors/{document=**} {
+      allow read: if isOwner();
+      allow write: if false;
+    }
   }
 }

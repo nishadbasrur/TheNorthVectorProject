@@ -19,6 +19,7 @@ import { geocodeLocation, getBuildingFootprint } from "./map-client";
 import { loadVisualState, saveVisualState, type VisualState } from "./voice-session-store";
 import { logCapabilityGap } from "./capability-gap-store";
 import { getRecentIcloudMessages, searchIcloudEmails } from "./icloud-mail-client";
+import { logToolError } from "./tool-error-log";
 
 // Single source of truth for what North can do via voice — read directly by
 // Claude as tool schemas, not maintained separately as prose (that
@@ -314,6 +315,17 @@ export const TOOL_DEFINITIONS: Anthropic.Tool[] = [
 // lib/voice-intent-router.ts's per-branch functions used to provide. Losing
 // that behavior in the migration would be a regression, not a simplification.
 
+// Fire-and-forget: a Firestore write failing here must never block the
+// friendly fallback string a handler already returns to Claude. Every catch
+// block below calls this instead of a bare console.error, so real error
+// detail lands somewhere reviewable (see lib/tool-error-log.ts and the
+// /tool-errors page) instead of only in Cloud Logging, which nobody without
+// gcloud IAM access can actually read.
+function reportToolError(toolName: string, error: unknown, input: unknown): void {
+  console.error(`[tool-dispatcher] ${toolName} failed:`, error);
+  void logToolError(toolName, error, input).catch(() => {});
+}
+
 async function handleCreateTask(input: { title: string }): Promise<string> {
   try {
     await createTaskAsAdmin({
@@ -326,7 +338,7 @@ async function handleCreateTask(input: { title: string }): Promise<string> {
     });
     return `Created task: "${input.title}".`;
   } catch (error) {
-    console.error("[tool-dispatcher] create_task failed:", error);
+    reportToolError("create_task", error, input);
     return "Task creation failed — tell Nishad to try again.";
   }
 }
@@ -358,7 +370,7 @@ async function handleCheckEmail(input: { query?: string }): Promise<string> {
     }
     return await checkUrgentEmails();
   } catch (error) {
-    console.error("[tool-dispatcher] check_email failed:", error);
+    reportToolError("check_email", error, input);
     return "Email check failed — tell Nishad to try again in a bit.";
   }
 }
@@ -369,7 +381,7 @@ async function handleCheckCalendar(input: { withinHours?: number }): Promise<str
     const events = await getUpcomingEvents(withinHours);
     return summarizeUpcomingEvents(events, withinHours);
   } catch (error) {
-    console.error("[tool-dispatcher] check_calendar failed:", error);
+    reportToolError("check_calendar", error, input);
     return "Calendar check failed — tell Nishad to try again in a bit.";
   }
 }
@@ -388,7 +400,7 @@ async function handleSearchEmail(input: { query: string }): Promise<string> {
 
     return `Search results for "${input.query}":\n\n${formatted}`;
   } catch (error) {
-    console.error("[tool-dispatcher] search_email failed:", error);
+    reportToolError("search_email", error, input);
     return "Email search failed — tell Nishad to try again in a bit.";
   }
 }
@@ -398,7 +410,7 @@ async function handleSendEmail(input: { to: string; subject: string; body: strin
     await sendEmail(input.to, input.subject, input.body);
     return `Sent email to ${input.to}: "${input.subject}".`;
   } catch (error) {
-    console.error("[tool-dispatcher] send_email failed:", error);
+    reportToolError("send_email", error, input);
     return "Sending the email failed — tell Nishad to try again.";
   }
 }
@@ -408,7 +420,7 @@ async function handleDeleteEmail(input: { messageId: string }): Promise<string> 
     await trashEmail(input.messageId);
     return "Moved that email to Trash — recoverable for 30 days.";
   } catch (error) {
-    console.error("[tool-dispatcher] delete_email failed:", error);
+    reportToolError("delete_email", error, input);
     return "Deleting the email failed — tell Nishad to try again.";
   }
 }
@@ -423,7 +435,7 @@ async function handleCreateCalendarEvent(input: {
     const event = await createCalendarEvent(input);
     return `Created "${event.title}" on the calendar (${input.start} to ${input.end}).`;
   } catch (error) {
-    console.error("[tool-dispatcher] create_calendar_event failed:", error);
+    reportToolError("create_calendar_event", error, input);
     return "Creating the calendar event failed — tell Nishad to try again.";
   }
 }
@@ -438,7 +450,7 @@ async function handleUpdateCalendarEvent(input: {
     const event = await updateCalendarEvent(input);
     return `Updated "${event.title}" on the calendar.`;
   } catch (error) {
-    console.error("[tool-dispatcher] update_calendar_event failed:", error);
+    reportToolError("update_calendar_event", error, input);
     return "Updating the calendar event failed — tell Nishad to try again.";
   }
 }
@@ -448,7 +460,7 @@ async function handleDeleteCalendarEvent(input: { eventId: string }): Promise<st
     await deleteCalendarEvent(input.eventId);
     return "Deleted that calendar event.";
   } catch (error) {
-    console.error("[tool-dispatcher] delete_calendar_event failed:", error);
+    reportToolError("delete_calendar_event", error, input);
     return "Deleting the calendar event failed — tell Nishad to try again.";
   }
 }
@@ -460,7 +472,7 @@ async function handleCheckNotion(): Promise<string> {
     const titles = items.map((i) => `"${i.title}"`).join(", ");
     return `${items.length} urgent item${items.length === 1 ? "" : "s"} in Notion: ${titles}.`;
   } catch (error) {
-    console.error("[tool-dispatcher] check_notion failed:", error);
+    reportToolError("check_notion", error, null);
     return "Notion check failed — tell Nishad to try again in a bit.";
   }
 }
@@ -479,7 +491,7 @@ async function handleGetDecisionRecommendation(input: { question: string }): Pro
     const specific = decision.recommendation !== DECISION_ENGINE_GENERIC_FALLBACK;
     return JSON.stringify({ ...decision, specific });
   } catch (error) {
-    console.error("[tool-dispatcher] get_decision_recommendation failed:", error);
+    reportToolError("get_decision_recommendation", error, input);
     return JSON.stringify({ specific: false, error: "Decision engine failed." });
   }
 }
@@ -509,7 +521,7 @@ async function handleGetProactiveUpdates(): Promise<string> {
     const formatted = worthMentioning.map((c) => `${c.connection} ${c.whyItMatters}`).join(" ");
     return formatted;
   } catch (error) {
-    console.error("[tool-dispatcher] get_proactive_updates failed:", error);
+    reportToolError("get_proactive_updates", error, null);
     return "Proactive check failed — tell Nishad to try again in a bit.";
   }
 }
@@ -575,7 +587,7 @@ async function handleShowMap(
 
     return { text: `Showing ${location} on the map.`, visual };
   } catch (error) {
-    console.error("[tool-dispatcher] show_map failed:", error);
+    reportToolError("show_map", error, input);
     return { text: "Showing the map failed — tell Nishad to try again." };
   }
 }
@@ -597,7 +609,7 @@ async function handleHighlightBuilding(sessionId: string): Promise<{ text: strin
 
     return { text: `Outlined the building at ${current.location}.`, visual };
   } catch (error) {
-    console.error("[tool-dispatcher] highlight_building failed:", error);
+    reportToolError("highlight_building", error, null);
     return { text: "Highlighting the building failed — tell Nishad to try again." };
   }
 }
@@ -607,7 +619,7 @@ async function handleNoteCapabilityGap(input: { request: string; capability: str
     await logCapabilityGap(input.request, input.capability);
     return "Flagged for Nishad to review and build later.";
   } catch (error) {
-    console.error("[tool-dispatcher] note_capability_gap failed:", error);
+    reportToolError("note_capability_gap", error, input);
     return "Couldn't flag that just now — tell Nishad directly.";
   }
 }
@@ -641,7 +653,7 @@ async function handleSplitBillWithTip(input: {
       `total: ${fmt(total)}. Split ${numPeople} ways: ${fmt(perPerson)} per person.`
     );
   } catch (error) {
-    console.error("[tool-dispatcher] split_bill_with_tip failed:", error);
+    reportToolError("split_bill_with_tip", error, input);
     return "Couldn't calculate that split — tell Nishad to try again.";
   }
 }
@@ -670,7 +682,7 @@ async function handleCheckIcloudEmail(input: { query?: string }): Promise<string
     const query = input.query?.trim() || "your most recent iCloud messages";
     return await lookupIcloudEmails(query);
   } catch (error) {
-    console.error("[tool-dispatcher] check_icloud_email failed:", error);
+    reportToolError("check_icloud_email", error, input);
     return "iCloud email check failed — tell Nishad to try again in a bit.";
   }
 }
@@ -689,7 +701,7 @@ async function handleSearchIcloudEmail(input: { query: string }): Promise<string
 
     return `iCloud search results for "${input.query}":\n\n${formatted}`;
   } catch (error) {
-    console.error("[tool-dispatcher] search_icloud_email failed:", error);
+    reportToolError("search_icloud_email", error, input);
     return "iCloud email search failed — tell Nishad to try again in a bit.";
   }
 }
