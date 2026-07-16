@@ -104,3 +104,57 @@ export async function askClaudeWithTools(params: {
     return { ok: false, error: err instanceof Error ? err.message : "Unknown error" };
   }
 }
+
+// Synchronous, single-call helper for on-demand web-grounded questions —
+// currently only lib/tool-dispatcher.ts's research_scholarships. Uses
+// Claude's server-side web_search tool, which Anthropic executes and
+// returns inline within one response (search + synthesis both happen
+// server-side), so this needs no client-side tool loop the way
+// askClaudeWithTools does. Not used by the bi-daily scholarship scan
+// (functions/src/scholarship-scan.ts) — that goes through the Batch API
+// directly for the 50% cost discount on a job nothing is waiting on, a
+// different submit/poll shape this synchronous helper doesn't fit.
+export async function askClaudeWithWebSearch(params: {
+  systemPrompt: string;
+  userMessage: string;
+  maxTokens?: number;
+  maxSearches?: number;
+  model?: string;
+}): Promise<{ text: string; ok: true } | { ok: false; error: string }> {
+  if (!process.env.ANTHROPIC_API_KEY) {
+    return { ok: false, error: "ANTHROPIC_API_KEY not configured" };
+  }
+
+  if (callsToday >= SOFT_DAILY_CALL_CAP) {
+    console.warn(`[anthropic-client] Soft daily call cap (${SOFT_DAILY_CALL_CAP}) reached — refusing call.`);
+    return { ok: false, error: "Daily call cap reached" };
+  }
+
+  try {
+    callsToday += 1;
+    const response = await client.messages.create({
+      model: params.model ?? DEFAULT_MODEL,
+      max_tokens: params.maxTokens ?? 1200,
+      system: params.systemPrompt,
+      messages: [{ role: "user", content: params.userMessage }],
+      tools: [{ type: "web_search_20250305", name: "web_search", max_uses: params.maxSearches ?? 5 }],
+    });
+
+    // Response content interleaves text blocks with server_tool_use /
+    // web_search_tool_result blocks — only the text blocks are the actual
+    // answer.
+    const text = response.content
+      .filter((block): block is Anthropic.TextBlock => block.type === "text")
+      .map((block) => block.text)
+      .join("\n\n");
+
+    if (!text) {
+      return { ok: false, error: "No text content in response" };
+    }
+
+    return { ok: true, text };
+  } catch (err) {
+    console.error("[anthropic-client] Web-search API call failed:", err);
+    return { ok: false, error: err instanceof Error ? err.message : "Unknown error" };
+  }
+}

@@ -21,6 +21,9 @@ import { logCapabilityGap } from "./capability-gap-store";
 import { getRecentIcloudMessages, searchIcloudEmails } from "./icloud-mail-client";
 import { logToolError } from "./tool-error-log";
 import { logTechnicalError } from "./error-log-store";
+import { askClaudeWithWebSearch } from "./anthropic-client";
+import { SCHOLARSHIP_SYSTEM_PROMPT, SCHOLARSHIP_DEFAULT_QUERY, parseScholarshipCandidates } from "./scholarship-research";
+import { filterNewScholarships, saveScholarships } from "./scholarship-store";
 
 // Single source of truth for what North can do via voice — read directly by
 // Claude as tool schemas, not maintained separately as prose (that
@@ -332,6 +335,24 @@ export const TOOL_DEFINITIONS: Anthropic.Tool[] = [
         },
       },
       required: ["description"],
+    },
+  },
+  {
+    name: "research_scholarships",
+    description:
+      "Research real, currently-open scholarships Nishad could apply to (pre-med / UConn / general " +
+      "undergraduate), using live web search. Read-only research only — this does not apply to " +
+      "anything on his behalf, it only finds and summarizes real opportunities for him to review. " +
+      "Use when asked to find, look up, or check for scholarships or financial aid.",
+    input_schema: {
+      type: "object",
+      properties: {
+        focus: {
+          type: "string",
+          description:
+            "Optional narrower focus, e.g. \"Connecticut-specific\" or \"summer research funding\". Omit for a general search.",
+        },
+      },
     },
   },
 ];
@@ -751,6 +772,56 @@ async function handleLogTechnicalError(input: {
   }
 }
 
+// Stronger model than the shared Haiku default (SYNTHESIS_MODEL in
+// lib/synthesis-engine.ts sets the same precedent) — open-ended web
+// research and judging which results are real, current, and worth
+// surfacing benefits from it, and this tool is called rarely enough that
+// the cost difference doesn't matter.
+const SCHOLARSHIP_RESEARCH_MODEL = "claude-sonnet-5";
+
+async function handleResearchScholarships(input: { focus?: string }): Promise<string> {
+  try {
+    const userMessage = input.focus?.trim()
+      ? `Focus specifically on: ${input.focus.trim()}`
+      : SCHOLARSHIP_DEFAULT_QUERY;
+
+    const result = await askClaudeWithWebSearch({
+      systemPrompt: SCHOLARSHIP_SYSTEM_PROMPT,
+      userMessage,
+      model: SCHOLARSHIP_RESEARCH_MODEL,
+      maxTokens: 2000,
+    });
+
+    if (!result.ok) {
+      return "Scholarship research failed — tell Nishad to try again in a bit.";
+    }
+
+    const candidates = parseScholarshipCandidates(result.text);
+    if (candidates.length === 0) {
+      return "Searched but didn't find any verifiable open scholarships matching that right now.";
+    }
+
+    // Still save+report every candidate found in THIS search, even ones
+    // already known from a prior search or the scheduled scan — someone
+    // asking directly wants a full answer, not just what's new since last
+    // time (that "stay quiet unless new" behavior is specifically for the
+    // silent background scan, see functions/src/scholarship-scan.ts).
+    const newOnes = await filterNewScholarships(candidates);
+    if (newOnes.length > 0) {
+      await saveScholarships(newOnes, "on_demand");
+    }
+
+    const summary = candidates
+      .map((c) => `${c.name} (${c.amount}, due ${c.deadline}) — ${c.eligibilitySummary}`)
+      .join("; ");
+
+    return `Found ${candidates.length} scholarship${candidates.length === 1 ? "" : "s"}: ${summary}. Full details saved for Nishad to review at /scholarships.`;
+  } catch (error) {
+    reportToolError("research_scholarships", error, input);
+    return "Scholarship research failed — tell Nishad to try again in a bit.";
+  }
+}
+
 // Returns { text, visual } uniformly — text is what goes back to Claude as
 // the tool_result content, visual is only ever set by show_map and is what
 // app/api/v1/voice/respond/route.ts lifts into the API response for the
@@ -818,6 +889,8 @@ export async function executeTool(
           input as { description: string; details?: string; source?: string }
         ),
       };
+    case "research_scholarships":
+      return { text: await handleResearchScholarships(input as { focus?: string }) };
     default:
       return { text: `Unknown tool: ${name}` };
   }

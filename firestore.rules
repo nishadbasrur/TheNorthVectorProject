@@ -167,5 +167,24 @@ service cloud.firestore {
       allow read: if isOwner();
       allow write: if false;
     }
+
+    // scholarship_opportunities holds real scholarships North has found —
+    // via the on-demand research_scholarships tool or the bi-daily
+    // scheduled scan (see lib/scholarship-store.ts, functions/src/
+    // scholarship-scan.ts). Written only by trusted server code via the
+    // Admin SDK; the owner browses it at /scholarships.
+    match /scholarship_opportunities/{document=**} {
+      allow read: if isOwner();
+      allow write: if false;
+    }
+
+    // scholarship_scan_state tracks the single outstanding Anthropic batch
+    // submission (if any) for the scholarship scan — internal bookkeeping,
+    // not user content, but owner-readable for the same debuggability
+    // reason as the other Cloud-Function-only collections above.
+    match /scholarship_scan_state/{document=**} {
+      allow read: if isOwner();
+      allow write: if false;
+    }
   }
 }

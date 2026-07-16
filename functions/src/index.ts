@@ -13,6 +13,8 @@ import { runSynthesisScan } from "./synthesis-scan";
 import { sendPushNotification } from "./push";
 import { dispatchCapabilityDraft } from "./capability-gap-dispatch";
 import { verifyPipelineCallback } from "./verify-pipeline-callback";
+import { submitScholarshipScan, pollScholarshipScan } from "./scholarship-scan";
+import { getPendingBatch } from "../../lib/scholarship-store";
 
 if (!getApps().length) {
   // No explicit credential — the deployed function runs under its own
@@ -372,5 +374,46 @@ export const notifyCapabilityDraftReady = onRequest(
     );
 
     res.status(200).json({ ok: sent });
+  }
+);
+
+// Proactive scholarship research — see lib/scholarship-research.ts and
+// lib/scholarship-store.ts. Runs on Anthropic's Batch API (50% cheaper,
+// typically finishes in under an hour) since nothing here is time-sensitive
+// — a scholarship deadline weeks or months out doesn't need a same-minute
+// answer. Split into submit (every 2 days) + poll (every 30 min) rather
+// than one long-running scheduled function, since a batch can occasionally
+// take longer than a single Cloud Function invocation's timeout budget —
+// the poll schedule just checks in until it's done, at negligible cost
+// (one Firestore read) when nothing is outstanding.
+//
+// Cron day-of-month step (*/2) isn't perfectly calendar-exact across month
+// boundaries — acceptable here, this only needs to be "roughly every two
+// days," not precise to the hour.
+export const scholarshipScanSubmit = onSchedule(
+  { schedule: "0 9 */2 * *", timeZone: "America/New_York", secrets: [anthropicApiKey] },
+  async () => {
+    const pending = await getPendingBatch();
+    if (pending) {
+      logger.log(`[scholarshipScanSubmit] Skipping — batch ${pending.batchId} still outstanding.`);
+      return;
+    }
+
+    try {
+      await submitScholarshipScan(anthropicApiKey.value());
+    } catch (error) {
+      logger.error("[scholarshipScanSubmit] Failed to submit batch:", error);
+    }
+  }
+);
+
+export const scholarshipScanPoll = onSchedule(
+  { schedule: "every 30 minutes", secrets: [anthropicApiKey] },
+  async () => {
+    try {
+      await pollScholarshipScan(anthropicApiKey.value());
+    } catch (error) {
+      logger.error("[scholarshipScanPoll] Failed to poll batch:", error);
+    }
   }
 );
