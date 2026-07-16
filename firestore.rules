@@ -168,21 +168,23 @@ service cloud.firestore {
       allow write: if false;
     }
 
-    // scholarship_opportunities holds real scholarships North has found —
-    // via the on-demand research_scholarships tool or the bi-daily
-    // scheduled scan (see lib/scholarship-store.ts, functions/src/
-    // scholarship-scan.ts). Written only by trusted server code via the
-    // Admin SDK; the owner browses it at /scholarships.
-    match /scholarship_opportunities/{document=**} {
+    // opportunities holds real opportunities North has found via the
+    // bi-daily scheduled scan (see lib/opportunity-store.ts, functions/src/
+    // opportunity-scan.ts, and 03-Chief-Engine/Opportunity_Engine.md for
+    // the design — academic, career, financial, and learning
+    // opportunities, not scoped to any single topic). Written only by
+    // trusted server code via the Admin SDK; the owner browses it at
+    // /opportunities.
+    match /opportunities/{document=**} {
       allow read: if isOwner();
       allow write: if false;
     }
 
-    // scholarship_scan_state tracks the single outstanding Anthropic batch
-    // submission (if any) for the scholarship scan — internal bookkeeping,
+    // opportunity_scan_state tracks the single outstanding Anthropic batch
+    // submission (if any) for the opportunity scan — internal bookkeeping,
     // not user content, but owner-readable for the same debuggability
     // reason as the other Cloud-Function-only collections above.
-    match /scholarship_scan_state/{document=**} {
+    match /opportunity_scan_state/{document=**} {
       allow read: if isOwner();
       allow write: if false;
     }

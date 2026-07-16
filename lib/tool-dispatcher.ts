@@ -22,8 +22,6 @@ import { getRecentIcloudMessages, searchIcloudEmails } from "./icloud-mail-clien
 import { logToolError } from "./tool-error-log";
 import { logTechnicalError } from "./error-log-store";
 import { askClaudeWithWebSearch } from "./anthropic-client";
-import { SCHOLARSHIP_SYSTEM_PROMPT, SCHOLARSHIP_DEFAULT_QUERY, parseScholarshipCandidates } from "./scholarship-research";
-import { filterNewScholarships, saveScholarships } from "./scholarship-store";
 
 // Single source of truth for what North can do via voice — read directly by
 // Claude as tool schemas, not maintained separately as prose (that
@@ -247,10 +245,14 @@ export const TOOL_DEFINITIONS: Anthropic.Tool[] = [
     name: "note_capability_gap",
     description:
       "Log a request that's genuinely outside your current tools — instead of just declining, this " +
-      "flags it for Nishad to review and build later. Call this whenever a request needs a real " +
-      "action or capability you don't have a tool for (not a question answerable from general " +
-      "knowledge or reasoning alone). Still tell Nishad plainly in your spoken reply that you can't " +
-      "do it yet and that you've flagged it — this doesn't grant the capability immediately.",
+      "flags it for Nishad to review and build later. This is specifically for something that needs " +
+      "a real new integration (a new account, API, or credential you don't have access to yet, e.g. " +
+      "\"check my Spotify\" or \"order me an Uber\") — NOT for anything the research tool could " +
+      "already answer (any live-lookup or informational question — weather, prices, facts, " +
+      "conversions, and so on all go through research, not a new tool per topic) and not for " +
+      "anything answerable from general knowledge, reasoning, or arithmetic alone. Still tell " +
+      "Nishad plainly in your spoken reply that you can't do it yet and that you've flagged it — " +
+      "this doesn't grant the capability immediately.",
     input_schema: {
       type: "object",
       properties: {
@@ -261,22 +263,6 @@ export const TOOL_DEFINITIONS: Anthropic.Tool[] = [
         },
       },
       required: ["request", "capability"],
-    },
-  },
-  {
-    name: "split_bill_with_tip",
-    description:
-      "Calculate a tip and split a bill evenly among a number of people. Use for requests like " +
-      "\"split $84 three ways with 20% tip\" or \"what's a 18 percent tip on $50 split two ways\". " +
-      "Pure arithmetic — no external data needed.",
-    input_schema: {
-      type: "object",
-      properties: {
-        billAmount: { type: "number", description: "Pre-tip bill total in dollars, e.g. 84." },
-        tipPercent: { type: "number", description: "Tip percentage, e.g. 20 for 20%." },
-        numPeople: { type: "number", description: "Number of people splitting the bill, e.g. 3." },
-      },
-      required: ["billAmount", "tipPercent", "numPeople"],
     },
   },
   {
@@ -338,21 +324,22 @@ export const TOOL_DEFINITIONS: Anthropic.Tool[] = [
     },
   },
   {
-    name: "research_scholarships",
+    name: "research",
     description:
-      "Research real, currently-open scholarships Nishad could apply to (pre-med / UConn / general " +
-      "undergraduate), using live web search. Read-only research only — this does not apply to " +
-      "anything on his behalf, it only finds and summarizes real opportunities for him to review. " +
-      "Use when asked to find, look up, or check for scholarships or financial aid.",
+      "Look up anything needing current or external information, using live web search — weather, " +
+      "currency conversion, prices, general facts, news, scholarships, or any other open-ended " +
+      "question. This is the general-purpose fallback for factual/informational requests: prefer " +
+      "calling this over declining or calling note_capability_gap whenever a live search could " +
+      "actually answer it — don't ask for or assume a dedicated tool exists for a specific topic. " +
+      "Don't use this for anything involving Nishad's own accounts/data (email, calendar, tasks, " +
+      "Notion — those have their own tools) or for pure arithmetic/reasoning you can already do " +
+      "directly without external information.",
     input_schema: {
       type: "object",
       properties: {
-        focus: {
-          type: "string",
-          description:
-            "Optional narrower focus, e.g. \"Connecticut-specific\" or \"summer research funding\". Omit for a general search.",
-        },
+        query: { type: "string", description: "What to look up or research, in plain language." },
       },
+      required: ["query"],
     },
   },
 ];
@@ -672,40 +659,6 @@ async function handleNoteCapabilityGap(input: { request: string; capability: str
   }
 }
 
-async function handleSplitBillWithTip(input: {
-  billAmount: number;
-  tipPercent: number;
-  numPeople: number;
-}): Promise<string> {
-  try {
-    const { billAmount, tipPercent, numPeople } = input;
-
-    if (!Number.isFinite(billAmount) || billAmount <= 0) {
-      return "That bill amount doesn't look valid — tell me the pre-tip total in dollars.";
-    }
-    if (!Number.isFinite(tipPercent) || tipPercent < 0) {
-      return "That tip percentage doesn't look valid — give me a percentage like 20 for 20%.";
-    }
-    if (!Number.isFinite(numPeople) || numPeople <= 0 || !Number.isInteger(numPeople)) {
-      return "That number of people doesn't look valid — give me a whole number of people to split among.";
-    }
-
-    const tipAmount = billAmount * (tipPercent / 100);
-    const total = billAmount + tipAmount;
-    const perPerson = total / numPeople;
-
-    const fmt = (n: number) => n.toFixed(2);
-
-    return (
-      `Bill: ${fmt(billAmount)}, tip ${tipPercent}%: ${fmt(tipAmount)}, ` +
-      `total: ${fmt(total)}. Split ${numPeople} ways: ${fmt(perPerson)} per person.`
-    );
-  } catch (error) {
-    reportToolError("split_bill_with_tip", error, input);
-    return "Couldn't calculate that split — tell Nishad to try again.";
-  }
-}
-
 // Mirrors lookupEmails' formatting exactly (same "recent inbox, most
 // recent first" shape) so Claude answers iCloud lookups the same way it
 // already answers Gmail ones — deliberately not deduplicated across the
@@ -774,51 +727,43 @@ async function handleLogTechnicalError(input: {
 
 // Stronger model than the shared Haiku default (SYNTHESIS_MODEL in
 // lib/synthesis-engine.ts sets the same precedent) — open-ended web
-// research and judging which results are real, current, and worth
-// surfacing benefits from it, and this tool is called rarely enough that
-// the cost difference doesn't matter.
-const SCHOLARSHIP_RESEARCH_MODEL = "claude-sonnet-5";
+// research and judging which results are real/current/worth trusting
+// benefits from it, and this tool is called rarely enough that the cost
+// difference doesn't matter.
+const RESEARCH_MODEL = "claude-sonnet-5";
 
-async function handleResearchScholarships(input: { focus?: string }): Promise<string> {
+const RESEARCH_SYSTEM_PROMPT =
+  "You are answering a live question for Nishad, a pre-med undergraduate at UConn, using web search " +
+  "where it actually helps — weather, currency conversion, prices, current events, scholarships, or " +
+  "any other question needing up-to-date or external information. Search when the answer could be " +
+  "stale or wrong without it; answer directly from general knowledge when it's a stable fact search " +
+  "wouldn't change. Give a direct, concise, spoken-style answer — this gets read aloud, not displayed " +
+  "as a document.";
+
+// Deliberately no structured storage here — this is an ephemeral live-
+// lookup tool, same shape as check_calendar or check_notion, not a
+// tracked-opportunity system. Findings worth persisting and monitoring
+// over time (scholarships, research positions, and the rest of
+// 03-Chief-Engine/Opportunity_Engine.md's categories) go through the
+// separate bi-daily opportunity scan (functions/src/opportunity-scan.ts),
+// which is a distinct concern from "answer this one question right now."
+async function handleResearch(input: { query: string }): Promise<string> {
   try {
-    const userMessage = input.focus?.trim()
-      ? `Focus specifically on: ${input.focus.trim()}`
-      : SCHOLARSHIP_DEFAULT_QUERY;
-
     const result = await askClaudeWithWebSearch({
-      systemPrompt: SCHOLARSHIP_SYSTEM_PROMPT,
-      userMessage,
-      model: SCHOLARSHIP_RESEARCH_MODEL,
-      maxTokens: 2000,
+      systemPrompt: RESEARCH_SYSTEM_PROMPT,
+      userMessage: input.query,
+      model: RESEARCH_MODEL,
+      maxTokens: 1200,
     });
 
     if (!result.ok) {
-      return "Scholarship research failed — tell Nishad to try again in a bit.";
+      return "Couldn't research that just now — tell Nishad to try again in a bit.";
     }
 
-    const candidates = parseScholarshipCandidates(result.text);
-    if (candidates.length === 0) {
-      return "Searched but didn't find any verifiable open scholarships matching that right now.";
-    }
-
-    // Still save+report every candidate found in THIS search, even ones
-    // already known from a prior search or the scheduled scan — someone
-    // asking directly wants a full answer, not just what's new since last
-    // time (that "stay quiet unless new" behavior is specifically for the
-    // silent background scan, see functions/src/scholarship-scan.ts).
-    const newOnes = await filterNewScholarships(candidates);
-    if (newOnes.length > 0) {
-      await saveScholarships(newOnes, "on_demand");
-    }
-
-    const summary = candidates
-      .map((c) => `${c.name} (${c.amount}, due ${c.deadline}) — ${c.eligibilitySummary}`)
-      .join("; ");
-
-    return `Found ${candidates.length} scholarship${candidates.length === 1 ? "" : "s"}: ${summary}. Full details saved for Nishad to review at /scholarships.`;
+    return result.text;
   } catch (error) {
-    reportToolError("research_scholarships", error, input);
-    return "Scholarship research failed — tell Nishad to try again in a bit.";
+    reportToolError("research", error, input);
+    return "Couldn't research that just now — tell Nishad to try again in a bit.";
   }
 }
 
@@ -873,12 +818,6 @@ export async function executeTool(
       return handleHighlightBuilding(sessionId);
     case "note_capability_gap":
       return { text: await handleNoteCapabilityGap(input as { request: string; capability: string }) };
-    case "split_bill_with_tip":
-      return {
-        text: await handleSplitBillWithTip(
-          input as { billAmount: number; tipPercent: number; numPeople: number }
-        ),
-      };
     case "check_icloud_email":
       return { text: await handleCheckIcloudEmail(input as { query?: string }) };
     case "search_icloud_email":
@@ -889,8 +828,8 @@ export async function executeTool(
           input as { description: string; details?: string; source?: string }
         ),
       };
-    case "research_scholarships":
-      return { text: await handleResearchScholarships(input as { focus?: string }) };
+    case "research":
+      return { text: await handleResearch(input as { query: string }) };
     default:
       return { text: `Unknown tool: ${name}` };
   }

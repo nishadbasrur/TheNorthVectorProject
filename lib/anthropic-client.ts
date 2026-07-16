@@ -106,14 +106,15 @@ export async function askClaudeWithTools(params: {
 }
 
 // Synchronous, single-call helper for on-demand web-grounded questions —
-// currently only lib/tool-dispatcher.ts's research_scholarships. Uses
-// Claude's server-side web_search tool, which Anthropic executes and
-// returns inline within one response (search + synthesis both happen
-// server-side), so this needs no client-side tool loop the way
-// askClaudeWithTools does. Not used by the bi-daily scholarship scan
-// (functions/src/scholarship-scan.ts) — that goes through the Batch API
-// directly for the 50% cost discount on a job nothing is waiting on, a
-// different submit/poll shape this synchronous helper doesn't fit.
+// currently lib/tool-dispatcher.ts's general-purpose research tool (any
+// topic, not scoped to a specific subject). Uses Claude's server-side
+// web_search tool, which Anthropic executes and returns inline within one
+// response (search + synthesis both happen server-side), so this needs no
+// client-side tool loop the way askClaudeWithTools does. Not used by the
+// bi-daily opportunity scan (functions/src/opportunity-scan.ts) — that goes
+// through the Batch API directly for the 50% cost discount on a job
+// nothing is waiting on, a different submit/poll shape this synchronous
+// helper doesn't fit.
 export async function askClaudeWithWebSearch(params: {
   systemPrompt: string;
   userMessage: string;
