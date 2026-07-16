@@ -725,20 +725,24 @@ async function handleLogTechnicalError(input: {
   }
 }
 
-// Stronger model than the shared Haiku default (SYNTHESIS_MODEL in
-// lib/synthesis-engine.ts sets the same precedent) — open-ended web
-// research and judging which results are real/current/worth trusting
-// benefits from it, and this tool is called rarely enough that the cost
-// difference doesn't matter.
-const RESEARCH_MODEL = "claude-sonnet-5";
-
+// Deliberately the shared Haiku default (no model override) and a tight
+// search cap — this runs inside a live voice turn with Nishad waiting on
+// the other end, unlike the bi-daily opportunity scan
+// (functions/src/opportunity-scan.ts), which uses Sonnet and up to 5
+// searches because nothing's blocking on it. A first version of this tool
+// used Sonnet + 5 searches here too and measured ~15s for a single
+// exchange-rate question — most of that was the server-side agentic loop
+// running multiple sequential search rounds before responding, not the
+// model choice alone. One search answers the overwhelming majority of the
+// short factual questions this tool is actually for.
 const RESEARCH_SYSTEM_PROMPT =
   "You are answering a live question for Nishad, a pre-med undergraduate at UConn, using web search " +
   "where it actually helps — weather, currency conversion, prices, current events, scholarships, or " +
   "any other question needing up-to-date or external information. Search when the answer could be " +
   "stale or wrong without it; answer directly from general knowledge when it's a stable fact search " +
-  "wouldn't change. Give a direct, concise, spoken-style answer — this gets read aloud, not displayed " +
-  "as a document.";
+  "wouldn't change. One search is enough for almost any question like this — only search again if " +
+  "the first result genuinely doesn't answer it. Give a direct, concise, spoken-style answer — this " +
+  "gets read aloud, not displayed as a document.";
 
 // Deliberately no structured storage here — this is an ephemeral live-
 // lookup tool, same shape as check_calendar or check_notion, not a
@@ -752,8 +756,8 @@ async function handleResearch(input: { query: string }): Promise<string> {
     const result = await askClaudeWithWebSearch({
       systemPrompt: RESEARCH_SYSTEM_PROMPT,
       userMessage: input.query,
-      model: RESEARCH_MODEL,
-      maxTokens: 1200,
+      maxTokens: 800,
+      maxSearches: 2,
     });
 
     if (!result.ok) {
