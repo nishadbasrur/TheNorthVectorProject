@@ -26,12 +26,22 @@ export async function logCapabilityGap(request: string, capability: string): Pro
 }
 
 export type CapabilityGap = {
+  // "capability" (default, undefined on older docs) = North couldn't do
+  // something a human asked for (note_capability_gap). "bug_fix" = an
+  // existing tool actually failed in production (functions/src/index.ts's
+  // onToolError, watching lib/tool-error-log.ts's tool_errors collection) —
+  // same review-gated draft/PR/approve flow, different origin and a
+  // narrower, single-file scope fence in scripts/draft-bugfix.js. See
+  // North_Vector_Autonomous_Self_Extension_Plan.md's bug-fix-drafting
+  // section.
+  kind: "capability" | "bug_fix";
   request: string;
   capability: string;
   status: "pending_gap" | "pending_review" | "approved" | "denied";
   prNumber: number | null;
   prUrl: string | null;
   toolName: string | null;
+  targetFile: string | null;
   summary: string | null;
 };
 
@@ -45,12 +55,14 @@ export async function getCapabilityGap(gapId: string): Promise<CapabilityGap | n
 
   const data = doc.data() ?? {};
   return {
+    kind: data.kind === "bug_fix" ? "bug_fix" : "capability",
     request: typeof data.request === "string" ? data.request : "",
     capability: typeof data.capability === "string" ? data.capability : "",
     status: (data.status as CapabilityGap["status"]) ?? "pending_gap",
     prNumber: typeof data.prNumber === "number" ? data.prNumber : null,
     prUrl: typeof data.prUrl === "string" ? data.prUrl : null,
     toolName: typeof data.toolName === "string" ? data.toolName : null,
+    targetFile: typeof data.targetFile === "string" ? data.targetFile : null,
     summary: typeof data.summary === "string" ? data.summary : null,
   };
 }

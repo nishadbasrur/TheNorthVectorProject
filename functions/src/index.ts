@@ -211,9 +211,18 @@ export const onCapabilityGap = onDocumentCreated(
     const data = event.data?.data();
     if (!data) return;
 
+    // Fires for every new doc in this collection regardless of who wrote
+    // it — note_capability_gap (a live voice turn) and onToolError (below,
+    // an existing tool actually failing) both just create a doc here and
+    // let this one trigger take it from there. kind on the doc (absent =
+    // "capability", the original behavior) picks which script the
+    // workflow's single Draft step runs.
+    const kind = data.kind === "bug_fix" ? "bug_fix" : "capability";
+
     const ok = await dispatchCapabilityDraft(
       githubDispatchToken.value(),
       event.params.gapId,
+      kind,
       typeof data.request === "string" ? data.request : "",
       typeof data.capability === "string" ? data.capability : ""
     );
@@ -223,6 +232,86 @@ export const onCapabilityGap = onDocumentCreated(
     }
   }
 );
+
+// Bug-fix drafting, the newest layer of the self-extension pipeline —
+// watches lib/tool-error-log.ts's tool_errors collection (every tool
+// handler's catch block writes here automatically, see
+// lib/tool-dispatcher.ts) and, for a small allowlist of tools that have a
+// single dedicated client file, kicks off the exact same draft/typecheck/
+// build/PR/review flow already proven out for brand-new tools — just with a
+// different, narrower scope fence (scripts/draft-bugfix.js may only rewrite
+// that one pre-determined file, never choose its own target, never touch
+// lib/tool-dispatcher.ts's routing). Real bug report requested this
+// 2026-07-16 after a live create_calendar_event failure; see
+// North_Vector_Autonomous_Self_Extension_Plan.md's bug-fix-drafting
+// section for the full design and why it's scoped this tightly.
+//
+// Keep this set in sync with scripts/draft-bugfix.js's TOOL_TO_FILE map —
+// this one only decides whether to attempt a fix at all (and avoids
+// creating a dead-end review-page entry for a tool that has nowhere to
+// route a fix); the script owns the actual file each tool maps to.
+const FIXABLE_TOOLS = new Set([
+  "check_email",
+  "search_email",
+  "send_email",
+  "delete_email",
+  "check_calendar",
+  "create_calendar_event",
+  "update_calendar_event",
+  "delete_calendar_event",
+  "check_notion",
+  "get_decision_recommendation",
+  "show_map",
+  "highlight_building",
+  "check_icloud_email",
+  "search_icloud_email",
+  "create_task",
+]);
+
+export const onToolError = onDocumentCreated("tool_errors/{errorId}", async (event) => {
+  const data = event.data?.data();
+  if (!data) return;
+
+  const toolName = typeof data.toolName === "string" ? data.toolName : "";
+  const message = typeof data.message === "string" ? data.message : "";
+  if (!toolName || !FIXABLE_TOOLS.has(toolName)) return;
+
+  // Equality-only filters (no orderBy/range/in) — Firestore serves this
+  // without needing a manually-created composite index. One open draft per
+  // tool at a time: a tool failing repeatedly while its first fix is
+  // already out for review shouldn't spawn a second competing PR.
+  const existing = await db
+    .collection("capability_gaps")
+    .where("toolName", "==", toolName)
+    .where("kind", "==", "bug_fix")
+    .get();
+  const alreadyOpen = existing.docs.some((doc) => {
+    const status = doc.data().status;
+    return status === "pending_gap" || status === "pending_review";
+  });
+  if (alreadyOpen) {
+    logger.log(`[onToolError] Skipping ${toolName} — a bug-fix draft is already in flight.`);
+    return;
+  }
+
+  await db.collection("capability_gaps").add({
+    kind: "bug_fix",
+    request: toolName,
+    capability: message,
+    toolName,
+    status: "pending_gap",
+    createdAt: FieldValue.serverTimestamp(),
+  });
+
+  await sendPushNotification(
+    `North: found a bug in "${toolName}"`,
+    "Drafting a fix now — you'll get another ping when it's ready to review."
+  );
+
+  // No direct dispatch call here — writing the doc above is enough; it's
+  // picked up by the onCapabilityGap trigger the same way a live
+  // note_capability_gap call is.
+});
 
 // Public production URL — hardcoded rather than read from a secret/env var
 // since it's not sensitive (same treatment public/firebase-messaging-sw.js
@@ -248,11 +337,12 @@ export const notifyCapabilityDraftReady = onRequest(
   async (req, res) => {
     if (!verifyPipelineCallback(req, res, pipelineCallbackToken.value())) return;
 
-    const { gapId, prUrl, toolName, summary } = (req.body ?? {}) as {
+    const { gapId, prUrl, toolName, summary, targetFile } = (req.body ?? {}) as {
       gapId?: unknown;
       prUrl?: unknown;
       toolName?: unknown;
       summary?: unknown;
+      targetFile?: unknown;
     };
 
     if (typeof gapId !== "string" || !gapId || typeof prUrl !== "string" || !prUrl) {
@@ -270,6 +360,7 @@ export const notifyCapabilityDraftReady = onRequest(
         prNumber,
         toolName: typeof toolName === "string" ? toolName : null,
         summary: typeof summary === "string" ? summary : null,
+        targetFile: typeof targetFile === "string" && targetFile ? targetFile : null,
       },
       { merge: true }
     );

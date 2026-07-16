@@ -19,11 +19,15 @@ on:
         description: "Gap id (arbitrary for manual runs)"
         required: true
         default: manual-test
+      kind:
+        description: "capability (new tool) or bug_fix (existing tool failed)"
+        required: false
+        default: capability
       request:
-        description: "What was asked"
+        description: "What was asked (capability) or the failing tool's name (bug_fix)"
         required: true
       capability:
-        description: "Missing capability, short description"
+        description: "Missing capability description (capability) or the real error message (bug_fix)"
         required: true
 
 # Only what this workflow actually needs: push a branch, open a PR. No
@@ -46,14 +50,26 @@ jobs:
 
       - run: npm ci
 
-      - name: Draft capability
+      # One step, one id, regardless of kind — draft-capability.js and
+      # draft-bugfix.js share the same setOutput contract (drafted/tool-name/
+      # summary[/target-file]), so every downstream step below reads
+      # steps.draft.outputs.* unchanged either way. See each script's own
+      # header comment for why its scope fence is shaped the way it is.
+      - name: Draft
         id: draft
         env:
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
           GAP_ID: ${{ inputs.gapId }}
           CAPABILITY_REQUEST: ${{ inputs.request }}
           CAPABILITY_DESCRIPTION: ${{ inputs.capability }}
-        run: node scripts/draft-capability.js
+          TOOL_NAME: ${{ inputs.request }}
+          ERROR_MESSAGE: ${{ inputs.capability }}
+        run: |
+          if [ "${{ inputs.kind }}" = "bug_fix" ]; then
+            node scripts/draft-bugfix.js
+          else
+            node scripts/draft-capability.js
+          fi
 
       - name: Typecheck
         if: steps.draft.outputs.drafted == 'true'
@@ -106,20 +122,18 @@ jobs:
         uses: peter-evans/create-pull-request@v6
         with:
           branch: auto/capability-${{ inputs.gapId }}
-          commit-message: "Auto-draft capability: ${{ steps.draft.outputs.tool-name }}"
-          title: "Auto-draft: ${{ steps.draft.outputs.tool-name }}"
+          commit-message: "${{ inputs.kind == 'bug_fix' && 'Auto-fix' || 'Auto-draft capability' }}: ${{ steps.draft.outputs.tool-name }}"
+          title: "${{ inputs.kind == 'bug_fix' && 'Auto-fix' || 'Auto-draft' }}: ${{ steps.draft.outputs.tool-name }}"
           body: |
-            Autonomously drafted by North in response to a logged capability gap — **not yet merged, not deployed**.
+            Autonomously drafted by North — **not yet merged, not deployed**.
 
-            **Asked:** ${{ inputs.request }}
-            **Missing capability:** ${{ inputs.capability }}
-            **What this adds:** ${{ steps.draft.outputs.summary }}
+            **Trigger:** ${{ inputs.kind == 'bug_fix' && format('"{0}" failed in production', inputs.request) || inputs.request }}
+            **Detail:** ${{ inputs.capability }}
+            **What this changes:** ${{ steps.draft.outputs.summary }}
+            ${{ steps.draft.outputs.target-file != '' && format('**File touched:** `{0}`', steps.draft.outputs.target-file) || '' }}
 
-            Typecheck and build both passed in this run. The new code only ever came from three fixed
-            insertion points in `lib/tool-dispatcher.ts` (a new `TOOL_DEFINITIONS` entry, a new handler
-            function, a new `switch` case) plus optional new files under `lib/` — nothing else was
-            touched. Still needs your review before this does anything: merging this PR is what makes
-            it live (Firebase App Hosting deploys on push to `main`).
+            Typecheck and build both passed in this run. ${{ inputs.kind == 'bug_fix' && 'This is a bug fix against an existing file — the pipeline only ever lets it rewrite the single file already implicated by the failing tool (a fixed, code-owned mapping, never chosen by the model); it cannot touch anything else, including lib/tool-dispatcher.ts routing, auth, secrets, or CI config.' || 'The new code only ever came from three fixed insertion points in `lib/tool-dispatcher.ts` (a new `TOOL_DEFINITIONS` entry, a new handler function, a new `switch` case) plus optional new files under `lib/` — nothing else was touched.' }}
+            Still needs your review before this does anything: merging this PR is what makes it live (Firebase App Hosting deploys on push to `main`).
           labels: autonomous-draft
 
       - name: Notify Nishad the draft is ready
@@ -139,6 +153,7 @@ jobs:
                 prUrl: process.argv[2],
                 toolName: process.argv[3],
                 summary: process.argv[4],
+                targetFile: process.argv[5],
               }));
-            ' "${{ inputs.gapId }}" "${{ steps.pr.outputs.pull-request-url }}" "${{ steps.draft.outputs.tool-name }}" "${{ steps.draft.outputs.summary }}")" \
+            ' "${{ inputs.gapId }}" "${{ steps.pr.outputs.pull-request-url }}" "${{ steps.draft.outputs.tool-name }}" "${{ steps.draft.outputs.summary }}" "${{ steps.draft.outputs.target-file }}")" \
             || echo "Notification call failed -- PR is still open at ${{ steps.pr.outputs.pull-request-url }}"

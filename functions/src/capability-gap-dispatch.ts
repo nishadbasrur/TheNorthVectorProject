@@ -19,9 +19,19 @@ const GITHUB_REPO = "nishadbasrur/TheNorthVectorProject";
 const WORKFLOW_FILE = "autonomous-capability-draft.yml";
 const GITHUB_DISPATCH_URL = `https://api.github.com/repos/${GITHUB_REPO}/actions/workflows/${WORKFLOW_FILE}/dispatches`;
 
+// kind mirrors lib/capability-gap-store.ts's CapabilityGap["kind"] — passed
+// through as a workflow input so the single Draft step in
+// autonomous-capability-draft.yml knows whether to run
+// scripts/draft-capability.js (new tool, additions-only scope fence) or
+// scripts/draft-bugfix.js (existing tool, single-allowlisted-file rewrite
+// scope fence). request/capability are reused for both kinds: for
+// "capability" they're the user's ask and the missing capability
+// description; for "bug_fix" they're the failing tool's name and its real
+// error message (see functions/src/index.ts's onToolError).
 export async function dispatchCapabilityDraft(
   githubToken: string,
   gapId: string,
+  kind: "capability" | "bug_fix",
   request: string,
   capability: string
 ): Promise<boolean> {
@@ -35,7 +45,7 @@ export async function dispatchCapabilityDraft(
       },
       body: JSON.stringify({
         ref: "main",
-        inputs: { gapId, request, capability },
+        inputs: { gapId, kind, request, capability },
       }),
     });
 

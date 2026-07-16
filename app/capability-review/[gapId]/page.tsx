@@ -5,12 +5,14 @@ import { AppShell } from "@/components/layout/app-shell";
 import { auth } from "@/lib/firebase";
 
 type CapabilityGap = {
+  kind: "capability" | "bug_fix";
   request: string;
   capability: string;
   status: "pending_gap" | "pending_review" | "approved" | "denied";
   prNumber: number | null;
   prUrl: string | null;
   toolName: string | null;
+  targetFile: string | null;
   summary: string | null;
   diff: string | null;
 };
@@ -83,7 +85,9 @@ export default function CapabilityReviewPage({ params }: { params: Promise<{ gap
   return (
     <AppShell>
       <div className="page-header">
-        <div className="page-eyebrow">Autonomous Capability Draft</div>
+        <div className="page-eyebrow">
+          {gap?.kind === "bug_fix" ? "Autonomous Bug Fix" : "Autonomous Capability Draft"}
+        </div>
         <div className="page-title">{gap?.toolName ?? "Review"}</div>
         <div className="page-meta">Drafted by North — nothing is live until you approve.</div>
       </div>
@@ -100,20 +104,29 @@ export default function CapabilityReviewPage({ params }: { params: Promise<{ gap
         {gap && (
           <>
             <div className="card" style={{ marginBottom: 16 }}>
-              <div className="section-heading">Asked</div>
+              <div className="section-heading">{gap.kind === "bug_fix" ? "Tool" : "Asked"}</div>
               <div>{gap.request}</div>
 
               <div className="section-heading" style={{ marginTop: 12 }}>
-                Missing capability
+                {gap.kind === "bug_fix" ? "Error" : "Missing capability"}
               </div>
               <div>{gap.capability}</div>
 
               {gap.summary && (
                 <>
                   <div className="section-heading" style={{ marginTop: 12 }}>
-                    What this adds
+                    {gap.kind === "bug_fix" ? "What this fixes" : "What this adds"}
                   </div>
                   <div>{gap.summary}</div>
+                </>
+              )}
+
+              {gap.targetFile && (
+                <>
+                  <div className="section-heading" style={{ marginTop: 12 }}>
+                    File touched
+                  </div>
+                  <div style={{ fontFamily: "'JetBrains Mono', monospace", fontSize: 13 }}>{gap.targetFile}</div>
                 </>
               )}
 
