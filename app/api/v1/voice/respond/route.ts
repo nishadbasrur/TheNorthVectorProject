@@ -6,6 +6,7 @@ import { getPreferences, formatPreferencesForPrompt } from "@/lib/preferences-st
 import { detectAndStorePreference } from "@/lib/preference-detector";
 import { loadSession, saveSession, type VoiceTurn, type VisualState } from "@/lib/voice-session-store";
 import { TOOL_DEFINITIONS, executeTool } from "@/lib/tool-dispatcher";
+import { getUnspokenConnections, markConnectionsSpoken } from "@/lib/synthesis-store";
 
 // Backs the entire voice pipeline: real Anthropic tool-calling replaces the
 // old rule-based dispatcher (lib/voice-intent-router.ts, deleted). Claude
@@ -200,7 +201,28 @@ export async function POST(request: Request) {
 
   detectAndStorePreference(text); // fire-and-forget, unchanged from the old router's behavior
 
-  const systemPrompt = buildSystemPrompt(preferences);
+  // Conversational opener — only checked on the first turn of a genuinely
+  // new session (priorTurns.length === 0), never mid-conversation, since
+  // interjecting an unrelated finding partway through an exchange would
+  // read as North not listening. Closes the real gap the Synthesis Engine
+  // otherwise has: a "summary"-tier connection (see
+  // lib/synthesis-priority.ts's deliveryChannel) gets recorded but was
+  // never actually communicated anywhere before this — it just sat in
+  // Firestore until Nishad happened to ask. See
+  // North_Vector_Real_Time_Triggers_Plan.md Section 2.1.
+  const openerConnections = priorTurns.length === 0 ? await getUnspokenConnections(1) : [];
+  const opener = openerConnections[0];
+
+  let systemPrompt = buildSystemPrompt(preferences);
+  if (opener) {
+    systemPrompt +=
+      `\n\nSomething worth mentioning came up since you last talked and hasn't been brought up yet: ` +
+      `${opener.connection} ${opener.whyItMatters} If it fits naturally, lead with this before ` +
+      `addressing what he just said — brief, in your own words, not a script (\"Before you ask — \" ` +
+      `is one way to frame it, not the only one). If it genuinely doesn't fit this specific turn, ` +
+      `it's fine to skip it.`;
+  }
+
   const messages: Anthropic.MessageParam[] = [
     ...priorTurns.map((t) => ({ role: t.role, content: t.content })),
     { role: "user", content: text },
@@ -282,6 +304,20 @@ export async function POST(request: Request) {
       console.error("[voice-respond] saveSession failed:", error);
     }
   });
+
+  // Only marked spoken once a real response actually went out (finalText
+  // set, not the fallback "didn't catch that" text) — if the turn failed
+  // partway through, the finding gets another chance to open the next
+  // session rather than being silently used up.
+  if (opener && finalText !== null) {
+    after(async () => {
+      try {
+        await markConnectionsSpoken([opener]);
+      } catch (error) {
+        console.error("[voice-respond] markConnectionsSpoken failed:", error);
+      }
+    });
+  }
 
   console.log(`[voice-respond] Total request time: ${Math.round(performance.now() - requestStart)}ms`);
 

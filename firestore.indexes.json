@@ -1,0 +1,13 @@
+{
+  "indexes": [
+    {
+      "collectionGroup": "synthesis_connections",
+      "queryScope": "COLLECTION",
+      "fields": [
+        { "fieldPath": "spoken", "order": "ASCENDING" },
+        { "fieldPath": "surfacedAt", "order": "DESCENDING" }
+      ]
+    }
+  ],
+  "fieldOverrides": []
+}

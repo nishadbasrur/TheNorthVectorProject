@@ -29,14 +29,70 @@ export async function alreadySurfacedConnection(connection: SynthesisConnection)
   return Date.now() - surfacedAt < 6 * 60 * 60 * 1000;
 }
 
-export async function recordConnection(connection: SynthesisConnection): Promise<void> {
+// `spoken` distinguishes "found and recorded" from "actually communicated
+// to Nishad" — an interrupt-tier connection is spoken the instant its push
+// notification is sent; a summary-tier one is recorded but NOT spoken,
+// since being written to Firestore isn't the same as Nishad ever hearing
+// about it. That gap — real findings sitting recorded but never actually
+// surfaced anywhere Nishad would encounter them unprompted — is what
+// getUnspokenConnections/markConnectionsSpoken below close. See
+// North_Vector_Real_Time_Triggers_Plan.md Section 2.1.
+export async function recordConnection(connection: SynthesisConnection, spoken: boolean): Promise<void> {
   ensureFirebaseApp();
   const db = getFirestore();
 
   await db.collection("synthesis_connections").doc(connectionKey(connection)).set({
     ...connection,
+    spoken,
     surfacedAt: FieldValue.serverTimestamp(),
   });
+}
+
+// Backs the voice respond route's conversational-opener check — the
+// summary-tier connections that were recorded but never actually spoken to
+// Nishad. Ordered most-recent-first and capped small: this folds into a
+// greeting, not a briefing, so one or two genuinely worth mentioning beats
+// reciting everything that's piled up.
+export async function getUnspokenConnections(maxResults = 2): Promise<SynthesisConnection[]> {
+  ensureFirebaseApp();
+  const db = getFirestore();
+
+  const snapshot = await db
+    .collection("synthesis_connections")
+    .where("spoken", "==", false)
+    .orderBy("surfacedAt", "desc")
+    .limit(maxResults)
+    .get();
+
+  return snapshot.docs.map((doc) => {
+    const data = doc.data();
+    return {
+      sources: Array.isArray(data.sources) ? data.sources : [],
+      connection: typeof data.connection === "string" ? data.connection : "",
+      whyItMatters: typeof data.whyItMatters === "string" ? data.whyItMatters : "",
+      urgency: (data.urgency as SynthesisConnection["urgency"]) ?? "fyi",
+      confidence: (data.confidence as SynthesisConnection["confidence"]) ?? "medium",
+    };
+  });
+}
+
+// Called once a conversational opener actually goes out (see the voice
+// respond route) — marks those connections spoken so the same finding
+// doesn't open every subsequent session until something new bumps it.
+export async function markConnectionsSpoken(connections: SynthesisConnection[]): Promise<void> {
+  if (connections.length === 0) return;
+  ensureFirebaseApp();
+  const db = getFirestore();
+
+  const batch = db.batch();
+  for (const connection of connections) {
+    batch.set(
+      db.collection("synthesis_connections").doc(connectionKey(connection)),
+      { spoken: true },
+      { merge: true }
+    );
+  }
+  await batch.commit();
 }
 
 export async function recordSynthesisRun(params: {

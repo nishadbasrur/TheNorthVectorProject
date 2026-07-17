@@ -30,10 +30,13 @@ export async function runSynthesisScan(): Promise<SynthesisScanSummary> {
     if (await alreadySurfacedConnection(connection)) continue;
 
     // "interrupt" gets a push right now. "summary" is still recorded (and
-    // available via the next on-demand check-in) but doesn't push — this
-    // is the actual mechanism for "surface generously without spamming
-    // pushes": more gets recorded and made available than gets pushed as
-    // urgent. See Section 0.1.
+    // available via the next on-demand check-in, plus the voice respond
+    // route's conversational-opener check) but doesn't push — this is the
+    // actual mechanism for "surface generously without spamming pushes":
+    // more gets recorded and made available than gets pushed as urgent.
+    // See Section 0.1.
+    let spoken = false;
+
     if (channel === "interrupt") {
       const sent = await sendPushNotification(
         connection.urgency === "now" ? "Worth knowing right now" : "Worth knowing",
@@ -43,9 +46,15 @@ export async function runSynthesisScan(): Promise<SynthesisScanSummary> {
       if (!sent) {
         logger.warn(`Push did not send for synthesis connection: ${connection.connection}`);
       }
+
+      // Spoken the instant the push is sent (even if delivery itself later
+      // fails silently, same "attempted = delivered" treatment the rest of
+      // this pipeline already uses) — a summary-tier connection is the only
+      // kind that should still be waiting for a conversational opener.
+      spoken = true;
     }
 
-    await recordConnection(connection);
+    await recordConnection(connection, spoken);
     delivered.push(connection.connection);
   }
 
