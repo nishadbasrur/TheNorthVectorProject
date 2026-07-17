@@ -45,15 +45,7 @@ export type CapabilityGap = {
   summary: string | null;
 };
 
-// Backs app/api/v1/capability-gap/[gapId] (the in-app review page's data
-// source) — read by an owner-gated route, so no Firestore rule change
-// needed beyond the existing owner-read/admin-write-only capability_gaps
-// rule.
-export async function getCapabilityGap(gapId: string): Promise<CapabilityGap | null> {
-  const doc = await adminDb.collection("capability_gaps").doc(gapId).get();
-  if (!doc.exists) return null;
-
-  const data = doc.data() ?? {};
+function parseCapabilityGap(data: FirebaseFirestore.DocumentData): CapabilityGap {
   return {
     kind: data.kind === "bug_fix" ? "bug_fix" : "capability",
     request: typeof data.request === "string" ? data.request : "",
@@ -65,6 +57,38 @@ export async function getCapabilityGap(gapId: string): Promise<CapabilityGap | n
     targetFile: typeof data.targetFile === "string" ? data.targetFile : null,
     summary: typeof data.summary === "string" ? data.summary : null,
   };
+}
+
+// Backs app/api/v1/capability-gap/[gapId] (the in-app review page's data
+// source) — read by an owner-gated route, so no Firestore rule change
+// needed beyond the existing owner-read/admin-write-only capability_gaps
+// rule.
+export async function getCapabilityGap(gapId: string): Promise<CapabilityGap | null> {
+  const doc = await adminDb.collection("capability_gaps").doc(gapId).get();
+  if (!doc.exists) return null;
+  return parseCapabilityGap(doc.data() ?? {});
+}
+
+export type CapabilityGapSummary = CapabilityGap & { id: string; createdAt: string | null };
+
+// Backs the check_bug_status voice tool — "what's in the bug/capability
+// pipeline" needs a list, not a single gap by id like getCapabilityGap.
+// Most recent first.
+export async function getRecentCapabilityGaps(maxResults = 20): Promise<CapabilityGapSummary[]> {
+  const snapshot = await adminDb
+    .collection("capability_gaps")
+    .orderBy("createdAt", "desc")
+    .limit(maxResults)
+    .get();
+
+  return snapshot.docs.map((doc) => {
+    const data = doc.data();
+    return {
+      id: doc.id,
+      ...parseCapabilityGap(data),
+      createdAt: data.createdAt?.toDate ? data.createdAt.toDate().toISOString() : null,
+    };
+  });
 }
 
 export async function setCapabilityGapStatus(

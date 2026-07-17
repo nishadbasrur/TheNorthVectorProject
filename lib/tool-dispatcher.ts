@@ -17,9 +17,9 @@ import { runSynthesis } from "./synthesis-engine";
 import { deliveryChannel } from "./synthesis-priority";
 import { geocodeLocation, getBuildingFootprint } from "./map-client";
 import { loadVisualState, saveVisualState, type VisualState } from "./voice-session-store";
-import { logCapabilityGap } from "./capability-gap-store";
+import { logCapabilityGap, getRecentCapabilityGaps } from "./capability-gap-store";
 import { getRecentIcloudMessages, searchIcloudEmails } from "./icloud-mail-client";
-import { logToolError } from "./tool-error-log";
+import { logToolError, getRecentToolErrors } from "./tool-error-log";
 import { logTechnicalError } from "./error-log-store";
 import { askClaudeWithWebSearch } from "./anthropic-client";
 
@@ -264,6 +264,16 @@ export const TOOL_DEFINITIONS: Anthropic.Tool[] = [
       },
       required: ["request", "capability"],
     },
+  },
+  {
+    name: "check_bug_status",
+    description:
+      "Check the status of bugs North has detected and fixes currently being drafted or awaiting " +
+      "review, plus any missing capabilities flagged for later — the same pipeline behind the " +
+      "/tool-errors and /capability-review pages. Read-only status check, not a fix trigger — bugs " +
+      "get detected and drafted automatically on their own. Use when asked about bugs, issues, fixes " +
+      "in progress, or what's in the resolution pipeline.",
+    input_schema: { type: "object", properties: {} },
   },
   {
     name: "check_icloud_email",
@@ -659,6 +669,55 @@ async function handleNoteCapabilityGap(input: { request: string; capability: str
   }
 }
 
+const GAP_STATUS_LABEL: Record<string, string> = {
+  pending_gap: "detected, drafting a fix",
+  pending_review: "fix drafted, awaiting Nishad's approval",
+  approved: "fixed and merged",
+  denied: "declined, not fixed",
+};
+
+async function handleCheckBugStatus(): Promise<string> {
+  try {
+    const [gaps, errors] = await Promise.all([getRecentCapabilityGaps(20), getRecentToolErrors(10)]);
+
+    if (gaps.length === 0 && errors.length === 0) {
+      return "Nothing in the pipeline right now — no bugs or flagged capabilities logged.";
+    }
+
+    const bugFixes = gaps.filter((g) => g.kind === "bug_fix");
+    const capabilities = gaps.filter((g) => g.kind === "capability");
+
+    const parts: string[] = [];
+
+    if (bugFixes.length > 0) {
+      const lines = bugFixes.map(
+        (g) => `${g.toolName ?? g.request} (${GAP_STATUS_LABEL[g.status] ?? g.status})`
+      );
+      parts.push(`Bug fixes in the pipeline: ${lines.join("; ")}.`);
+    } else {
+      parts.push("No bug fixes currently in the pipeline.");
+    }
+
+    if (capabilities.length > 0) {
+      const lines = capabilities.map(
+        (g) => `${g.capability} (${GAP_STATUS_LABEL[g.status] ?? g.status})`
+      );
+      parts.push(`Flagged missing capabilities: ${lines.join("; ")}.`);
+    }
+
+    if (errors.length > 0) {
+      parts.push(
+        `${errors.length} recent tool failure${errors.length === 1 ? "" : "s"} logged in total — full detail at /tool-errors.`
+      );
+    }
+
+    return parts.join(" ");
+  } catch (error) {
+    reportToolError("check_bug_status", error, null);
+    return "Couldn't check the bug pipeline status just now — tell Nishad to try again in a bit.";
+  }
+}
+
 // Mirrors lookupEmails' formatting exactly (same "recent inbox, most
 // recent first" shape) so Claude answers iCloud lookups the same way it
 // already answers Gmail ones — deliberately not deduplicated across the
@@ -822,6 +881,8 @@ export async function executeTool(
       return handleHighlightBuilding(sessionId);
     case "note_capability_gap":
       return { text: await handleNoteCapabilityGap(input as { request: string; capability: string }) };
+    case "check_bug_status":
+      return { text: await handleCheckBugStatus() };
     case "check_icloud_email":
       return { text: await handleCheckIcloudEmail(input as { query?: string }) };
     case "search_icloud_email":
