@@ -18,6 +18,7 @@ import { getPendingBatch } from "../../lib/opportunity-store";
 import { handleCalendarWebhook, registerOrRenewCalendarWatch } from "./calendar-webhook";
 import { handleGmailPush, registerOrRenewGmailWatch } from "./gmail-webhook";
 import { onMessagePublished } from "firebase-functions/v2/pubsub";
+import { handleNotionWebhook } from "./notion-webhook";
 
 if (!getApps().length) {
   // No explicit credential — the deployed function runs under its own
@@ -319,6 +320,18 @@ export const triggerGmailWatchRenew = onRequest({ secrets: gmailWatchSecrets }, 
     logger.error("[triggerGmailWatchRenew] Failed:", error);
     res.status(500).json({ ok: false, error: "Failed to register Gmail watch — check function logs." });
   }
+});
+
+// Real-time Notion push notifications — the third and last real-time
+// trigger source (Calendar, Gmail, now Notion). Unlike those two, there's
+// no code-driven registration/renewal here — the subscription is created
+// entirely through Notion's own integration dashboard (Webhooks tab), and
+// Notion's webhooks need no expiry/renewal at all once verified. This
+// endpoint just needs to exist and handle the one-time verification
+// handshake plus ongoing HMAC signature checks — see
+// functions/src/notion-webhook.ts.
+export const notionWebhook = onRequest({ secrets: urgencyScanSecrets }, async (req, res) => {
+  await handleNotionWebhook(req, res);
 });
 
 // Autonomous Self-Extension, Option B (see

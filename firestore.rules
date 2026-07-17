@@ -214,5 +214,18 @@ service cloud.firestore {
       allow read: if isOwner();
       allow write: if false;
     }
+
+    // notion_webhook_state holds the verification_token Notion sends once
+    // when the webhook subscription is first created — see
+    // lib/notion-webhook-store.ts and functions/src/notion-webhook.ts.
+    // This token is a real secret: it doubles as the HMAC key that proves
+    // every future event is genuinely from Notion, not spoofed. Deliberately
+    // NOT owner-readable the way the other watch-state collections are —
+    // the token itself should never round-trip through a client, even the
+    // owner's own authenticated session; only trusted server code via the
+    // Admin SDK ever touches it.
+    match /notion_webhook_state/{document=**} {
+      allow read, write: if false;
+    }
   }
 }
