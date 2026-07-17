@@ -188,5 +188,19 @@ service cloud.firestore {
       allow read: if isOwner();
       allow write: if false;
     }
+
+    // calendar_watch_state tracks the single outstanding Google Calendar
+    // push-notification channel (channelId, resourceId, channelToken,
+    // syncToken, expiration) — see lib/calendar-watch-store.ts and
+    // functions/src/calendar-webhook.ts. channelToken is a real
+    // authentication secret (echoed back by Google on every webhook call
+    // as proof it's a legitimate push, not a spoofed request), so even
+    // though this doc is owner-readable for debuggability like the other
+    // Cloud-Function-only collections, only trusted server code via the
+    // Admin SDK ever writes it.
+    match /calendar_watch_state/{document=**} {
+      allow read: if isOwner();
+      allow write: if false;
+    }
   }
 }

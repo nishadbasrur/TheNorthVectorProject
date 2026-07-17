@@ -15,6 +15,7 @@ import { dispatchCapabilityDraft } from "./capability-gap-dispatch";
 import { verifyPipelineCallback } from "./verify-pipeline-callback";
 import { submitOpportunityScan, pollOpportunityScan } from "./opportunity-scan";
 import { getPendingBatch } from "../../lib/opportunity-store";
+import { handleCalendarWebhook, registerOrRenewCalendarWatch } from "./calendar-webhook";
 
 if (!getApps().length) {
   // No explicit credential — the deployed function runs under its own
@@ -143,6 +144,58 @@ export const sendTestUrgency = onRequest(
       res.status(200).json({ ok: true });
     } else {
       res.status(500).json({ ok: false, error: "Push send failed — check function logs, and confirm a device has enabled alerts in Settings." });
+    }
+  }
+);
+
+// Real-time Calendar push notifications — converts "wait up to 15 minutes
+// for the next scan" into "react within seconds of a real change." See
+// functions/src/calendar-webhook.ts and
+// North_Vector_Real_Time_Triggers_Plan.md Section 1.4. urgencyScan and
+// sendTestUrgency above are unchanged — this triggers the exact same
+// evaluation, it just adds a second, faster trigger alongside the existing
+// timer.
+//
+// No verifyOwner here — Google Calendar calls this endpoint directly, not
+// an authenticated Nishad session. Authentication is the channelToken
+// check inside handleCalendarWebhook itself (a random secret only this
+// app and Google's push service know, echoed back on every real call).
+export const calendarWebhook = onRequest({ secrets: urgencyScanSecrets }, async (req, res) => {
+  await handleCalendarWebhook(req, res);
+});
+
+// Defensive daily renewal — Google doesn't publish a fixed Calendar
+// channel lifetime to plan a precise renewal margin around, so this just
+// re-registers a fresh channel every day regardless of how much time the
+// current one has left, rather than risk silently going stale.
+export const calendarWatchRenew = onSchedule(
+  { schedule: "0 3 * * *", timeZone: "America/New_York", secrets: [googleCalendarClientId, googleCalendarClientSecret, googleCalendarRefreshToken] },
+  async () => {
+    try {
+      await registerOrRenewCalendarWatch();
+    } catch (error) {
+      logger.error("[calendarWatchRenew] Failed to renew watch:", error);
+    }
+  }
+);
+
+// Manual trigger — bootstraps the very first watch registration right
+// after deploy (Cloud Scheduler doesn't fire immediately on creation, and
+// waiting up to 24h for the first automatic tick isn't necessary), and
+// lets renewal be re-tested on demand later. Same
+// sendTestEmail/sendTestUrgency manual-trigger precedent.
+export const triggerCalendarWatchRenew = onRequest(
+  { secrets: [googleCalendarClientId, googleCalendarClientSecret, googleCalendarRefreshToken] },
+  async (req, res) => {
+    const isOwner = await verifyOwner(req, res);
+    if (!isOwner) return;
+
+    try {
+      await registerOrRenewCalendarWatch();
+      res.status(200).json({ ok: true });
+    } catch (error) {
+      logger.error("[triggerCalendarWatchRenew] Failed:", error);
+      res.status(500).json({ ok: false, error: "Failed to register calendar watch — check function logs." });
     }
   }
 );
