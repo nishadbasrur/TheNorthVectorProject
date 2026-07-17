@@ -163,13 +163,9 @@ const synthesisScanSecrets = [
   anthropicApiKey,
 ];
 
-// Deliberately NOT an onSchedule trigger yet — the plan's own checklist
-// (Section 12, items 8 and 12) calls for manually-triggered runs first,
-// inspecting synthesis_runs output by hand for a few days before enabling
-// any recurring schedule. This mirrors sendTestEmail/sendTestUrgency's
-// existing manual-trigger pattern rather than introducing a new one.
-// Wiring an onSchedule(...) export here is the deliberate last step, once
-// manual runs look sane — not something to add preemptively in this pass.
+// Manual-trigger endpoint — kept alongside the schedule below (same
+// sendTestEmail/sendTestUrgency precedent) for on-demand testing without
+// waiting for the next scheduled run.
 //
 // Operational note, not fixable in code: lib/notion-client.ts also reads
 // process.env.NOTION_URGENT_DATABASE_ID directly (not via defineSecret) —
@@ -177,10 +173,10 @@ const synthesisScanSecrets = [
 // configured out-of-band through the Firebase/GCP console (not tracked
 // anywhere in this repo, per docs/integrations/calendar-notion-gmail-task.md's
 // own note that the database ID was deliberately kept out of source rather
-// than hardcoded). A newly created function like this one does not inherit
-// another function's console-configured env vars — it must be set on
-// *this* function too, by hand, in the console, the same way it was set on
-// urgencyScan.
+// than hardcoded). A newly created function does not inherit another
+// function's console-configured env vars — synthesisScan below needs this
+// set on itself too, by hand, in the console, the same way it was set on
+// urgencyScan and this manual endpoint.
 export const triggerSynthesisScan = onRequest(
   { secrets: synthesisScanSecrets, timeoutSeconds: 120 },
   async (req, res) => {
@@ -193,6 +189,26 @@ export const triggerSynthesisScan = onRequest(
     } catch (error) {
       logger.error("Synthesis scan failed:", error);
       res.status(500).json({ ok: false, error: "Synthesis scan failed — check function logs." });
+    }
+  }
+);
+
+// Now scheduled — the plan's own checklist (Section 12, items 8 and 12)
+// called for manually-triggered runs first, inspecting synthesis_runs
+// output by hand for a few days before enabling any recurring schedule;
+// that validation period is done. Every 6 hours, not more often: matches
+// lib/synthesis-store.ts's own resurface window (a connection already
+// shown won't resurface for 6 hours regardless), so this is the natural
+// cadence rather than an arbitrary pick — running more often would just
+// re-evaluate the same already-suppressed connections for no benefit.
+export const synthesisScan = onSchedule(
+  { schedule: "0 */6 * * *", secrets: synthesisScanSecrets, timeoutSeconds: 120 },
+  async () => {
+    try {
+      const summary = await runSynthesisScan();
+      logger.log(`[synthesisScan] ${JSON.stringify(summary)}`);
+    } catch (error) {
+      logger.error("[synthesisScan] Synthesis scan failed:", error);
     }
   }
 );
@@ -268,6 +284,9 @@ const FIXABLE_TOOLS = new Set([
   "check_icloud_email",
   "search_icloud_email",
   "create_task",
+  "research",
+  "check_bug_status",
+  "get_proactive_updates",
 ]);
 
 export const onToolError = onDocumentCreated("tool_errors/{errorId}", async (event) => {

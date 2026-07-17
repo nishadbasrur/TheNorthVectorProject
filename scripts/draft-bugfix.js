@@ -43,6 +43,16 @@ const TOOL_TO_FILE = {
   check_icloud_email: "lib/icloud-mail-client.ts",
   search_icloud_email: "lib/icloud-mail-client.ts",
   create_task: "lib/task-store-admin.ts",
+  // These three don't have one clean dedicated file the way the tools above
+  // do — best-guess single-file bets on where a real bug is most likely to
+  // actually live, not a perfect 1:1 mapping. That's an acceptable
+  // limitation of this fence, not a safety gap: a wrong guess just means
+  // typecheck/build/review catches an ineffective fix (or the model itself
+  // reports infeasible), never an unsafe one, since the single-file
+  // constraint still holds regardless of which file was picked.
+  research: "lib/anthropic-client.ts", // the actual web-search API call/parsing
+  check_bug_status: "lib/capability-gap-store.ts", // more complex of its two data sources
+  get_proactive_updates: "lib/synthesis-engine.ts", // the reasoning pass itself, of its three files
 };
 
 const GAP_ID = process.env.GAP_ID || "";
