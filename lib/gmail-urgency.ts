@@ -1,13 +1,21 @@
-import "server-only";
-import { adminDb } from "./firebase-admin";
+import { getApps, initializeApp } from "firebase-admin/app";
+import { getFirestore, FieldValue } from "firebase-admin/firestore";
 import { getRecentInboxMessages } from "./gmail-client";
 import { askClaude } from "./anthropic-client";
-import { FieldValue } from "firebase-admin/firestore";
 
-// Extracted from app/api/v1/gmail/check-urgent/route.ts so both the tool
-// dispatcher (direct import, no HTTP round-trip) and the existing HTTP route
-// (kept as a thin wrapper) share one implementation. See
+// Deliberately no "server-only" guard, lazy admin-app init instead of
+// importing lib/firebase-admin.ts's adminDb — shared cross-runtime, same
+// reasoning as lib/google-calendar-client.ts. Originally Next.js-only
+// (extracted from app/api/v1/gmail/check-urgent/route.ts so both the tool
+// dispatcher and that HTTP route share one implementation), widened so
+// functions/src/gmail-webhook.ts can call the exact same evaluation
+// real-time push notifications trigger, not a duplicate copy of it. See
 // North_Vector_JARVIS_Tool_Calling_Migration_Plan.md Section 5.4.
+function ensureAdminApp() {
+  if (getApps().length === 0) {
+    initializeApp();
+  }
+}
 //
 // Every evaluated message is marked "surfaced" (urgent or not) with a
 // timestamp, and re-evaluated only after a 24h TTL — bounds the candidate
@@ -54,9 +62,11 @@ export type UrgentEmailCheck = {
 // write-back logic, unchanged from its original home in
 // app/api/v1/gmail/check-urgent/route.ts.
 export async function checkUrgentEmailsRaw(): Promise<UrgentEmailCheck> {
+  ensureAdminApp();
+  const db = getFirestore();
   const messages = await getRecentInboxMessages(25);
 
-  const surfacedSnapshot = await adminDb.collection("gmail_surfaced").get();
+  const surfacedSnapshot = await db.collection("gmail_surfaced").get();
   const surfacedAtByMessageId = new Map<string, number>();
 
   for (const doc of surfacedSnapshot.docs) {
@@ -93,14 +103,14 @@ export async function checkUrgentEmailsRaw(): Promise<UrgentEmailCheck> {
     }
 
     // Mark surfaced regardless of verdict — see the TTL note above.
-    await adminDb
+    await db
       .collection("gmail_surfaced")
       .doc(message.id)
       .set({ subject: message.subject, surfacedAt: FieldValue.serverTimestamp() });
   }
 
   if (urgentResults.length > 0) {
-    await adminDb.collection("alerts").add({
+    await db.collection("alerts").add({
       source: "gmail",
       summary: urgentResults.map((r) => r.subject).join("; "),
       sentAt: FieldValue.serverTimestamp(),

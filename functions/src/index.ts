@@ -16,6 +16,8 @@ import { verifyPipelineCallback } from "./verify-pipeline-callback";
 import { submitOpportunityScan, pollOpportunityScan } from "./opportunity-scan";
 import { getPendingBatch } from "../../lib/opportunity-store";
 import { handleCalendarWebhook, registerOrRenewCalendarWatch } from "./calendar-webhook";
+import { handleGmailPush, registerOrRenewGmailWatch } from "./gmail-webhook";
+import { onMessagePublished } from "firebase-functions/v2/pubsub";
 
 if (!getApps().length) {
   // No explicit credential — the deployed function runs under its own
@@ -265,6 +267,59 @@ export const synthesisScan = onSchedule(
     }
   }
 );
+
+// Real-time Gmail push notifications — converts "on-demand only, never
+// scheduled" into "reacts within seconds of real new mail," without ever
+// becoming a periodic Gmail scan (deliberately still not one — see
+// docs/integrations/calendar-notion-gmail-task.md's original reasoning for
+// why Gmail stayed off the urgency-scan timer). See
+// functions/src/gmail-webhook.ts and
+// North_Vector_Real_Time_Triggers_Plan.md Section 1.3.
+//
+// Topic id only (not the full "projects/.../topics/..." resource path) —
+// Firebase resolves this against the current project automatically for
+// trigger wiring, unlike lib/gmail-client.ts's TOPIC_NAME constant, which
+// calls Gmail's watch() API directly and needs the fully-qualified form
+// that specific API requires.
+const gmailWatchSecrets = [googleCalendarClientId, googleCalendarClientSecret, gmailRefreshToken];
+
+export const gmailWatch = onMessagePublished(
+  { topic: "gmail-push", secrets: [...gmailWatchSecrets, anthropicApiKey] },
+  async (event) => {
+    await handleGmailPush(event);
+  }
+);
+
+// Defensive daily renewal — Gmail's watch() genuinely does expire after a
+// fixed 7 days (unlike Calendar's undocumented channel lifetime), but
+// renewing daily rather than right before the 7-day mark costs nothing and
+// removes any need to track the exact expiration precisely.
+export const gmailWatchRenew = onSchedule(
+  { schedule: "0 3 * * *", timeZone: "America/New_York", secrets: gmailWatchSecrets },
+  async () => {
+    try {
+      await registerOrRenewGmailWatch();
+    } catch (error) {
+      logger.error("[gmailWatchRenew] Failed to renew watch:", error);
+    }
+  }
+);
+
+// Manual trigger — bootstraps the first registration right after deploy
+// rather than waiting for the first scheduled tick, same
+// triggerCalendarWatchRenew precedent.
+export const triggerGmailWatchRenew = onRequest({ secrets: gmailWatchSecrets }, async (req, res) => {
+  const isOwner = await verifyOwner(req, res);
+  if (!isOwner) return;
+
+  try {
+    await registerOrRenewGmailWatch();
+    res.status(200).json({ ok: true });
+  } catch (error) {
+    logger.error("[triggerGmailWatchRenew] Failed:", error);
+    res.status(500).json({ ok: false, error: "Failed to register Gmail watch — check function logs." });
+  }
+});
 
 // Autonomous Self-Extension, Option B (see
 // North_Vector_Autonomous_Self_Extension_Plan.md Section 3) — fires

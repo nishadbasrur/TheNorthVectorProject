@@ -202,5 +202,17 @@ service cloud.firestore {
       allow read: if isOwner();
       allow write: if false;
     }
+
+    // gmail_watch_state tracks the single outstanding Gmail push-
+    // notification watch (historyId, expiration) — see
+    // lib/gmail-watch-store.ts and functions/src/gmail-webhook.ts. No
+    // secret token here the way calendar_watch_state has (Gmail's push
+    // trust boundary is Pub/Sub's own IAM-authorized delivery, not a
+    // shared secret this app generates), but kept owner-read/admin-write-
+    // only for consistency with the other Cloud-Function-only collections.
+    match /gmail_watch_state/{document=**} {
+      allow read: if isOwner();
+      allow write: if false;
+    }
   }
 }

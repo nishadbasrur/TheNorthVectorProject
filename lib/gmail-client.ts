@@ -174,3 +174,65 @@ export async function trashEmail(messageId: string): Promise<void> {
   const client = getGmailClient();
   await client.users.messages.trash({ userId: "me", id: messageId });
 }
+
+// Real-time push notifications — see functions/src/gmail-webhook.ts.
+// Registers (or re-registers, replacing any prior registration outright —
+// Gmail's watch() call itself is idempotent-by-replacement, no separate
+// "stop" call needed the way Calendar channels need) a watch on the whole
+// inbox, publishing to the given Pub/Sub topic on every change. Expires
+// after 7 days per Gmail's docs — functions/src/gmail-webhook.ts renews
+// this on a daily schedule, well inside that window.
+export async function registerGmailWatch(topicName: string): Promise<{ historyId: string; expiration: string }> {
+  const client = getGmailClient();
+
+  const response = await client.users.watch({
+    userId: "me",
+    requestBody: {
+      topicName,
+      labelIds: ["INBOX"],
+    },
+  });
+
+  return {
+    historyId: response.data.historyId ?? "",
+    expiration: response.data.expiration ?? "",
+  };
+}
+
+export type GmailHistoryDelta = {
+  hasNewMessages: boolean;
+};
+
+// A Pub/Sub push carries only {emailAddress, historyId} — this is the
+// required follow-up call to find out whether the change was actually new
+// mail (vs. a label change, a read-state change, etc.), same "notification
+// is just a signal" shape as Calendar's syncToken delta fetch. Doesn't
+// return the messages themselves — the caller (functions/src/gmail-webhook.ts)
+// re-runs the same full checkUrgentEmailsRaw() the on-demand check_email
+// tool already uses, rather than duplicating message-fetching logic here.
+export async function getGmailHistoryDelta(startHistoryId: string): Promise<GmailHistoryDelta> {
+  const client = getGmailClient();
+
+  try {
+    const response = await client.users.history.list({
+      userId: "me",
+      startHistoryId,
+      historyTypes: ["messageAdded"],
+    });
+
+    const hasNewMessages = (response.data.history ?? []).some(
+      (record) => (record.messagesAdded ?? []).length > 0
+    );
+
+    return { hasNewMessages };
+  } catch (error) {
+    // 404: startHistoryId too old (Gmail retains only about a week of
+    // history) — treat as "something changed, no specific delta available"
+    // rather than fail. checkUrgentEmailsRaw's own gmail_surfaced dedup
+    // means re-evaluating the full recent inbox is safe and cheap either way.
+    const status =
+      (error as { code?: number }).code ?? (error as { response?: { status?: number } }).response?.status;
+    if (status === 404) return { hasNewMessages: true };
+    throw error;
+  }
+}
