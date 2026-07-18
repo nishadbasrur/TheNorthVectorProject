@@ -22,6 +22,7 @@ import { getRecentIcloudMessages, searchIcloudEmails } from "./icloud-mail-clien
 import { logToolError, getRecentToolErrors } from "./tool-error-log";
 import { logTechnicalError } from "./error-log-store";
 import { askClaudeWithWebSearch } from "./anthropic-client";
+import { getRecentTextMessages, searchTextMessages } from "./text-message-store";
 
 // Single source of truth for what North can do via voice — read directly by
 // Claude as tool schemas, not maintained separately as prose (that
@@ -299,6 +300,36 @@ export const TOOL_DEFINITIONS: Anthropic.Tool[] = [
       "Search Nishad's iCloud Mail inbox history for something not in the most recent messages. Less " +
       "expressive than Gmail search (no from:/subject: operators) — plain keyword/phrase matching " +
       "against headers and body.",
+    input_schema: {
+      type: "object",
+      properties: {
+        query: { type: "string", description: "Keywords or phrase to search for." },
+      },
+      required: ["query"],
+    },
+  },
+  {
+    name: "check_messages",
+    description:
+      "Check Nishad's recent text messages (iMessage/SMS, synced from his Mac). With no query, " +
+      "returns the most recent messages. With a query, looks up recent messages to answer that " +
+      "specific question. Only covers the ~25 most recent messages — use search_messages for " +
+      "anything further back. Read-only; there is no tool to send a text yet.",
+    input_schema: {
+      type: "object",
+      properties: {
+        query: {
+          type: "string",
+          description: "What to look up (sender, topic). Omit for the most recent messages.",
+        },
+      },
+    },
+  },
+  {
+    name: "search_messages",
+    description:
+      "Search Nishad's text message history for something not in the most recent messages — plain " +
+      "keyword/phrase matching against the message text and sender.",
     input_schema: {
       type: "object",
       properties: {
@@ -766,6 +797,52 @@ async function handleSearchIcloudEmail(input: { query: string }): Promise<string
   }
 }
 
+// Text messages come from a genuinely different pipe than every other
+// source here — no cloud API reaches iMessage/SMS, so these are forwarded
+// by a local agent running on a Mac Mini with Full Disk Access to its own
+// Messages database (see scripts/mac-messages-agent/ and
+// app/api/v1/messages/mac-ingest/route.ts). Read-only from North's side —
+// there's no send_message tool, matching the same "foundation, not full
+// capability yet" scoping already used elsewhere in this project.
+async function handleCheckMessages(input: { query?: string }): Promise<string> {
+  try {
+    const messages = await getRecentTextMessages(25);
+
+    if (messages.length === 0) {
+      return "No text messages synced yet — nothing to check.";
+    }
+
+    const formatted = messages
+      .map((m) => `From: ${m.senderName ?? m.sender}\nDate: ${m.sentAt}\n${m.text.slice(0, 300)}`)
+      .join("\n\n---\n\n");
+
+    const query = input.query?.trim() || "your most recent messages";
+    return `Recent text messages (most recent first), for answering "${query}":\n\n${formatted}`;
+  } catch (error) {
+    reportToolError("check_messages", error, input);
+    return "Checking text messages failed — tell Nishad to try again in a bit.";
+  }
+}
+
+async function handleSearchMessages(input: { query: string }): Promise<string> {
+  try {
+    const messages = await searchTextMessages(input.query);
+
+    if (messages.length === 0) {
+      return `No text messages found for "${input.query}".`;
+    }
+
+    const formatted = messages
+      .map((m) => `From: ${m.senderName ?? m.sender}\nDate: ${m.sentAt}\n${m.text.slice(0, 300)}`)
+      .join("\n\n---\n\n");
+
+    return `Text message search results for "${input.query}":\n\n${formatted}`;
+  } catch (error) {
+    reportToolError("search_messages", error, input);
+    return "Text message search failed — tell Nishad to try again in a bit.";
+  }
+}
+
 async function handleLogTechnicalError(input: {
   description: string;
   details?: string;
@@ -887,6 +964,10 @@ export async function executeTool(
       return { text: await handleCheckIcloudEmail(input as { query?: string }) };
     case "search_icloud_email":
       return { text: await handleSearchIcloudEmail(input as { query: string }) };
+    case "check_messages":
+      return { text: await handleCheckMessages(input as { query?: string }) };
+    case "search_messages":
+      return { text: await handleSearchMessages(input as { query: string }) };
     case "log_technical_error":
       return {
         text: await handleLogTechnicalError(

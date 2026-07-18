@@ -16,6 +16,7 @@ import { ensureFirebaseApp } from "./ensure-firebase-app";
 import { getUpcomingEvents, type UpcomingEvent } from "./google-calendar-client";
 import { getRecentInboxMessages, type InboxMessage } from "./gmail-client";
 import { getUrgentItems, type UrgentNotionItem } from "./notion-client";
+import { getRecentTextMessages, type StoredTextMessage } from "./text-message-store";
 
 export type SynthesisTask = { id: string; title: string; status: string; priority: string };
 export type SynthesisGoal = { id: string; title: string; status: string; horizon: string; progress: number };
@@ -26,6 +27,7 @@ export type SynthesisContext = {
   calendarEvents: UpcomingEvent[];
   inboxMessages: InboxMessage[];
   notionUrgentItems: UrgentNotionItem[];
+  textMessages: StoredTextMessage[];
   activeTasks: SynthesisTask[];
   activeGoals: SynthesisGoal[];
   relevantMemories: string[];
@@ -136,13 +138,14 @@ async function getRelevantMemories(activeTasks: SynthesisTask[], activeGoals: Sy
 export async function assembleSynthesisContext(): Promise<SynthesisContext> {
   ensureFirebaseApp();
 
-  const [calendarEvents, inboxMessages, notionUrgentItems, activeTasks, activeGoals, preferences] =
+  const [calendarEvents, inboxMessages, notionUrgentItems, textMessages, activeTasks, activeGoals, preferences] =
     await Promise.all([
       getUpcomingEvents(72), // wider window than the 48h on-demand default —
                               // synthesis looks for developing patterns, not
                               // just imminent events
       getRecentInboxMessages(25),
       getUrgentItems(),
+      getRecentTextMessages(25),
       getActiveTasks(),
       getActiveGoals(),
       getPreferences(),
@@ -155,6 +158,7 @@ export async function assembleSynthesisContext(): Promise<SynthesisContext> {
     calendarEvents,
     inboxMessages,
     notionUrgentItems,
+    textMessages,
     activeTasks,
     activeGoals,
     relevantMemories,
