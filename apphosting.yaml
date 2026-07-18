@@ -103,3 +103,5 @@ env:
     secret: ICLOUD_EMAIL_ADDRESS
   - variable: ICLOUD_APP_PASSWORD
     secret: ICLOUD_APP_PASSWORD
+  - variable: MAC_AGENT_INGEST_SECRET
+    secret: MAC_AGENT_INGEST_SECRET

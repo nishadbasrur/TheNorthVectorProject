@@ -1,0 +1,32 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>com.northvector.messagesagent</string>
+
+  <key>ProgramArguments</key>
+  <array>
+    <!-- REPLACE /usr/local/bin/node with the output of `which node` on the
+         Mac Mini itself — launchd does not use your shell's PATH. -->
+    <string>/usr/local/bin/node</string>
+    <!-- REPLACE with the absolute path to agent.js on the Mac Mini, e.g.
+         /Users/YOURNAME/north-vector-agent/agent.js -->
+    <string>/ABSOLUTE/PATH/TO/scripts/mac-messages-agent/agent.js</string>
+  </array>
+
+  <key>RunAtLoad</key>
+  <true/>
+
+  <key>StartInterval</key>
+  <integer>300</integer>
+
+  <key>StandardOutPath</key>
+  <!-- REPLACE YOURNAME -->
+  <string>/Users/YOURNAME/Library/Logs/north-vector-messages-agent.log</string>
+
+  <key>StandardErrorPath</key>
+  <!-- REPLACE YOURNAME -->
+  <string>/Users/YOURNAME/Library/Logs/north-vector-messages-agent.error.log</string>
+</dict>
+</plist>
