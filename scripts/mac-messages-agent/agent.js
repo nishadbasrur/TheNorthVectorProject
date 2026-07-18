@@ -32,6 +32,21 @@ const APPLE_EPOCH_UNIX_SECONDS = 978307200;
 
 const MAX_BATCH = 50; // must match app/api/v1/messages/mac-ingest/route.ts's MAX_BATCH
 
+// North doesn't need a decade of texting history, just enough to be useful
+// day to day — cutting this off at the SQL level (not just filtering after
+// the fact) also means a fresh Mac freshly signed into a years-deep iMessage
+// account never even attempts to pull the bulk of that history in the first
+// place. Recomputed fresh on every run (not a one-time fixed date), so it
+// naturally stays a rolling window rather than ever needing manual pruning.
+const HISTORY_WINDOW_YEARS = 2;
+
+function historyWindowStartAppleNanoseconds() {
+  const cutoff = new Date();
+  cutoff.setFullYear(cutoff.getFullYear() - HISTORY_WINDOW_YEARS);
+  const seconds = Math.floor(cutoff.getTime() / 1000) - APPLE_EPOCH_UNIX_SECONDS;
+  return BigInt(seconds) * 1_000_000_000n;
+}
+
 function loadEnvFile() {
   const env = {};
   if (!fs.existsSync(ENV_FILE)) return env;
@@ -62,14 +77,18 @@ function saveState(state) {
 // (supported since sqlite 3.33, macOS Big Sur+) — no driver, no native
 // module, just a subprocess call.
 //
-// Filters: is_from_me = 0 (only messages North should ever mention are ones
-// Nishad received, never his own outgoing texts) and text IS NOT NULL
-// (plain-text messages only — tapback reactions and rich-content-only
-// messages, where the real text lives in the binary attributedBody blob,
-// are skipped rather than guessed at from an unreliable manual parse of
-// Apple's typedstream format; a real message with garbled reconstructed
-// text is a worse outcome than a rare skipped one).
+// Filters: date >= the rolling HISTORY_WINDOW_YEARS cutoff (skip anything
+// older, permanently — the next run's `ROWID > afterRowId` never revisits
+// a ROWID once it's been scanned, qualifying or not); is_from_me = 0 (only
+// messages North should ever mention are ones Nishad received, never his
+// own outgoing texts); and text IS NOT NULL (plain-text messages only —
+// tapback reactions and rich-content-only messages, where the real text
+// lives in the binary attributedBody blob, are skipped rather than guessed
+// at from an unreliable manual parse of Apple's typedstream format; a real
+// message with garbled reconstructed text is a worse outcome than a rare
+// skipped one).
 function queryNewMessages(afterRowId) {
+  const historyStart = historyWindowStartAppleNanoseconds();
   const sql = `
     SELECT
       m.ROWID AS rowid,
@@ -85,6 +104,7 @@ function queryNewMessages(afterRowId) {
     JOIN chat c ON c.ROWID = cmj.chat_id
     LEFT JOIN handle h ON h.ROWID = m.handle_id
     WHERE m.ROWID > ${afterRowId}
+      AND m.date >= ${historyStart}
       AND m.is_from_me = 0
       AND m.text IS NOT NULL
       AND trim(m.text) != ''
