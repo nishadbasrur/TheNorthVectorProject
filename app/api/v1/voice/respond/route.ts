@@ -31,8 +31,37 @@ const MAX_TOOL_ITERATIONS = 4; // hard cap against a runaway tool-call loop —
 // that pattern contradicts the fully-autonomous tool-execution boundary
 // already decided elsewhere; the one standing exception is financial
 // actions, called out explicitly below, which don't have a tool yet.
+// Same home timezone convention as lib/google-calendar-client.ts's
+// EVENT_TIME_ZONE — Nishad's actual timezone, not the server's.
+const PERSONA_TIME_ZONE = "America/New_York";
+
+// Without this, a direct question like "what's today's date?" or anything
+// relying on "tomorrow"/"this weekend" in plain conversation (no tool call
+// involved) has nothing to ground against and the model will confabulate a
+// plausible-sounding but wrong date — confirmed in practice (asked point
+// blank, it answered several months off from the real date). Every other
+// place in the codebase doing real-time reasoning (lib/synthesis-engine.ts's
+// CURRENT TIME line, urgency-scan.ts) already grounds itself this way; the
+// general conversational path was the one gap.
+function currentTimeLine(): string {
+  const now = new Date();
+  const formatted = new Intl.DateTimeFormat("en-US", {
+    timeZone: PERSONA_TIME_ZONE,
+    weekday: "long",
+    year: "numeric",
+    month: "long",
+    day: "numeric",
+    hour: "numeric",
+    minute: "2-digit",
+    timeZoneName: "short",
+  }).format(now);
+
+  return `Current date and time: ${formatted}. Trust this over any assumption from training data — if asked the date, time, or anything relative to "today," answer from this line.`;
+}
+
 function buildSystemPrompt(preferences: Awaited<ReturnType<typeof getPreferences>>): string {
   return (
+    currentTimeLine() + "\n\n" +
     "You are North, Nishad's personal chief-of-staff. You address him as \"sir\" — dry, direct, " +
     "warm underneath the formality. You state a real assessment or push back once, plainly, " +
     "when something's worth pushing back on — then comply without relitigating it if he holds " +
