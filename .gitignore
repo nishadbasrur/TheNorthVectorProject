@@ -40,3 +40,4 @@ scripts/oauth-widen-scopes.js
 # source; .env holds the actual MAC_AGENT_INGEST_SECRET value.
 scripts/mac-messages-agent/.env
 scripts/mac-messages-agent/state.json
+scripts/mac-messages-agent/agent.lock

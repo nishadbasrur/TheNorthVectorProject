@@ -23,7 +23,34 @@ const path = require("node:path");
 const AGENT_DIR = __dirname;
 const ENV_FILE = path.join(AGENT_DIR, ".env");
 const STATE_FILE = path.join(AGENT_DIR, "state.json");
+const LOCK_FILE = path.join(AGENT_DIR, "agent.lock");
 const CHAT_DB = path.join(os.homedir(), "Library", "Messages", "chat.db");
+
+// Guards against two instances racing on state.json — this actually
+// happened in practice: the LaunchAgent silently reloads itself at every
+// login (independent of any manual `launchctl unload`, which is only a
+// live/in-memory state that doesn't survive a restart), so a manual
+// `node agent.js` run can easily overlap with a periodic run already in
+// flight. Without this, whichever run finishes last clobbers the other's
+// state.json write, and a stale/reset lastRowId causes already-ingested
+// messages to be resent as duplicates. Stale-lock threshold guards against
+// a crashed prior run permanently wedging every future run.
+const LOCK_STALE_MS = 10 * 60 * 1000;
+
+function acquireLock() {
+  if (fs.existsSync(LOCK_FILE)) {
+    const age = Date.now() - Number(fs.readFileSync(LOCK_FILE, "utf8").trim() || 0);
+    if (age < LOCK_STALE_MS) {
+      return false;
+    }
+  }
+  fs.writeFileSync(LOCK_FILE, String(Date.now()));
+  return true;
+}
+
+function releaseLock() {
+  fs.rmSync(LOCK_FILE, { force: true });
+}
 
 // Apple/Cocoa epoch (2001-01-01T00:00:00Z) expressed as a Unix timestamp —
 // the `date` column in chat.db is nanoseconds since this epoch on any
@@ -164,18 +191,31 @@ async function postBatch(url, secret, messages) {
 }
 
 async function main() {
+  if (!acquireLock()) {
+    console.log(`[${new Date().toISOString()}] Another run is already in progress — skipping.`);
+    return;
+  }
+
+  try {
+    await run();
+  } finally {
+    releaseLock();
+  }
+}
+
+async function run() {
   const env = { ...loadEnvFile(), ...process.env };
   const ingestUrl = env.INGEST_URL;
   const ingestSecret = env.INGEST_SECRET;
 
   if (!ingestUrl || !ingestSecret) {
-    console.error("Missing INGEST_URL or INGEST_SECRET — set them in scripts/mac-messages-agent/.env");
-    process.exit(1);
+    // Thrown, not process.exit() — a synchronous exit here would skip
+    // main()'s `finally` block and leak the lock file forever.
+    throw new Error("Missing INGEST_URL or INGEST_SECRET — set them in scripts/mac-messages-agent/.env");
   }
 
   if (!fs.existsSync(CHAT_DB)) {
-    console.error(`chat.db not found at ${CHAT_DB} — is Messages set up and signed in?`);
-    process.exit(1);
+    throw new Error(`chat.db not found at ${CHAT_DB} — is Messages set up and signed in?`);
   }
 
   const state = loadState();
@@ -184,12 +224,11 @@ async function main() {
   try {
     rows = queryNewMessages(state.lastRowId);
   } catch (error) {
-    console.error(
+    throw new Error(
       "Failed to read chat.db — most likely missing Full Disk Access for this process's node binary. " +
         "Grant it in System Settings -> Privacy & Security -> Full Disk Access.\n" +
         String(error)
     );
-    process.exit(1);
   }
 
   if (rows.length === 0) {
