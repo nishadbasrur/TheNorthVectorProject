@@ -560,8 +560,13 @@ export default function SandboxPage() {
       recordedChunksRef.current = [];
       const wavBlob = encodeWav(samples, sampleRate);
 
+      // 45s, not 15s — recordings can run up to the 60s hard watchdog below,
+      // and Google STT's synchronous recognize() call takes proportionally
+      // longer to respond the longer the audio is. 15s was only ever enough
+      // margin for short utterances; anyone who actually talked for a while
+      // was hitting this timeout on essentially every request.
       const controller = new AbortController();
-      const timeoutId = setTimeout(() => controller.abort(), 15000);
+      const timeoutId = setTimeout(() => controller.abort(), 45000);
 
       try {
         const idToken = await auth.currentUser?.getIdToken();
