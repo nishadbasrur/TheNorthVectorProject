@@ -6,6 +6,8 @@ import {
   createCalendarEvent,
   updateCalendarEvent,
   deleteCalendarEvent,
+  eventsBackToBack,
+  type UpcomingEvent,
 } from "./google-calendar-client";
 import { summarizeUpcomingEvents } from "./calendar-summary";
 import { getUrgentItems } from "./notion-client";
@@ -451,11 +453,27 @@ async function handleCheckEmail(input: { query?: string }): Promise<string> {
   }
 }
 
+// #4 — reactive half of back-to-back detection (the proactive half is
+// functions/src/urgency-scan.ts's scheduled push). Only worth mentioning
+// within the window actually being asked about, not the scan's fixed 48h.
+function backToBackNote(events: UpcomingEvent[]): string {
+  const pairs = eventsBackToBack(events, 15);
+  if (pairs.length === 0) return "";
+
+  const descriptions = pairs.map((pair) =>
+    pair.gapMinutes <= 0
+      ? `${pair.first.title} and ${pair.second.title} overlap`
+      : `${pair.first.title} and ${pair.second.title} are only ${pair.gapMinutes} minute(s) apart`
+  );
+
+  return ` Heads up: ${descriptions.join("; ")}.`;
+}
+
 async function handleCheckCalendar(input: { withinHours?: number }): Promise<string> {
   try {
     const withinHours = input.withinHours ?? 48;
     const events = await getUpcomingEvents(withinHours);
-    return summarizeUpcomingEvents(events, withinHours);
+    return summarizeUpcomingEvents(events, withinHours) + backToBackNote(events);
   } catch (error) {
     reportToolError("check_calendar", error, input);
     return "Calendar check failed — tell Nishad to try again in a bit.";

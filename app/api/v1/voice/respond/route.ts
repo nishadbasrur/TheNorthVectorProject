@@ -7,6 +7,7 @@ import { detectAndStorePreference } from "@/lib/preference-detector";
 import { loadSession, saveSession, type VoiceTurn, type VisualState } from "@/lib/voice-session-store";
 import { TOOL_DEFINITIONS, executeTool } from "@/lib/tool-dispatcher";
 import { getUnspokenConnections, markConnectionsSpoken } from "@/lib/synthesis-store";
+import { recordAction } from "@/lib/action-log-store";
 
 // Backs the entire voice pipeline: real Anthropic tool-calling replaces the
 // old rule-based dispatcher (lib/voice-intent-router.ts, deleted). Claude
@@ -301,6 +302,18 @@ export async function POST(request: Request) {
         toolsUsed.push(block.name);
         const result = await executeTool(block.name, block.input, sessionId);
         if (result.visual) visual = result.visual;
+        // Choke-point action logging (see lib/action-log-store.ts) — this is
+        // the single call site every tool execution passes through, so
+        // wrapping it here captures the full #65 activity log without
+        // instrumenting each individual tool handler.
+        void recordAction({
+          kind: "tool_call",
+          title: block.name,
+          body: null,
+          toolName: block.name,
+          outcome: "completed",
+          sessionId,
+        }).catch(() => {});
         return { type: "tool_result" as const, tool_use_id: block.id, content: result.text };
       })
     );

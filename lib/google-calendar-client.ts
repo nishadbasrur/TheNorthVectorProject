@@ -102,6 +102,38 @@ export function eventsStartingSoon(events: UpcomingEvent[], withinMinutes = 15):
   });
 }
 
+export type BackToBackPair = {
+  first: UpcomingEvent;
+  second: UpcomingEvent;
+  gapMinutes: number;
+};
+
+// #4 — flags consecutive events with no real transition time between them.
+// Pure time-gap math over already-fetched events, deliberately not "travel
+// time": that needs a genuinely new Directions/Distance-Matrix API
+// integration (no such integration exists anywhere in this repo), a
+// separate, larger feature. `gapMinutes` can be negative for events that
+// actually overlap — both zero-gap and overlapping pairs are worth flagging
+// the same way.
+export function eventsBackToBack(events: UpcomingEvent[], minGapMinutes = 15): BackToBackPair[] {
+  const timed = events
+    .filter((event) => event.end !== null)
+    .slice()
+    .sort((a, b) => a.start.getTime() - b.start.getTime());
+
+  const pairs: BackToBackPair[] = [];
+  for (let i = 0; i < timed.length - 1; i++) {
+    const first = timed[i];
+    const second = timed[i + 1];
+    const gapMinutes = Math.round((second.start.getTime() - (first.end as Date).getTime()) / 60000);
+    if (gapMinutes <= minGapMinutes) {
+      pairs.push({ first, second, gapMinutes });
+    }
+  }
+
+  return pairs;
+}
+
 function mapEvent(event: calendar_v3.Schema$Event, fallbackNow: Date): UpcomingEvent {
   const startRaw = event.start?.dateTime ?? event.start?.date;
   const endRaw = event.end?.dateTime ?? event.end?.date;

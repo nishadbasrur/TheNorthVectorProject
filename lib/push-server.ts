@@ -1,5 +1,6 @@
 import "server-only";
 import { adminDb, adminMessaging } from "./firebase-admin";
+import { recordAction } from "./action-log-store";
 
 // Next.js-app-side equivalent of functions/src/push.ts's sendPushNotification
 // — same push_subscriptions collection and per-token-failure-tolerant
@@ -33,5 +34,22 @@ export async function sendPushNotification(title: string, body: string, link?: s
     }
   }
 
-  return sentCount > 0;
+  const sent = sentCount > 0;
+
+  // Choke-point action logging (see lib/action-log-store.ts) — every
+  // autonomous push, from any scan, lands in the /activity feed without
+  // instrumenting each individual caller. Fire-and-forget, same discipline
+  // as tool-error logging: a logging failure must never affect delivery.
+  if (sent) {
+    void recordAction({
+      kind: "push",
+      title,
+      body,
+      toolName: null,
+      outcome: null,
+      sessionId: null,
+    }).catch(() => {});
+  }
+
+  return sent;
 }

@@ -179,6 +179,18 @@ service cloud.firestore {
       allow write: if false;
     }
 
+    // action_log is #65's reviewable log of every autonomous action
+    // (pushes from any scan, tool calls from any voice turn) — see
+    // lib/action-log-store.ts, written from the two choke points
+    // (lib/push-server.ts/functions/src/push.ts and the single tool-
+    // execution call site in app/api/v1/voice/respond/route.ts). Same
+    // owner-read/admin-write-only pattern as tool_errors; browsed at
+    // /activity.
+    match /action_log/{document=**} {
+      allow read: if isOwner();
+      allow write: if false;
+    }
+
     // opportunities holds real opportunities North has found via the
     // bi-daily scheduled scan (see lib/opportunity-store.ts, functions/src/
     // opportunity-scan.ts, and 03-Chief-Engine/Opportunity_Engine.md for

@@ -1,23 +1,25 @@
 import { getFirestore, FieldValue } from "firebase-admin/firestore";
 import { logger } from "firebase-functions";
-import { getUpcomingEvents, eventsStartingSoon } from "../../lib/google-calendar-client";
+import { getUpcomingEvents, eventsStartingSoon, eventsBackToBack } from "../../lib/google-calendar-client";
 import { getUrgentItems } from "../../lib/notion-client";
 import { sendPushNotification } from "./push";
 
+type AlertSource = "calendar" | "notion" | "back_to_back";
+
 // alert_state doc ids are namespaced by source so a Calendar event id and a
 // Notion page id can never collide.
-function alertStateId(source: "calendar" | "notion", externalId: string): string {
+function alertStateId(source: AlertSource, externalId: string): string {
   return `${source}-${externalId}`;
 }
 
-async function alreadyAlerted(source: "calendar" | "notion", externalId: string): Promise<boolean> {
+async function alreadyAlerted(source: AlertSource, externalId: string): Promise<boolean> {
   const db = getFirestore();
   const doc = await db.collection("alert_state").doc(alertStateId(source, externalId)).get();
   return doc.exists;
 }
 
 async function recordAlert(
-  source: "calendar" | "notion",
+  source: AlertSource,
   externalId: string,
   summary: string
 ): Promise<void> {
@@ -43,6 +45,8 @@ export type UrgencyScanSummary = {
   calendarAlertsSent: number;
   notionItemsChecked: number;
   notionAlertsSent: number;
+  backToBackPairsFound: number;
+  backToBackAlertsSent: number;
 };
 
 // Calendar + Notion only — Gmail is deliberately NOT part of this scheduled
@@ -54,6 +58,8 @@ export async function runUrgencyScan(): Promise<UrgencyScanSummary> {
     calendarAlertsSent: 0,
     notionItemsChecked: 0,
     notionAlertsSent: 0,
+    backToBackPairsFound: 0,
+    backToBackAlertsSent: 0,
   };
 
   const upcomingEvents = await getUpcomingEvents(48);
@@ -77,6 +83,32 @@ export async function runUrgencyScan(): Promise<UrgencyScanSummary> {
     summary.calendarAlertsSent += 1;
   }
 
+  // #4 — flag back-to-back events with no real transition time. Runs over
+  // the same 48h fetch already pulled above for eventsStartingSoon, no
+  // second calendar call needed.
+  const backToBackPairs = eventsBackToBack(upcomingEvents, 15);
+  summary.backToBackPairsFound = backToBackPairs.length;
+
+  for (const pair of backToBackPairs) {
+    const externalId = `${pair.first.id}-${pair.second.id}`;
+    if (await alreadyAlerted("back_to_back", externalId)) continue;
+
+    const gapDescription =
+      pair.gapMinutes <= 0 ? "They actually overlap." : `Only ${pair.gapMinutes} minute(s) between them.`;
+
+    const sent = await sendPushNotification(
+      `Back-to-back: ${pair.first.title} → ${pair.second.title}`,
+      gapDescription
+    );
+
+    if (!sent) {
+      logger.warn(`Push did not send for back-to-back pair ${externalId}; alert_state was still recorded.`);
+    }
+
+    await recordAlert("back_to_back", externalId, `${pair.first.title} -> ${pair.second.title}`);
+    summary.backToBackAlertsSent += 1;
+  }
+
   const urgentItems = await getUrgentItems();
   summary.notionItemsChecked = urgentItems.length;
 
@@ -94,7 +126,7 @@ export async function runUrgencyScan(): Promise<UrgencyScanSummary> {
   }
 
   logger.info(
-    `Urgency scan complete: ${summary.calendarAlertsSent} calendar alert(s) from ${summary.calendarEventsChecked} event(s) checked, ${summary.notionAlertsSent} Notion alert(s) from ${summary.notionItemsChecked} item(s) checked.`
+    `Urgency scan complete: ${summary.calendarAlertsSent} calendar alert(s) from ${summary.calendarEventsChecked} event(s) checked, ${summary.notionAlertsSent} Notion alert(s) from ${summary.notionItemsChecked} item(s) checked, ${summary.backToBackAlertsSent} back-to-back alert(s) from ${summary.backToBackPairsFound} pair(s) found.`
   );
 
   return summary;

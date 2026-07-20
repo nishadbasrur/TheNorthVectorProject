@@ -151,6 +151,27 @@ export const sendTestUrgency = onRequest(
   }
 );
 
+// Manually-triggered test path — runs the actual scan on demand (unlike
+// sendTestUrgency above, which only sends a generic canned push), so #4's
+// back-to-back detection (and anything else the scan does) can be verified
+// live without waiting up to 15 minutes for the next scheduled tick. Same
+// triggerSynthesisScan precedent.
+export const triggerUrgencyScan = onRequest(
+  { secrets: urgencyScanSecrets },
+  async (req, res) => {
+    const isOwner = await verifyOwner(req, res);
+    if (!isOwner) return;
+
+    try {
+      const summary = await runUrgencyScan();
+      res.status(200).json({ ok: true, ...summary });
+    } catch (error) {
+      logger.error("[triggerUrgencyScan] Urgency scan failed:", error);
+      res.status(500).json({ ok: false, error: "Urgency scan failed — check function logs." });
+    }
+  }
+);
+
 // Real-time Calendar push notifications — converts "wait up to 15 minutes
 // for the next scan" into "react within seconds of a real change." See
 // functions/src/calendar-webhook.ts and

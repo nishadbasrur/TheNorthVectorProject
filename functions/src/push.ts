@@ -1,6 +1,7 @@
 import { getFirestore } from "firebase-admin/firestore";
 import { getMessaging } from "firebase-admin/messaging";
 import { logger } from "firebase-functions";
+import { recordAction } from "../../lib/action-log-store";
 
 // Resilience pattern mirrors email.ts: never throw, always return whether
 // delivery succeeded, and let the caller decide what to do if it didn't —
@@ -44,6 +45,19 @@ export async function sendPushNotification(title: string, body: string, link?: s
     logger.warn("Push notification did not reach any device.");
     return false;
   }
+
+  // Choke-point action logging (see lib/action-log-store.ts) — every
+  // autonomous push, from any scan, lands in the /activity feed without
+  // instrumenting each individual caller. Fire-and-forget, same discipline
+  // as tool-error logging: a logging failure must never affect delivery.
+  void recordAction({
+    kind: "push",
+    title,
+    body,
+    toolName: null,
+    outcome: null,
+    sessionId: null,
+  }).catch(() => {});
 
   return true;
 }

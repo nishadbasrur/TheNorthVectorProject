@@ -7,6 +7,14 @@
         { "fieldPath": "spoken", "order": "ASCENDING" },
         { "fieldPath": "surfacedAt", "order": "DESCENDING" }
       ]
+    },
+    {
+      "collectionGroup": "action_log",
+      "queryScope": "COLLECTION",
+      "fields": [
+        { "fieldPath": "dayKey", "order": "ASCENDING" },
+        { "fieldPath": "createdAt", "order": "DESCENDING" }
+      ]
     }
   ],
   "fieldOverrides": []
