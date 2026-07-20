@@ -4,10 +4,31 @@ import { requireOwner } from "@/lib/require-owner";
 import { askClaudeWithTools } from "@/lib/anthropic-client";
 import { getPreferences, formatPreferencesForPrompt } from "@/lib/preferences-store";
 import { detectAndStorePreference } from "@/lib/preference-detector";
+import { detectIntentSignal } from "@/lib/intent-signal-detector";
 import { loadSession, saveSession, type VoiceTurn, type VisualState } from "@/lib/voice-session-store";
 import { TOOL_DEFINITIONS, executeTool } from "@/lib/tool-dispatcher";
 import { pickOpener } from "@/lib/opener-selector";
 import { recordAction } from "@/lib/action-log-store";
+import { recordOccurrence } from "@/lib/recurring-signal-store";
+
+// #96 — read-only "check"/"search" tools stand in for question categories:
+// Claude already picked the tool, so the category is free and deterministic,
+// no extra classification call needed. Action tools (send_email,
+// create_calendar_event, etc.) are deliberately excluded — "asked the same
+// question 3x" and "took the same action 3x" are different signals, and
+// only the former is what #96 is about.
+const QUESTION_CATEGORY_TOOLS = new Set([
+  "check_calendar",
+  "check_email",
+  "search_email",
+  "check_notion",
+  "get_decision_recommendation",
+  "research",
+  "check_messages",
+  "search_messages",
+  "check_icloud_email",
+  "search_icloud_email",
+]);
 
 // Backs the entire voice pipeline: real Anthropic tool-calling replaces the
 // old rule-based dispatcher (lib/voice-intent-router.ts, deleted). Claude
@@ -230,6 +251,7 @@ export async function POST(request: Request) {
   console.log(`[voice-respond] Session loaded (${priorTurns.length} prior turn(s)) in ${Math.round(performance.now() - requestStart)}ms`);
 
   detectAndStorePreference(text); // fire-and-forget, unchanged from the old router's behavior
+  detectIntentSignal(text); // fire-and-forget, #88 — same discipline
 
   // Conversational opener — only checked on the first turn of a genuinely
   // new session (priorTurns.length === 0), never mid-conversation, since
@@ -310,6 +332,11 @@ export async function POST(request: Request) {
           outcome: "completed",
           sessionId,
         }).catch(() => {});
+        if (QUESTION_CATEGORY_TOOLS.has(block.name)) {
+          void recordOccurrence("question_category", block.name, `asked about ${block.name.replace(/_/g, " ")}`, 1, 3).catch(
+            () => {}
+          );
+        }
         return { type: "tool_result" as const, tool_use_id: block.id, content: result.text };
       })
     );

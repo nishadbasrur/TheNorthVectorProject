@@ -179,6 +179,17 @@ service cloud.firestore {
       allow write: if false;
     }
 
+    // recurring_signals backs #96/#88 — accumulated occurrence counts for
+    // repeated question categories and stated intents (see
+    // lib/recurring-signal-store.ts), surfaced once via the opener selector
+    // and never again. Same owner-read/admin-write-only pattern as every
+    // other server-only tracking collection, even without a dedicated
+    // browse page today.
+    match /recurring_signals/{document=**} {
+      allow read: if isOwner();
+      allow write: if false;
+    }
+
     // action_log is #65's reviewable log of every autonomous action
     // (pushes from any scan, tool calls from any voice turn) — see
     // lib/action-log-store.ts, written from the two choke points
