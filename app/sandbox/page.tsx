@@ -76,6 +76,12 @@ const INACTIVITY_TIMEOUT_MS = 75000; // real inactivity -> back to DORMANT
 // bleeding into the mic (imperfect echo cancellation) needs a firmer floor
 // than normal speech detection to avoid the system barging in on itself.
 const BARGE_IN_RMS_THRESHOLD = 0.045;
+// Chunks are 2048 samples — roughly 46ms at a typical 44.1kHz mic — so this
+// is ~370ms of sustained loud audio required to fire, not just a momentary
+// blip. Confirmed live that the RMS floor alone wasn't sufficient on
+// built-in speakers: a single stressed syllable of North's own voice could
+// clear it for a chunk or two and cut North off mid-response.
+const BARGE_IN_SUSTAINED_CHUNKS = 8;
 
 // getUserMedia rejection names mapped to copy a person can actually act on —
 // the raw DOMException name alone (e.g. "NotAllowedError") is accurate but
@@ -425,7 +431,13 @@ export default function SandboxPage() {
         const level = rms(event.inputBuffer.getChannelData(0));
         if (level > BARGE_IN_RMS_THRESHOLD) {
           loudChunks += 1;
-          if (loudChunks >= 2) onBargeIn();
+          // Requires a sustained loud stretch, not a brief blip — confirmed
+          // in practice that even a raised RMS floor alone wasn't enough:
+          // a single stressed syllable of North's own TTS echoing off
+          // built-in speakers could clear the threshold for a chunk or two
+          // and falsely self-trigger. A deliberate interruption sustains
+          // well past this; a transient echo blip doesn't.
+          if (loudChunks >= BARGE_IN_SUSTAINED_CHUNKS) onBargeIn();
         } else {
           loudChunks = 0;
         }
