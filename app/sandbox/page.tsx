@@ -46,11 +46,8 @@ if (typeof window !== "undefined") {
 type Status = "idle" | "listening" | "transcribing" | "processing" | "speaking";
 type Mode = "dormant" | "active";
 
-// Human-readable form of the wake-word engine's internal keyword id — see
-// app/sandbox/use-wake-word.ts for why "hey_mycroft" is today's placeholder
-// rather than the real "Hey North" (custom wake words need training this
-// environment can't run).
-const WAKE_WORD_DISPLAY_NAME = "Hey Mycroft";
+// Human-readable form of the wake-word engine's internal keyword id.
+const WAKE_WORD_DISPLAY_NAME = "Hey North";
 
 // Sleep phrase — loose/tolerant match against the raw transcript, not an
 // exact string compare, since STT won't always transcribe "North" cleanly.

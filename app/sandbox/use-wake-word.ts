@@ -3,16 +3,12 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { WakeWordEngine, type WakeWordDetectEvent } from "openwakeword-wasm-browser";
 
-// Today's active wake word — openwakeword-wasm-browser ships pretrained
-// models only for a fixed set of stock phrases (alexa, hey_mycroft,
-// hey_jarvis, hey_rhasspy, timer, weather), not "Hey North". A custom
-// keyword needs training (synthetic speech + augmentation via a Colab
-// notebook) — see
-// 10-Implementation/Notes/North_Vector_Hey_North_Wake_Word_Training_Walkthrough.md
-// for the full walkthrough. Once assets/wake-word/hey_north_v0.1.onnx
-// exists (see that directory's README), flip this one line to "hey_north"
-// — MODEL_FILE_MAP below already has the entry ready.
-export const WAKE_WORD_KEYWORD = "hey_mycroft";
+// Custom-trained wake word — synthetic speech + augmentation via the Colab
+// notebook documented in
+// 10-Implementation/Notes/North_Vector_Hey_North_Wake_Word_Training_Walkthrough.md.
+// assets/wake-word/hey_north_v0.1.onnx is the real trained model (13,814
+// bytes), not a placeholder — see that directory's README.
+export const WAKE_WORD_KEYWORD = "hey_north";
 
 const MODEL_FILE_MAP: Record<string, string> = {
   hey_mycroft: "hey_mycroft_v0.1.onnx",
