@@ -44,7 +44,59 @@ export async function recordConnection(connection: SynthesisConnection, spoken: 
   await db.collection("synthesis_connections").doc(connectionKey(connection)).set({
     ...connection,
     spoken,
+    // #75 — reset alongside `spoken` on every (re-)surface, same reasoning:
+    // a connection resurfacing after 6h is effectively a fresh mention, so
+    // whether Nishad engaged with the PREVIOUS surfacing shouldn't carry
+    // forward and taint this one.
+    engagement: "unknown",
     surfacedAt: FieldValue.serverTimestamp(),
+  });
+}
+
+// #75 — records whether Nishad's next turn after an opener actually engaged
+// with what it mentioned (see lib/engagement-detector.ts). A logging
+// failure here must never affect the actual voice response — callers
+// fire-and-forget this.
+export async function setConnectionEngagement(
+  connection: SynthesisConnection,
+  engagement: "engaged" | "ignored"
+): Promise<void> {
+  ensureFirebaseApp();
+  const db = getFirestore();
+
+  await db
+    .collection("synthesis_connections")
+    .doc(connectionKey(connection))
+    .set({ engagement }, { merge: true });
+}
+
+export type EngagementSummaryEntry = {
+  connection: string;
+  engagement: "unknown" | "engaged" | "ignored";
+  surfacedAt: string | null;
+};
+
+// Backs /activity's engagement readout — most recently surfaced
+// connections regardless of source (opener or get_proactive_updates), with
+// whatever engagement classification (if any) has landed so far. Plain
+// orderBy, no equality filter, so no composite index needed.
+export async function getRecentEngagementSummary(maxResults = 20): Promise<EngagementSummaryEntry[]> {
+  ensureFirebaseApp();
+  const db = getFirestore();
+
+  const snapshot = await db
+    .collection("synthesis_connections")
+    .orderBy("surfacedAt", "desc")
+    .limit(maxResults)
+    .get();
+
+  return snapshot.docs.map((doc) => {
+    const data = doc.data();
+    return {
+      connection: typeof data.connection === "string" ? data.connection : "",
+      engagement: (data.engagement as EngagementSummaryEntry["engagement"]) ?? "unknown",
+      surfacedAt: data.surfacedAt?.toDate ? data.surfacedAt.toDate().toISOString() : null,
+    };
   });
 }
 

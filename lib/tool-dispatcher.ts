@@ -18,7 +18,7 @@ import { assembleSynthesisContext } from "./synthesis-context";
 import { runSynthesis } from "./synthesis-engine";
 import { deliveryChannel } from "./synthesis-priority";
 import { geocodeLocation, getBuildingFootprint } from "./map-client";
-import { loadVisualState, saveVisualState, type VisualState } from "./voice-session-store";
+import { loadVisualState, saveVisualState, savePendingEngagementCheck, type VisualState } from "./voice-session-store";
 import { logCapabilityGap, getRecentCapabilityGaps } from "./capability-gap-store";
 import { getRecentIcloudMessages, searchIcloudEmails } from "./icloud-mail-client";
 import { logToolError, getRecentToolErrors } from "./tool-error-log";
@@ -599,7 +599,7 @@ async function handleGetDecisionRecommendation(input: { question: string }): Pro
 // not a separate truncation step here.
 const URGENCY_RANK: Record<string, number> = { now: 0, today: 1, this_week: 2, fyi: 3 };
 
-async function handleGetProactiveUpdates(): Promise<string> {
+async function handleGetProactiveUpdates(sessionId: string): Promise<string> {
   try {
     const context = await assembleSynthesisContext();
     const connections = await runSynthesis(context);
@@ -611,6 +611,11 @@ async function handleGetProactiveUpdates(): Promise<string> {
     if (worthMentioning.length === 0) {
       return "Nothing worth flagging right now — nothing unusual connecting across your calendar, email, tasks, goals, or Notion.";
     }
+
+    // #75 — the top connection just surfaced here is exactly as engagement-
+    // trackable as an opener's; same pending-check mechanism, just set from
+    // a tool call mid-turn instead of the opener's post-response after().
+    void savePendingEngagementCheck(sessionId, [worthMentioning[0]]).catch(() => {});
 
     const formatted = worthMentioning.map((c) => `${c.connection} ${c.whyItMatters}`).join(" ");
     return formatted;
@@ -969,7 +974,7 @@ export async function executeTool(
     case "get_decision_recommendation":
       return { text: await handleGetDecisionRecommendation(input as { question: string }) };
     case "get_proactive_updates":
-      return { text: await handleGetProactiveUpdates() };
+      return { text: await handleGetProactiveUpdates(sessionId) };
     case "show_map":
       return handleShowMap(input as { location?: string; zoomDelta?: number; zoomLevel?: number }, sessionId);
     case "highlight_building":

@@ -1,6 +1,7 @@
 import "server-only";
 import { adminDb } from "./firebase-admin";
 import { FieldValue } from "firebase-admin/firestore";
+import type { SynthesisConnection } from "./synthesis-engine";
 
 export type VoiceTurn = { role: "user" | "assistant"; content: string };
 
@@ -83,4 +84,33 @@ export async function saveVisualState(sessionId: string, visual: VisualState | n
     },
     { merge: true }
   );
+}
+
+// #75 — the connection an opener just delivered (or get_proactive_updates
+// just surfaced), waiting to see whether the very next user turn actually
+// engages with it. 0 or 1 elements, same array shape getUnspokenConnections
+// already returns rather than inventing a new single-value convention.
+// Cleared back to [] once lib/engagement-detector.ts has classified it.
+export async function savePendingEngagementCheck(
+  sessionId: string,
+  connections: SynthesisConnection[]
+): Promise<void> {
+  await adminDb.collection("voice_sessions").doc(sessionId).set(
+    {
+      pendingEngagementCheck: connections,
+      updatedAt: FieldValue.serverTimestamp(),
+    },
+    { merge: true }
+  );
+}
+
+export async function loadPendingEngagementCheck(sessionId: string): Promise<SynthesisConnection[]> {
+  const doc = await adminDb.collection("voice_sessions").doc(sessionId).get();
+  if (!doc.exists) return [];
+
+  const data = doc.data();
+  const updatedAtMs = data?.updatedAt?.toMillis?.() ?? 0;
+  if (Date.now() - updatedAtMs > SESSION_IDLE_TTL_MS) return []; // expired — treat as fresh
+
+  return Array.isArray(data?.pendingEngagementCheck) ? data.pendingEngagementCheck : [];
 }

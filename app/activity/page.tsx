@@ -15,14 +15,24 @@ type ActionLogEntry = {
   createdAt: string | null;
 };
 
-async function fetchActions(): Promise<{ actions?: ActionLogEntry[]; error?: string }> {
+type EngagementSummaryEntry = {
+  connection: string;
+  engagement: "unknown" | "engaged" | "ignored";
+  surfacedAt: string | null;
+};
+
+async function fetchActivity(): Promise<{
+  actions?: ActionLogEntry[];
+  engagement?: EngagementSummaryEntry[];
+  error?: string;
+}> {
   const idToken = await auth.currentUser?.getIdToken();
   const response = await fetch("/api/v1/activity", {
     headers: idToken ? { Authorization: `Bearer ${idToken}` } : {},
   });
   const data = await response.json();
   if (!response.ok) return { error: typeof data.error === "string" ? data.error : "Failed to load." };
-  return { actions: data.actions };
+  return { actions: data.actions, engagement: data.engagement };
 }
 
 // Not linked from the sidebar — same direct-URL-only treatment as
@@ -30,15 +40,19 @@ async function fetchActions(): Promise<{ actions?: ActionLogEntry[]; error?: str
 // without me asking" — today only, most recent first.
 export default function ActivityPage() {
   const [actions, setActions] = useState<ActionLogEntry[]>([]);
+  const [engagement, setEngagement] = useState<EngagementSummaryEntry[]>([]);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [isLoading, setIsLoading] = useState(true);
 
   useEffect(() => {
     let cancelled = false;
-    fetchActions().then(({ actions: loaded, error }) => {
+    fetchActivity().then(({ actions: loadedActions, engagement: loadedEngagement, error }) => {
       if (cancelled) return;
       if (error) setLoadError(error);
-      else setActions(loaded ?? []);
+      else {
+        setActions(loadedActions ?? []);
+        setEngagement(loadedEngagement ?? []);
+      }
       setIsLoading(false);
     });
     return () => {
@@ -80,6 +94,24 @@ export default function ActivityPage() {
             {entry.kind === "tool_call" && entry.outcome && (
               <div style={{ marginTop: 8, opacity: 0.8 }}>{entry.outcome}</div>
             )}
+          </div>
+        ))}
+      </div>
+
+      <div className="page-header" style={{ marginTop: 32 }}>
+        <div className="page-eyebrow">Diagnostics</div>
+        <div className="page-title">Engagement</div>
+        <div className="page-meta">#75 — whether proactive mentions (openers, proactive-update checks) actually landed or got ignored.</div>
+      </div>
+
+      <div className="page-body">
+        {!isLoading && !loadError && engagement.length === 0 && <div className="card">Nothing surfaced yet.</div>}
+
+        {engagement.map((entry, index) => (
+          <div className="card" key={`${entry.surfacedAt ?? "unknown"}-${index}`} style={{ marginBottom: 16 }}>
+            <div className="section-heading" style={{ textTransform: "capitalize" }}>{entry.engagement}</div>
+            <div style={{ fontSize: 12, opacity: 0.6, marginTop: 2 }}>{entry.surfacedAt ?? "unknown time"}</div>
+            <div style={{ marginTop: 8 }}>{entry.connection}</div>
           </div>
         ))}
       </div>

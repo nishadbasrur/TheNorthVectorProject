@@ -5,11 +5,19 @@ import { askClaudeWithTools } from "@/lib/anthropic-client";
 import { getPreferences, formatPreferencesForPrompt } from "@/lib/preferences-store";
 import { detectAndStorePreference } from "@/lib/preference-detector";
 import { detectIntentSignal } from "@/lib/intent-signal-detector";
-import { loadSession, saveSession, type VoiceTurn, type VisualState } from "@/lib/voice-session-store";
+import {
+  loadSession,
+  saveSession,
+  loadPendingEngagementCheck,
+  savePendingEngagementCheck,
+  type VoiceTurn,
+  type VisualState,
+} from "@/lib/voice-session-store";
 import { TOOL_DEFINITIONS, executeTool } from "@/lib/tool-dispatcher";
 import { pickOpener } from "@/lib/opener-selector";
 import { recordAction } from "@/lib/action-log-store";
 import { recordOccurrence } from "@/lib/recurring-signal-store";
+import { detectEngagement } from "@/lib/engagement-detector";
 
 // #96 — read-only "check"/"search" tools stand in for question categories:
 // Claude already picked the tool, so the category is free and deterministic,
@@ -253,6 +261,20 @@ export async function POST(request: Request) {
   detectAndStorePreference(text); // fire-and-forget, unchanged from the old router's behavior
   detectIntentSignal(text); // fire-and-forget, #88 — same discipline
 
+  // #75 — if the PREVIOUS turn left a pending engagement check (an opener
+  // or get_proactive_updates just surfaced a connection), this turn's text
+  // is exactly the "did Nishad engage" signal it was waiting for. Fire-and-
+  // forget, then clear the marker so it's only ever checked once.
+  if (priorTurns.length > 0) {
+    loadPendingEngagementCheck(sessionId)
+      .then(async (pending) => {
+        if (pending.length === 0) return;
+        await detectEngagement(pending[0], text);
+        await savePendingEngagementCheck(sessionId, []);
+      })
+      .catch((error) => console.error("[voice-respond] Engagement check failed:", error));
+  }
+
   // Conversational opener — only checked on the first turn of a genuinely
   // new session (priorTurns.length === 0), never mid-conversation, since
   // interjecting an unrelated finding partway through an exchange would
@@ -378,6 +400,9 @@ export async function POST(request: Request) {
     after(async () => {
       try {
         await opener.onDelivered();
+        if (opener.connection) {
+          await savePendingEngagementCheck(sessionId, [opener.connection]);
+        }
       } catch (error) {
         console.error("[voice-respond] opener.onDelivered failed:", error);
       }

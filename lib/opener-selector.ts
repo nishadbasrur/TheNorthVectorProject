@@ -2,6 +2,7 @@ import "server-only";
 import { getUnannouncedApprovedCapability, markCapabilityAnnounced } from "./capability-gap-store";
 import { getUnspokenConnections, markConnectionsSpoken } from "./synthesis-store";
 import { getSurfaceableSignal, markSignalSurfaced, type RecurringSignalKind } from "./recurring-signal-store";
+import type { SynthesisConnection } from "./synthesis-engine";
 
 // Single composition point for everything that wants to open a fresh voice
 // session unprompted — #58 (capability announcement), #99 (the existing
@@ -15,6 +16,10 @@ export type Opener = {
   kind: "capability" | "recurring_signal" | "synthesis_connection";
   text: string;
   onDelivered: () => Promise<void>;
+  // Only set for kind "synthesis_connection" — #75's engagement tracking
+  // (see lib/engagement-detector.ts) only exists for that tier today; the
+  // caller uses this to set a pending engagement check for the session.
+  connection?: SynthesisConnection;
 };
 
 // #96 before #88 — "you've asked this 3 times today" is a same-day, more
@@ -69,6 +74,7 @@ export async function pickOpener(): Promise<Opener | null> {
         `ask — " is one way to frame it, not the only one). If it genuinely doesn't fit this specific ` +
         `turn, it's fine to skip it.`,
       onDelivered: () => markConnectionsSpoken([connection]),
+      connection,
     };
   }
 
