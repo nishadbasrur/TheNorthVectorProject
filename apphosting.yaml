@@ -64,12 +64,6 @@ env:
       - BUILD
       - RUNTIME
 
-  - variable: GOOGLE_TTS_SERVICE_ACCOUNT_KEY
-    secret: GOOGLE_TTS_SERVICE_ACCOUNT_KEY
-    availability:
-      - BUILD
-      - RUNTIME
-
   - variable: GOOGLE_STT_SERVICE_ACCOUNT_KEY
     secret: GOOGLE_STT_SERVICE_ACCOUNT_KEY
     availability:

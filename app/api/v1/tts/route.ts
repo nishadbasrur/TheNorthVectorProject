@@ -19,7 +19,7 @@ export async function POST(request: Request) {
     return new Response(new Uint8Array(audio), {
       status: 200,
       headers: {
-        "Content-Type": "audio/mpeg",
+        "Content-Type": "audio/wav",
         "Content-Length": String(audio.length),
       },
     });
