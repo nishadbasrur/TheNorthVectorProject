@@ -17,6 +17,7 @@ import { evaluateDecision } from "./decision-engine";
 import { assembleSynthesisContext } from "./synthesis-context";
 import { runSynthesis } from "./synthesis-engine";
 import { deliveryChannel } from "./synthesis-priority";
+import { runStateOfEverythingBriefing } from "./briefing-engine";
 import { geocodeLocation, getBuildingFootprint } from "./map-client";
 import { loadVisualState, saveVisualState, savePendingEngagementCheck, type VisualState } from "./voice-session-store";
 import { logCapabilityGap, getRecentCapabilityGaps } from "./capability-gap-store";
@@ -202,6 +203,17 @@ export const TOOL_DEFINITIONS: Anthropic.Tool[] = [
       "checking a single source alone. Call this for open-ended asks like 'what should I know', " +
       "'anything I should know about', 'catch me up', or 'what's going on' — not for specific " +
       "single-source questions, which have their own tools.",
+    input_schema: { type: "object", properties: {} },
+  },
+  {
+    name: "get_full_briefing",
+    description:
+      "Give a full, genuinely synthesized 'state of everything' briefing — calendar, email, Notion, " +
+      "texts, tasks, goals, all combined into one coherent spoken picture, not just the noteworthy " +
+      "connections get_proactive_updates surfaces. Use for explicit asks for the complete picture " +
+      "('give me the full rundown', 'what's my whole situation right now', 'brief me on everything') " +
+      "— not for a quick check-in, which should use get_proactive_updates instead. This is allowed to " +
+      "run longer than the usual brevity rule since it was explicitly requested.",
     input_schema: { type: "object", properties: {} },
   },
   {
@@ -625,6 +637,16 @@ async function handleGetProactiveUpdates(sessionId: string): Promise<string> {
   }
 }
 
+async function handleGetFullBriefing(): Promise<string> {
+  try {
+    const context = await assembleSynthesisContext();
+    return await runStateOfEverythingBriefing(context);
+  } catch (error) {
+    reportToolError("get_full_briefing", error, null);
+    return "Couldn't put the full briefing together — tell Nishad to try again in a bit.";
+  }
+}
+
 const MAP_DEFAULT_ZOOM = 12;
 const MAP_MIN_ZOOM = 2;
 const MAP_MAX_ZOOM = 18;
@@ -975,6 +997,8 @@ export async function executeTool(
       return { text: await handleGetDecisionRecommendation(input as { question: string }) };
     case "get_proactive_updates":
       return { text: await handleGetProactiveUpdates(sessionId) };
+    case "get_full_briefing":
+      return { text: await handleGetFullBriefing() };
     case "show_map":
       return handleShowMap(input as { location?: string; zoomDelta?: number; zoomLevel?: number }, sessionId);
     case "highlight_building":

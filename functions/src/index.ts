@@ -10,6 +10,7 @@ import { resendApiKey, sendEmail, sendRiskSummaryEmail } from "./email";
 import { verifyOwner } from "./require-owner";
 import { runUrgencyScan } from "./urgency-scan";
 import { runSynthesisScan } from "./synthesis-scan";
+import { runWeeklyRetrospectiveScan } from "./weekly-retrospective-scan";
 import { sendPushNotification } from "./push";
 import { dispatchCapabilityDraft } from "./capability-gap-dispatch";
 import { verifyPipelineCallback } from "./verify-pipeline-callback";
@@ -286,6 +287,50 @@ export const synthesisScan = onSchedule(
       logger.log(`[synthesisScan] ${JSON.stringify(summary)}`);
     } catch (error) {
       logger.error("[synthesisScan] Synthesis scan failed:", error);
+    }
+  }
+);
+
+// #86 — weekly retrospective. Its own secrets list (Calendar + Anthropic
+// only — no Notion/Gmail/text-message reads, unlike synthesisScanSecrets),
+// since lib/weekly-retrospective-context.ts only touches tasks, goals, and
+// calendar.
+const weeklyRetrospectiveSecrets = [
+  googleCalendarClientId,
+  googleCalendarClientSecret,
+  googleCalendarRefreshToken,
+  anthropicApiKey,
+];
+
+// Manual-trigger endpoint, same triggerSynthesisScan/triggerUrgencyScan
+// precedent — lets the retrospective be verified right now rather than
+// waiting for the next Sunday 8am tick.
+export const triggerWeeklyRetrospective = onRequest(
+  { secrets: weeklyRetrospectiveSecrets, timeoutSeconds: 120 },
+  async (req, res) => {
+    const isOwner = await verifyOwner(req, res);
+    if (!isOwner) return;
+
+    try {
+      const summary = await runWeeklyRetrospectiveScan();
+      res.status(summary.ok ? 200 : 500).json(summary);
+    } catch (error) {
+      logger.error("[triggerWeeklyRetrospective] Weekly retrospective scan failed:", error);
+      res.status(500).json({ ok: false, error: "Weekly retrospective scan failed — check function logs." });
+    }
+  }
+);
+
+// Every Sunday 8am Eastern — no weekly-cadence schedule existed anywhere in
+// this codebase before this one.
+export const weeklyRetrospectiveScan = onSchedule(
+  { schedule: "0 8 * * 0", timeZone: "America/New_York", secrets: weeklyRetrospectiveSecrets, timeoutSeconds: 120 },
+  async () => {
+    try {
+      const summary = await runWeeklyRetrospectiveScan();
+      logger.log(`[weeklyRetrospectiveScan] ${JSON.stringify(summary)}`);
+    } catch (error) {
+      logger.error("[weeklyRetrospectiveScan] Weekly retrospective scan failed:", error);
     }
   }
 );

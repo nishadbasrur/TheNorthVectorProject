@@ -3,10 +3,31 @@
 import { useEffect, useState } from "react";
 import { AppShell } from "@/components/layout/app-shell";
 import { getGoals, type GoalRecord } from "@/lib/goal-store";
+import { auth } from "@/lib/firebase";
+
+type WeeklyRetrospective = {
+  weekId: string;
+  summary: string;
+  wins: string[];
+  misses: string[];
+  nextWeekSuggestion: string;
+};
+
+async function fetchRetrospective(): Promise<WeeklyRetrospective | null> {
+  const idToken = await auth.currentUser?.getIdToken();
+  const response = await fetch("/api/v1/weekly-review", {
+    headers: idToken ? { Authorization: `Bearer ${idToken}` } : {},
+  });
+  if (!response.ok) return null;
+  const data = await response.json();
+  return data.retrospective ?? null;
+}
 
 export default function WeeklyReviewPage() {
   const [goals, setGoals] = useState<GoalRecord[]>([]);
   const [isLoading, setIsLoading] = useState(true);
+  const [retrospective, setRetrospective] = useState<WeeklyRetrospective | null>(null);
+  const [isRetrospectiveLoading, setIsRetrospectiveLoading] = useState(true);
 
   useEffect(() => {
     let cancelled = false;
@@ -15,6 +36,12 @@ export default function WeeklyReviewPage() {
       if (cancelled) return;
       setGoals(records);
       setIsLoading(false);
+    });
+
+    fetchRetrospective().then((loaded) => {
+      if (cancelled) return;
+      setRetrospective(loaded);
+      setIsRetrospectiveLoading(false);
     });
 
     return () => {
@@ -33,10 +60,52 @@ export default function WeeklyReviewPage() {
       <div className="page-body">
         <div className="grid-main-side">
           <div>
-            <div className="card">
-              No weekly-review generation feature is built yet — there is no scoring, wins/misses, or next-week
-              priority draft to show. This will populate once that feature exists.
-            </div>
+            {isRetrospectiveLoading && <div className="card">Loading…</div>}
+
+            {!isRetrospectiveLoading && !retrospective && (
+              <div className="card">
+                No retrospective yet — North generates one automatically every Sunday morning. Check back after
+                the first run.
+              </div>
+            )}
+
+            {retrospective && (
+              <>
+                <div className="card" style={{ marginBottom: 16 }}>
+                  <div className="card-label" style={{ marginBottom: 10 }}>This Week</div>
+                  <div>{retrospective.summary}</div>
+                </div>
+
+                {retrospective.wins.length > 0 && (
+                  <div className="card" style={{ marginBottom: 16 }}>
+                    <div className="card-label" style={{ marginBottom: 10 }}>Wins</div>
+                    <ul style={{ margin: 0, paddingLeft: 18 }}>
+                      {retrospective.wins.map((win, i) => (
+                        <li key={i}>{win}</li>
+                      ))}
+                    </ul>
+                  </div>
+                )}
+
+                {retrospective.misses.length > 0 && (
+                  <div className="card" style={{ marginBottom: 16 }}>
+                    <div className="card-label" style={{ marginBottom: 10 }}>Misses</div>
+                    <ul style={{ margin: 0, paddingLeft: 18 }}>
+                      {retrospective.misses.map((miss, i) => (
+                        <li key={i}>{miss}</li>
+                      ))}
+                    </ul>
+                  </div>
+                )}
+
+                {retrospective.nextWeekSuggestion && (
+                  <div className="card">
+                    <div className="card-label" style={{ marginBottom: 10 }}>Next Week</div>
+                    <div>{retrospective.nextWeekSuggestion}</div>
+                  </div>
+                )}
+              </>
+            )}
           </div>
 
           {/* Right column: real goal health, derived from Firestore */}

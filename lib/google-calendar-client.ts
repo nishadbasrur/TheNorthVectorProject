@@ -134,6 +134,28 @@ export function eventsBackToBack(events: UpcomingEvent[], minGapMinutes = 15): B
   return pairs;
 }
 
+// #86's weekly retrospective needs a past week's events — getUpcomingEvents
+// above is future-only (timeMin is always "now"), so this takes an explicit
+// range instead.
+export async function getEventsInRange(start: Date, end: Date): Promise<UpcomingEvent[]> {
+  const client = getCalendarClient();
+
+  const response = await client.events.list({
+    calendarId: "primary",
+    timeMin: start.toISOString(),
+    timeMax: end.toISOString(),
+    singleEvents: true,
+    orderBy: "startTime",
+  });
+
+  const items = response.data.items ?? [];
+
+  return items
+    .filter((event): event is calendar_v3.Schema$Event & { id: string } => Boolean(event.id))
+    .map((event) => mapEvent(event, start))
+    .filter((event) => !Number.isNaN(event.start.getTime()));
+}
+
 function mapEvent(event: calendar_v3.Schema$Event, fallbackNow: Date): UpcomingEvent {
   const startRaw = event.start?.dateTime ?? event.start?.date;
   const endRaw = event.end?.dateTime ?? event.end?.date;

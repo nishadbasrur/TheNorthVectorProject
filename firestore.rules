@@ -179,6 +179,16 @@ service cloud.firestore {
       allow write: if false;
     }
 
+    // weekly_retrospectives backs #86 — one doc per week (see
+    // lib/weekly-retrospective-store.ts), generated every Sunday morning by
+    // functions/src/weekly-retrospective-scan.ts and read by /weekly-review.
+    // Same owner-read/admin-write-only pattern as every other server-only
+    // generated-content collection.
+    match /weekly_retrospectives/{document=**} {
+      allow read: if isOwner();
+      allow write: if false;
+    }
+
     // recurring_signals backs #96/#88 — accumulated occurrence counts for
     // repeated question categories and stated intents (see
     // lib/recurring-signal-store.ts), surfaced once via the opener selector
