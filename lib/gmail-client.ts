@@ -167,6 +167,58 @@ export async function sendEmail(to: string, subject: string, body: string): Prom
   });
 }
 
+// #87 — saves a draft instead of sending, the opposite autonomy posture
+// from sendEmail above: North notices Nishad's been meaning to reply to
+// something, drafts it, and offers it via the capability-review pipeline
+// (see lib/capability-gap-store.ts's "draft_email" kind) rather than
+// sending unreviewed. gmail.modify (the scope this client already has, see
+// getGmailClient() above) covers drafts.create/send/delete — confirmed
+// directly against @googleapis/gmail's own type definitions and example
+// scope list, not assumed from documentation summaries alone. Returns the
+// new draft's id.
+export async function saveDraft(to: string, subject: string, body: string): Promise<string> {
+  const client = getGmailClient();
+
+  const message = [
+    `To: ${sanitizeHeaderValue(to)}`,
+    `Subject: ${sanitizeHeaderValue(subject)}`,
+    "Content-Type: text/plain; charset=utf-8",
+    "MIME-Version: 1.0",
+    "",
+    body,
+  ].join("\r\n");
+
+  const raw = Buffer.from(message).toString("base64url");
+
+  const response = await client.users.drafts.create({
+    userId: "me",
+    requestBody: { message: { raw } },
+  });
+
+  if (!response.data.id) {
+    throw new Error("Gmail did not return a draft id.");
+  }
+
+  return response.data.id;
+}
+
+// Sends a previously-saved draft as-is — the "approve" half of #87's
+// review pipeline (see app/api/v1/capability-gap/[gapId]/approve/route.ts).
+export async function sendExistingDraft(draftId: string): Promise<void> {
+  const client = getGmailClient();
+  await client.users.drafts.send({ userId: "me", requestBody: { id: draftId } });
+}
+
+// Discards a previously-saved draft without sending — the "deny" half of
+// #87's review pipeline. Permanent (Gmail's own API behavior for drafts,
+// unlike trashEmail's recoverable-for-30-days treatment of real messages) —
+// acceptable here since a denied draft was never sent to begin with, there's
+// nothing to recover.
+export async function deleteDraft(draftId: string): Promise<void> {
+  const client = getGmailClient();
+  await client.users.drafts.delete({ userId: "me", id: draftId });
+}
+
 // Moves a message to Trash (recoverable for 30 days) — deliberately not a
 // permanent delete, see the gmail.modify-not-mail.google.com scope note atop
 // getGmailClient().

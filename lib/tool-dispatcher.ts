@@ -12,7 +12,7 @@ import {
 import { summarizeUpcomingEvents } from "./calendar-summary";
 import { getUrgentItems } from "./notion-client";
 import { checkUrgentEmails } from "./gmail-urgency";
-import { getRecentInboxMessages, searchEmails, sendEmail, trashEmail } from "./gmail-client";
+import { getRecentInboxMessages, searchEmails, sendEmail, trashEmail, saveDraft } from "./gmail-client";
 import { evaluateDecision } from "./decision-engine";
 import { assembleSynthesisContext } from "./synthesis-context";
 import { runSynthesis } from "./synthesis-engine";
@@ -20,7 +20,7 @@ import { deliveryChannel } from "./synthesis-priority";
 import { runStateOfEverythingBriefing } from "./briefing-engine";
 import { geocodeLocation, getBuildingFootprint } from "./map-client";
 import { loadVisualState, saveVisualState, savePendingEngagementCheck, type VisualState } from "./voice-session-store";
-import { logCapabilityGap, getRecentCapabilityGaps } from "./capability-gap-store";
+import { logCapabilityGap, getRecentCapabilityGaps, logDraftEmailGap } from "./capability-gap-store";
 import { getRecentIcloudMessages, searchIcloudEmails } from "./icloud-mail-client";
 import { logToolError, getRecentToolErrors } from "./tool-error-log";
 import { logTechnicalError } from "./error-log-store";
@@ -95,6 +95,27 @@ export const TOOL_DEFINITIONS: Anthropic.Tool[] = [
         body: { type: "string" },
       },
       required: ["to", "subject", "body"],
+    },
+  },
+  {
+    name: "draft_email",
+    description:
+      "Save an email as a Gmail draft and offer it for review — never sends. Use instead of " +
+      "send_email when YOU notice mid-conversation that Nishad's mentioned meaning to reply to " +
+      "someone (not when he directly asks you to send something — that's still send_email). He " +
+      "reviews and approves/denies it later in the app; the draft only actually sends if he approves.",
+    input_schema: {
+      type: "object",
+      properties: {
+        to: { type: "string", description: "Recipient email address." },
+        subject: { type: "string" },
+        body: { type: "string" },
+        reasoning: {
+          type: "string",
+          description: "One short sentence on why you drafted this now — shown to Nishad in the review.",
+        },
+      },
+      required: ["to", "subject", "body", "reasoning"],
     },
   },
   {
@@ -518,6 +539,23 @@ async function handleSendEmail(input: { to: string; subject: string; body: strin
   } catch (error) {
     reportToolError("send_email", error, input);
     return "Sending the email failed — tell Nishad to try again.";
+  }
+}
+
+async function handleDraftEmail(input: { to: string; subject: string; body: string; reasoning: string }): Promise<string> {
+  try {
+    const draftId = await saveDraft(input.to, input.subject, input.body);
+    await logDraftEmailGap({
+      to: input.to,
+      subject: input.subject,
+      body: input.body,
+      reasoning: input.reasoning,
+      draftId,
+    });
+    return `Drafted (not sent) an email to ${input.to}: "${input.subject}". Waiting on Nishad to review and approve it.`;
+  } catch (error) {
+    reportToolError("draft_email", error, input);
+    return "Drafting that email failed — tell Nishad to try again.";
   }
 }
 
@@ -973,6 +1011,10 @@ export async function executeTool(
       return { text: await handleSearchEmail(input as { query: string }) };
     case "send_email":
       return { text: await handleSendEmail(input as { to: string; subject: string; body: string }) };
+    case "draft_email":
+      return {
+        text: await handleDraftEmail(input as { to: string; subject: string; body: string; reasoning: string }),
+      };
     case "delete_email":
       return { text: await handleDeleteEmail(input as { messageId: string }) };
     case "check_calendar":

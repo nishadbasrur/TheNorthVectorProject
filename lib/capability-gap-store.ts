@@ -3,6 +3,13 @@ import { adminDb } from "./firebase-admin";
 import { FieldValue } from "firebase-admin/firestore";
 import { sendPushNotification } from "./push-server";
 
+// Public production URL — same hardcoded-not-sensitive treatment as
+// functions/src/index.ts's own APP_URL constant. Needed here (not just
+// there) because notification links must be fully-qualified for the
+// service worker's clients.openWindow() to reliably resolve, per
+// public/firebase-messaging-sw.js's notificationclick handler.
+const APP_URL = "https://north-vector--the-north-vector-project.us-east4.hosted.app";
+
 // Seed of a real "capability gap" workflow — North logs what it couldn't do
 // and pushes a notification, instead of the request just evaporating after
 // a spoken "I can't do that." Does NOT write or deploy any code itself; a
@@ -33,8 +40,11 @@ export type CapabilityGap = {
   // same review-gated draft/PR/approve flow, different origin and a
   // narrower, single-file scope fence in scripts/draft-bugfix.js. See
   // North_Vector_Autonomous_Self_Extension_Plan.md's bug-fix-drafting
-  // section.
-  kind: "capability" | "bug_fix";
+  // section. "draft_email" (#87) = North drafted (never sent) an email it
+  // noticed Nishad meant to send — reuses this same review-gated
+  // propose/approve/deny shape and page, with prNumber/targetFile/diff
+  // replaced by to/subject/body/reasoning/draftId below.
+  kind: "capability" | "bug_fix" | "draft_email";
   request: string;
   capability: string;
   status: "pending_gap" | "pending_review" | "approved" | "denied";
@@ -49,11 +59,17 @@ export type CapabilityGap = {
   // default: nothing approved before #58 shipped should retroactively
   // announce itself.
   announced: boolean;
+  // #87 — only set for kind "draft_email".
+  to: string | null;
+  subject: string | null;
+  body: string | null;
+  reasoning: string | null;
+  draftId: string | null;
 };
 
 function parseCapabilityGap(data: FirebaseFirestore.DocumentData): CapabilityGap {
   return {
-    kind: data.kind === "bug_fix" ? "bug_fix" : "capability",
+    kind: data.kind === "bug_fix" ? "bug_fix" : data.kind === "draft_email" ? "draft_email" : "capability",
     request: typeof data.request === "string" ? data.request : "",
     capability: typeof data.capability === "string" ? data.capability : "",
     status: (data.status as CapabilityGap["status"]) ?? "pending_gap",
@@ -63,7 +79,47 @@ function parseCapabilityGap(data: FirebaseFirestore.DocumentData): CapabilityGap
     targetFile: typeof data.targetFile === "string" ? data.targetFile : null,
     summary: typeof data.summary === "string" ? data.summary : null,
     announced: data.announced === true,
+    to: typeof data.to === "string" ? data.to : null,
+    subject: typeof data.subject === "string" ? data.subject : null,
+    body: typeof data.body === "string" ? data.body : null,
+    reasoning: typeof data.reasoning === "string" ? data.reasoning : null,
+    draftId: typeof data.draftId === "string" ? data.draftId : null,
   };
+}
+
+// #87 — logs a drafted-but-unsent email for review, skipping the
+// "pending_gap" status entirely (there's no code-drafting step here the way
+// note_capability_gap has — the draft itself already exists in Gmail by the
+// time this is called). Reuses app/capability-review/[gapId] and its
+// approve/deny routes via the "draft_email" kind branch.
+export async function logDraftEmailGap(params: {
+  to: string;
+  subject: string;
+  body: string;
+  reasoning: string;
+  draftId: string;
+}): Promise<string> {
+  const doc = await adminDb.collection("capability_gaps").add({
+    kind: "draft_email",
+    status: "pending_review",
+    request: params.reasoning,
+    capability: `Draft email to ${params.to}`,
+    summary: params.reasoning,
+    to: params.to,
+    subject: params.subject,
+    body: params.body,
+    reasoning: params.reasoning,
+    draftId: params.draftId,
+    createdAt: FieldValue.serverTimestamp(),
+  });
+
+  await sendPushNotification(
+    `North: drafted an email to ${params.to}`,
+    params.reasoning,
+    `${APP_URL}/capability-review/${doc.id}`
+  );
+
+  return doc.id;
 }
 
 // Backs app/api/v1/capability-gap/[gapId] (the in-app review page's data
@@ -112,14 +168,18 @@ export async function setCapabilityGapStatus(
   await adminDb.collection("capability_gaps").doc(gapId).set(update, { merge: true });
 }
 
-// Backs lib/opener-selector.ts's #58 candidate — an approved capability
-// nobody's been told about yet. Two equality filters only (no orderBy), same
+// Backs lib/opener-selector.ts's #58 candidate — an approved NEW CAPABILITY
+// (kind === "capability" specifically — a "you just approved a new
+// capability" announcement wouldn't make sense for an approved bug_fix or
+// draft_email, which have their own delivery/framing) nobody's been told
+// about yet. Three equality filters only (no orderBy), same
 // no-composite-index-needed reasoning as onToolError's dedup query in
 // functions/src/index.ts. Picks the most recently approved client-side if
 // more than one is somehow outstanding.
 export async function getUnannouncedApprovedCapability(): Promise<CapabilityGapSummary | null> {
   const snapshot = await adminDb
     .collection("capability_gaps")
+    .where("kind", "==", "capability")
     .where("status", "==", "approved")
     .where("announced", "==", false)
     .get();

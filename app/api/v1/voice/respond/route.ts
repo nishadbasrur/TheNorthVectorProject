@@ -18,6 +18,7 @@ import { pickOpener } from "@/lib/opener-selector";
 import { recordAction } from "@/lib/action-log-store";
 import { recordOccurrence } from "@/lib/recurring-signal-store";
 import { detectEngagement } from "@/lib/engagement-detector";
+import { detectRushSignal } from "@/lib/rush-detector";
 
 // #96 — read-only "check"/"search" tools stand in for question categories:
 // Claude already picked the tool, so the category is free and deterministic,
@@ -89,7 +90,22 @@ function currentTimeLine(): string {
   return `Current date and time: ${formatted}. Trust this over any assumption from training data — if asked the date, time, or anything relative to "today," answer from this line.`;
 }
 
-function buildSystemPrompt(preferences: Awaited<ReturnType<typeof getPreferences>>): string {
+// #98 — one short instruction spliced in when detectRushSignal (below) sees
+// a genuine multi-turn trend of short, clipped replies, same
+// computed-signal-concatenated-into-the-prompt shape as currentTimeLine().
+function rushLine(rushSignal: "rushed" | "normal"): string {
+  if (rushSignal !== "rushed") return "";
+  return (
+    "\n\nNishad's last few replies have been short and clipped — he seems rushed right now. Default " +
+    "to the shortest possible acknowledgment unless he's asking something that genuinely needs more; " +
+    "don't pad or add extra context he didn't ask for."
+  );
+}
+
+function buildSystemPrompt(
+  preferences: Awaited<ReturnType<typeof getPreferences>>,
+  rushSignal: "rushed" | "normal"
+): string {
   return (
     currentTimeLine() + "\n\n" +
     "You are North, Nishad's personal chief-of-staff. You address him as \"sir\" — dry, direct, " +
@@ -129,7 +145,10 @@ function buildSystemPrompt(preferences: Awaited<ReturnType<typeof getPreferences
     "(that boundary is the one exception to acting autonomously). Only call note_capability_gap " +
     "for a request that genuinely needs a new integration research can't cover (a new account, " +
     "API, or credential) — say so plainly when that's the case, don't just let it evaporate as a " +
-    "flat no.\n\n" +
+    "flat no. If you notice mid-conversation that Nishad's mentioned meaning to reply to someone " +
+    "(not a direct instruction to send something right now — that's still send_email), use " +
+    "draft_email instead of send_email: it saves a Gmail draft and offers it for his review rather " +
+    "than sending unreviewed.\n\n" +
 
     "This voice applies just as much when reporting back a tool result as in direct conversation — " +
     "don't switch to a flat, report-style tone just because the answer came from checking email, " +
@@ -221,7 +240,8 @@ function buildSystemPrompt(preferences: Awaited<ReturnType<typeof getPreferences
     "North: Two, sir — Gmail search and checking are both getting fixes drafted as we speak. " +
     "I'll flag you the moment either's ready to review.\n\n" +
 
-    formatPreferencesForPrompt(preferences)
+    formatPreferencesForPrompt(preferences) +
+    rushLine(rushSignal)
   );
 }
 
@@ -288,7 +308,8 @@ export async function POST(request: Request) {
   // connections) lives in lib/opener-selector.ts, not here.
   const opener = priorTurns.length === 0 ? await pickOpener() : null;
 
-  let systemPrompt = buildSystemPrompt(preferences);
+  const rushSignal = detectRushSignal(priorTurns, text);
+  let systemPrompt = buildSystemPrompt(preferences, rushSignal);
   if (opener) {
     systemPrompt += `\n\n${opener.text}`;
   }

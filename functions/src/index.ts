@@ -416,6 +416,14 @@ export const onCapabilityGap = onDocumentCreated(
     const data = event.data?.data();
     if (!data) return;
 
+    // #87's draft_email gaps are created with status "pending_review"
+    // directly (lib/capability-gap-store.ts's logDraftEmailGap) — there's
+    // no code to draft, the Gmail draft already exists. Without this early
+    // return, the fallthrough below defaults any unrecognized kind to
+    // "capability" and would incorrectly dispatch a GitHub capability-draft
+    // workflow for an email.
+    if (data.kind === "draft_email") return;
+
     // Fires for every new doc in this collection regardless of who wrote
     // it — note_capability_gap (a live voice turn) and onToolError (below,
     // an existing tool actually failing) both just create a doc here and

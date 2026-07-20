@@ -5,7 +5,7 @@ import { AppShell } from "@/components/layout/app-shell";
 import { auth } from "@/lib/firebase";
 
 type CapabilityGap = {
-  kind: "capability" | "bug_fix";
+  kind: "capability" | "bug_fix" | "draft_email";
   request: string;
   capability: string;
   status: "pending_gap" | "pending_review" | "approved" | "denied";
@@ -15,6 +15,10 @@ type CapabilityGap = {
   targetFile: string | null;
   summary: string | null;
   diff: string | null;
+  to: string | null;
+  subject: string | null;
+  body: string | null;
+  reasoning: string | null;
 };
 
 async function fetchGap(gapId: string): Promise<{ gap?: CapabilityGap; error?: string }> {
@@ -86,10 +90,18 @@ export default function CapabilityReviewPage({ params }: { params: Promise<{ gap
     <AppShell>
       <div className="page-header">
         <div className="page-eyebrow">
-          {gap?.kind === "bug_fix" ? "Autonomous Bug Fix" : "Autonomous Capability Draft"}
+          {gap?.kind === "bug_fix"
+            ? "Autonomous Bug Fix"
+            : gap?.kind === "draft_email"
+              ? "Drafted Email"
+              : "Autonomous Capability Draft"}
         </div>
-        <div className="page-title">{gap?.toolName ?? "Review"}</div>
-        <div className="page-meta">Drafted by North — nothing is live until you approve.</div>
+        <div className="page-title">{gap?.kind === "draft_email" ? (gap.subject ?? "Review") : (gap?.toolName ?? "Review")}</div>
+        <div className="page-meta">
+          {gap?.kind === "draft_email"
+            ? "Drafted by North — the draft sits in Gmail until you approve."
+            : "Drafted by North — nothing is live until you approve."}
+        </div>
       </div>
 
       <div className="page-body">
@@ -101,7 +113,59 @@ export default function CapabilityReviewPage({ params }: { params: Promise<{ gap
           </div>
         )}
 
-        {gap && (
+        {gap && gap.kind === "draft_email" && (
+          <>
+            <div className="card" style={{ marginBottom: 16 }}>
+              <div className="section-heading">To</div>
+              <div>{gap.to}</div>
+
+              <div className="section-heading" style={{ marginTop: 12 }}>Subject</div>
+              <div>{gap.subject}</div>
+
+              <div className="section-heading" style={{ marginTop: 12 }}>Why North drafted this</div>
+              <div>{gap.reasoning}</div>
+
+              <div className="section-heading" style={{ marginTop: 12 }}>Status</div>
+              <div>{gap.status.replace("_", " ")}</div>
+            </div>
+
+            <div className="card" style={{ marginBottom: 16, overflowX: "auto" }}>
+              <div className="section-heading">Body</div>
+              <pre
+                style={{
+                  fontSize: 13,
+                  whiteSpace: "pre-wrap",
+                  wordBreak: "break-word",
+                  fontFamily: "inherit",
+                  marginTop: 8,
+                }}
+              >
+                {gap.body}
+              </pre>
+            </div>
+
+            {gap.status === "pending_review" && (
+              <div style={{ display: "flex", gap: 12 }}>
+                <button className="nv-button" disabled={actionState !== "idle"} onClick={() => handleAction("approve")}>
+                  {actionState === "approving" ? "Sending…" : "Approve & Send"}
+                </button>
+                <button
+                  className="nv-button-secondary"
+                  disabled={actionState !== "idle"}
+                  onClick={() => handleAction("deny")}
+                >
+                  {actionState === "denying" ? "Discarding…" : "Discard"}
+                </button>
+              </div>
+            )}
+
+            {gap.status === "approved" && <div className="card">Approved and sent.</div>}
+            {gap.status === "denied" && <div className="card">Discarded — nothing sent.</div>}
+            {actionError && <div style={{ marginTop: 12, color: "var(--status-risk)" }}>{actionError}</div>}
+          </>
+        )}
+
+        {gap && gap.kind !== "draft_email" && (
           <>
             <div className="card" style={{ marginBottom: 16 }}>
               <div className="section-heading">{gap.kind === "bug_fix" ? "Tool" : "Asked"}</div>
