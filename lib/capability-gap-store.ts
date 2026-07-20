@@ -43,6 +43,12 @@ export type CapabilityGap = {
   toolName: string | null;
   targetFile: string | null;
   summary: string | null;
+  // #58 — whether this approved capability has already been announced to
+  // Nishad via the conversational opener (see lib/opener-selector.ts).
+  // false/undefined on every doc predating this field, which is the correct
+  // default: nothing approved before #58 shipped should retroactively
+  // announce itself.
+  announced: boolean;
 };
 
 function parseCapabilityGap(data: FirebaseFirestore.DocumentData): CapabilityGap {
@@ -56,6 +62,7 @@ function parseCapabilityGap(data: FirebaseFirestore.DocumentData): CapabilityGap
     toolName: typeof data.toolName === "string" ? data.toolName : null,
     targetFile: typeof data.targetFile === "string" ? data.targetFile : null,
     summary: typeof data.summary === "string" ? data.summary : null,
+    announced: data.announced === true,
   };
 }
 
@@ -95,5 +102,44 @@ export async function setCapabilityGapStatus(
   gapId: string,
   status: "approved" | "denied"
 ): Promise<void> {
-  await adminDb.collection("capability_gaps").doc(gapId).set({ status }, { merge: true });
+  // Approval also opens the #58 announcement window (announced: false) and
+  // stamps approvedAt — nothing else reads approvedAt today, it's just a
+  // debugging breadcrumb for when the announcement window opened.
+  const update =
+    status === "approved"
+      ? { status, announced: false, approvedAt: FieldValue.serverTimestamp() }
+      : { status };
+  await adminDb.collection("capability_gaps").doc(gapId).set(update, { merge: true });
+}
+
+// Backs lib/opener-selector.ts's #58 candidate — an approved capability
+// nobody's been told about yet. Two equality filters only (no orderBy), same
+// no-composite-index-needed reasoning as onToolError's dedup query in
+// functions/src/index.ts. Picks the most recently approved client-side if
+// more than one is somehow outstanding.
+export async function getUnannouncedApprovedCapability(): Promise<CapabilityGapSummary | null> {
+  const snapshot = await adminDb
+    .collection("capability_gaps")
+    .where("status", "==", "approved")
+    .where("announced", "==", false)
+    .get();
+
+  if (snapshot.empty) return null;
+
+  const candidates = snapshot.docs
+    .map((doc) => {
+      const data = doc.data();
+      return {
+        id: doc.id,
+        ...parseCapabilityGap(data),
+        createdAt: data.createdAt?.toDate ? data.createdAt.toDate().toISOString() : null,
+      };
+    })
+    .sort((a, b) => (b.createdAt ?? "").localeCompare(a.createdAt ?? ""));
+
+  return candidates[0];
+}
+
+export async function markCapabilityAnnounced(gapId: string): Promise<void> {
+  await adminDb.collection("capability_gaps").doc(gapId).set({ announced: true }, { merge: true });
 }

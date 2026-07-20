@@ -6,7 +6,7 @@ import { getPreferences, formatPreferencesForPrompt } from "@/lib/preferences-st
 import { detectAndStorePreference } from "@/lib/preference-detector";
 import { loadSession, saveSession, type VoiceTurn, type VisualState } from "@/lib/voice-session-store";
 import { TOOL_DEFINITIONS, executeTool } from "@/lib/tool-dispatcher";
-import { getUnspokenConnections, markConnectionsSpoken } from "@/lib/synthesis-store";
+import { pickOpener } from "@/lib/opener-selector";
 import { recordAction } from "@/lib/action-log-store";
 
 // Backs the entire voice pipeline: real Anthropic tool-calling replaces the
@@ -239,18 +239,14 @@ export async function POST(request: Request) {
   // lib/synthesis-priority.ts's deliveryChannel) gets recorded but was
   // never actually communicated anywhere before this — it just sat in
   // Firestore until Nishad happened to ask. See
-  // North_Vector_Real_Time_Triggers_Plan.md Section 2.1.
-  const openerConnections = priorTurns.length === 0 ? await getUnspokenConnections(1) : [];
-  const opener = openerConnections[0];
+  // North_Vector_Real_Time_Triggers_Plan.md Section 2.1. Candidate
+  // selection (capability announcements, recurring-signal offers, synthesis
+  // connections) lives in lib/opener-selector.ts, not here.
+  const opener = priorTurns.length === 0 ? await pickOpener() : null;
 
   let systemPrompt = buildSystemPrompt(preferences);
   if (opener) {
-    systemPrompt +=
-      `\n\nSomething worth mentioning came up since you last talked and hasn't been brought up yet: ` +
-      `${opener.connection} ${opener.whyItMatters} If it fits naturally, lead with this before ` +
-      `addressing what he just said — brief, in your own words, not a script (\"Before you ask — \" ` +
-      `is one way to frame it, not the only one). If it genuinely doesn't fit this specific turn, ` +
-      `it's fine to skip it.`;
+    systemPrompt += `\n\n${opener.text}`;
   }
 
   const messages: Anthropic.MessageParam[] = [
@@ -347,16 +343,16 @@ export async function POST(request: Request) {
     }
   });
 
-  // Only marked spoken once a real response actually went out (finalText
+  // Only marked delivered once a real response actually went out (finalText
   // set, not the fallback "didn't catch that" text) — if the turn failed
-  // partway through, the finding gets another chance to open the next
+  // partway through, the opener gets another chance to open the next
   // session rather than being silently used up.
   if (opener && finalText !== null) {
     after(async () => {
       try {
-        await markConnectionsSpoken([opener]);
+        await opener.onDelivered();
       } catch (error) {
-        console.error("[voice-respond] markConnectionsSpoken failed:", error);
+        console.error("[voice-respond] opener.onDelivered failed:", error);
       }
     });
   }
