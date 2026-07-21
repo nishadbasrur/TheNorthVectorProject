@@ -83,7 +83,7 @@ const WHISPER_SPEECH_RMS_THRESHOLD = 0.004;
 // to actually render, and the whole turn looks like it silently did
 // nothing. Confirmed live: transcription and processing both genuinely
 // succeeded, the response just never stayed on screen long enough to see.
-const WHISPER_TEXT_READ_DELAY_MS = 6000;
+const WHISPER_TEXT_READ_DELAY_MS = 20000;
 const SILENCE_DURATION_MS = 1400;
 const NO_SPEECH_GIVEUP_MS = 8000;
 const INACTIVITY_TIMEOUT_MS = 75000; // real inactivity -> back to DORMANT
