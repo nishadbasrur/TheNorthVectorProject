@@ -76,6 +76,14 @@ const SPEECH_RMS_THRESHOLD = 0.02;
 // "expect real-world tuning" treatment as every other threshold on this
 // page; genuinely can't be calibrated without a live mic/room test.
 const WHISPER_SPEECH_RMS_THRESHOLD = 0.004;
+// Whisper mode's text-only response has no natural "done" signal the way
+// speak() has audio-playback duration — without an explicit pause here, the
+// very next auto-relisten call clears the just-set response text
+// (startListening resets setResponseText("")) before it ever has a chance
+// to actually render, and the whole turn looks like it silently did
+// nothing. Confirmed live: transcription and processing both genuinely
+// succeeded, the response just never stayed on screen long enough to see.
+const WHISPER_TEXT_READ_DELAY_MS = 6000;
 const SILENCE_DURATION_MS = 1400;
 const NO_SPEECH_GIVEUP_MS = 8000;
 const INACTIVITY_TIMEOUT_MS = 75000; // real inactivity -> back to DORMANT
@@ -585,6 +593,9 @@ export default function SandboxPage() {
           } else {
             setShowTranscript(true);
             updateStatus("idle");
+            // Give the text time to actually be seen before the next
+            // startListening() call wipes it — see WHISPER_TEXT_READ_DELAY_MS.
+            await new Promise((resolve) => setTimeout(resolve, WHISPER_TEXT_READ_DELAY_MS));
           }
         } else {
           await speak(result.responseText);
@@ -651,7 +662,17 @@ export default function SandboxPage() {
           setTranscript(text);
           setResponseText(SLEEP_ACKNOWLEDGMENT);
           setToolsUsed([]);
-          await speak(SLEEP_ACKNOWLEDGMENT);
+
+          // Same whisper-mode routing as handleTranscript — this hardcoded
+          // acknowledgment shouldn't play out loud on a bare speaker just
+          // because it's a fixed phrase rather than a normal Claude response.
+          if (isWhisperModeRef.current && !(await isPrivateAudioOutputConnected())) {
+            setShowTranscript(true);
+            await new Promise((resolve) => setTimeout(resolve, WHISPER_TEXT_READ_DELAY_MS));
+          } else {
+            await speak(SLEEP_ACKNOWLEDGMENT, isWhisperModeRef.current ? { quiet: true } : undefined);
+          }
+
           goDormant();
           return;
         }
