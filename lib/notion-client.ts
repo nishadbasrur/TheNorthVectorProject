@@ -62,10 +62,21 @@ export type UrgentNotionItem = {
 
 // Fetches pages from the shared database where the "Urgent" checkbox
 // property is true. Read-only — never writes to Notion.
+//
+// NOTION_URGENT_DATABASE_ID is optional configuration: not every North
+// Vector deployment/user has a Notion urgent-items database wired up. This
+// previously threw whenever the env var was unset, which took down the
+// whole check_notion tool call in production for anyone without that
+// database configured. Missing configuration isn't an error condition for
+// this read-only check — it just means there's nothing to report — so we
+// log and return an empty list instead of throwing.
 export async function getUrgentItems(): Promise<UrgentNotionItem[]> {
   const databaseId = process.env.NOTION_URGENT_DATABASE_ID;
   if (!databaseId) {
-    throw new Error("NOTION_URGENT_DATABASE_ID must be set.");
+    console.warn(
+      "NOTION_URGENT_DATABASE_ID is not set; skipping Notion urgent-items check.",
+    );
+    return [];
   }
 
   const client = getNotionClient();
