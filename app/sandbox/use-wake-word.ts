@@ -10,9 +10,22 @@ import { WakeWordEngine, type WakeWordDetectEvent } from "openwakeword-wasm-brow
 // bytes), not a placeholder — see that directory's README.
 export const WAKE_WORD_KEYWORD = "hey_north";
 
+// Whisper support, Phase B (see 10-Implementation/Notes/ plan discussion) —
+// a second, separately-trained model for a whispered "Hey North," not yet
+// trained. Deliberately NOT included in WakeWordEngine's active `keywords`
+// list below yet: confirmed directly in WakeWordEngine.js that load() throws
+// if ANY configured keyword's model file is missing, which would set the
+// whole engine to "error" status and stop the already-working normal-volume
+// wake word from firing at all. Once Phase B produces
+// hey_north_whisper_v0.1.onnx, add WAKE_WORD_KEYWORD_WHISPER to the
+// `keywords` array passed to WakeWordEngine below — that's the only change
+// needed at that point.
+export const WAKE_WORD_KEYWORD_WHISPER = "hey_north_whisper";
+
 const MODEL_FILE_MAP: Record<string, string> = {
   hey_mycroft: "hey_mycroft_v0.1.onnx",
   hey_north: "hey_north_v0.1.onnx",
+  [WAKE_WORD_KEYWORD_WHISPER]: "hey_north_whisper_v0.1.onnx", // Phase B — file doesn't exist yet
 };
 
 type UseWakeWordOptions = {

@@ -29,7 +29,14 @@ function getClient(): TextToSpeechClient {
   return cachedClient;
 }
 
-export async function synthesizeSpeech(text: string): Promise<Buffer> {
+// Whisper support — a quiet reply for when a private listening device
+// (Bluetooth today, real Core2 hardware later) is connected but the room
+// still isn't one to play audio out loud in. -10dB is a starting point, same
+// "expect real-world tuning" treatment as the RMS thresholds in
+// app/sandbox/page.tsx.
+const QUIET_VOLUME_GAIN_DB = -10;
+
+export async function synthesizeSpeech(text: string, options?: { quiet?: boolean }): Promise<Buffer> {
   const request: protos.google.cloud.texttospeech.v1.ISynthesizeSpeechRequest = {
     input: { text },
     voice: {
@@ -38,6 +45,7 @@ export async function synthesizeSpeech(text: string): Promise<Buffer> {
     },
     audioConfig: {
       audioEncoding: "MP3",
+      ...(options?.quiet ? { volumeGainDb: QUIET_VOLUME_GAIN_DB } : {}),
     },
   };
 

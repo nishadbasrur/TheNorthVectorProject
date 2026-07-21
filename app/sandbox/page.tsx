@@ -1,9 +1,11 @@
 "use client";
 
-import { useCallback, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
+import type { WakeWordDetectEvent } from "openwakeword-wasm-browser";
 import { AppShell } from "@/components/layout/app-shell";
 import { auth } from "@/lib/firebase";
-import { useWakeWord } from "./use-wake-word";
+import { isPrivateAudioOutputConnected } from "@/lib/audio-output-detector";
+import { useWakeWord, WAKE_WORD_KEYWORD_WHISPER } from "./use-wake-word";
 import { HudMap, type MapVisual } from "./hud-map";
 
 // TEMPORARY — lets Nishad grab a real ID token from the browser console for
@@ -69,6 +71,11 @@ const SLEEP_ACKNOWLEDGMENT = "Understood, sir. I'll be here when something's wor
 // calibration. Expect these to need adjustment once tested against a real
 // mic/room; that's expected, not a sign something's broken.
 const SPEECH_RMS_THRESHOLD = 0.02;
+// Whisper mode's speech-detection floor — much lower than normal, since a
+// whisper's RMS runs well under SPEECH_RMS_THRESHOLD. Starting point, same
+// "expect real-world tuning" treatment as every other threshold on this
+// page; genuinely can't be calibrated without a live mic/room test.
+const WHISPER_SPEECH_RMS_THRESHOLD = 0.004;
 const SILENCE_DURATION_MS = 1400;
 const NO_SPEECH_GIVEUP_MS = 8000;
 const INACTIVITY_TIMEOUT_MS = 75000; // real inactivity -> back to DORMANT
@@ -312,6 +319,22 @@ export default function SandboxPage() {
   const processorRef = useRef<ScriptProcessorNode | null>(null);
   const recordedChunksRef = useRef<Float32Array[]>([]);
   const hasSpeechRef = useRef(false);
+  // Whisper support — true for the whole active-mode session once entered
+  // via the whisper wake word (or, temporarily, the dev-test hook below),
+  // same lifecycle as `mode` itself rather than resetting per-turn. Drives
+  // both the RMS threshold used in startListening and the response-delivery
+  // branch in handleTranscript.
+  const isWhisperModeRef = useRef(false);
+  // TEMPORARY, Phase A only — dev-test entry point for whisper mode ahead of
+  // Phase B's real whisper wake word (WAKE_WORD_KEYWORD_WHISPER isn't wired
+  // into the active keywords list yet, see use-wake-word.ts). Set via
+  // ?whisperTest=1 in the URL; forces the manual tap-to-start bypass in
+  // handleMicTap into whisper mode instead of normal mode. Remove this whole
+  // block once Phase B ships and the real wake word can be tested directly.
+  const isWhisperTestModeRef = useRef(false);
+  useEffect(() => {
+    isWhisperTestModeRef.current = new URLSearchParams(window.location.search).get("whisperTest") === "1";
+  }, []);
   // Reused across the page session (not recreated per response) — once this
   // exact element has played from within a user gesture, Safari allows later
   // programmatic .play() calls on it even outside a gesture call stack.
@@ -465,6 +488,7 @@ export default function SandboxPage() {
     setMode("dormant");
     updateStatus("idle");
     setVisual(null); // map (if any) doesn't survive back to the resting orb-only screen
+    isWhisperModeRef.current = false;
   }, [clearInactivityTimer, teardownRecording, stopBargeInMonitor, updateStatus]);
 
   const resetInactivityTimer = useCallback(() => {
@@ -475,7 +499,7 @@ export default function SandboxPage() {
   }, [clearInactivityTimer, goDormant]);
 
   const speak = useCallback(
-    async (text: string) => {
+    async (text: string, options?: { quiet?: boolean }) => {
       updateStatus("speaking");
 
       try {
@@ -487,7 +511,7 @@ export default function SandboxPage() {
             "Content-Type": "application/json",
             Authorization: `Bearer ${idToken}`,
           },
-          body: JSON.stringify({ text }),
+          body: JSON.stringify({ text, quiet: options?.quiet === true }),
         });
 
         if (!response.ok) {
@@ -548,7 +572,23 @@ export default function SandboxPage() {
         setResponseText(result.responseText);
         setToolsUsed(result.toolsUsed);
         if (result.visual) setVisual(result.visual); // only ever set, never cleared by a non-map turn — see hud-map close button / goDormant for the ways it goes away
-        await speak(result.responseText);
+
+        if (isWhisperModeRef.current) {
+          // Whisper mode's response routing — quiet audio if a private
+          // listening device (Bluetooth today, real Core2 later) is
+          // connected, text-only otherwise. Text-only skips speak()
+          // entirely (saves the TTS call too) and forces the response
+          // readout open, since it's hidden by default.
+          const hasPrivateOutput = await isPrivateAudioOutputConnected();
+          if (hasPrivateOutput) {
+            await speak(result.responseText, { quiet: true });
+          } else {
+            setShowTranscript(true);
+            updateStatus("idle");
+          }
+        } else {
+          await speak(result.responseText);
+        }
       } catch (error) {
         setErrorMessage(error instanceof Error ? error.message : "Something went wrong.");
         updateStatus("idle");
@@ -684,7 +724,8 @@ export default function SandboxPage() {
       const data = event.inputBuffer.getChannelData(0);
       recordedChunksRef.current.push(new Float32Array(data));
 
-      if (rms(data) > SPEECH_RMS_THRESHOLD) {
+      const speechThreshold = isWhisperModeRef.current ? WHISPER_SPEECH_RMS_THRESHOLD : SPEECH_RMS_THRESHOLD;
+      if (rms(data) > speechThreshold) {
         if (!hasSpeechRef.current) {
           hasSpeechRef.current = true;
           clearNoSpeechTimer();
@@ -768,13 +809,20 @@ export default function SandboxPage() {
     }
   }, []);
 
-  const handleWakeWordDetected = useCallback(() => {
-    if (modeRef.current !== "dormant") return; // ignore late events mid-transition
-    setMode("active");
-    setErrorMessage(null);
-    resetInactivityTimer();
-    startListeningRef.current();
-  }, [resetInactivityTimer]);
+  const handleWakeWordDetected = useCallback(
+    (event: WakeWordDetectEvent) => {
+      if (modeRef.current !== "dormant") return; // ignore late events mid-transition
+      setMode("active");
+      setErrorMessage(null);
+      // Phase B, once WAKE_WORD_KEYWORD_WHISPER is added to the active
+      // keywords list in use-wake-word.ts — until then this branch just
+      // never fires from a real detection (see that file's comment).
+      isWhisperModeRef.current = event.keyword === WAKE_WORD_KEYWORD_WHISPER;
+      resetInactivityTimer();
+      startListeningRef.current();
+    },
+    [resetInactivityTimer]
+  );
 
   const { status: wakeWordStatus } = useWakeWord({
     enabled: mode === "dormant" && micArmed,
@@ -790,6 +838,8 @@ export default function SandboxPage() {
         // Manual bypass — skip the wake word, go straight to active.
         setMode("active");
         setErrorMessage(null);
+        // TEMPORARY, Phase A dev-test hook — see isWhisperTestModeRef above.
+        isWhisperModeRef.current = isWhisperTestModeRef.current;
         resetInactivityTimer();
         startListeningRef.current();
       }

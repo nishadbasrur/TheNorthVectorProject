@@ -8,13 +8,14 @@ export async function POST(request: Request) {
 
   const body = await request.json();
   const text = typeof body.text === "string" ? body.text.trim() : "";
+  const quiet = body.quiet === true;
 
   if (!text) {
     return NextResponse.json({ error: "text is required." }, { status: 400 });
   }
 
   try {
-    const audio = await synthesizeSpeech(text);
+    const audio = await synthesizeSpeech(text, { quiet });
 
     return new Response(new Uint8Array(audio), {
       status: 200,
