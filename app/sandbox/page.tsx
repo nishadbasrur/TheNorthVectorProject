@@ -239,11 +239,59 @@ function isMapVisual(value: unknown): value is MapVisual {
   );
 }
 
-// Calls the tool-calling voice endpoint directly. sessionId carries
-// multi-turn continuity across separate spoken utterances (see
-// lib/voice-session-store.ts); the endpoint itself decides which tool(s), if
-// any, the transcript needs.
-async function askNorth(text: string, sessionId: string): Promise<VoiceRespondResult> {
+// Parses app/api/v1/voice/respond's SSE response (see that route's sseEvent
+// helper for the exact "event: X\ndata: {...}\n\n" framing) into individual
+// {event, data} records as they arrive. Shared by askNorth (drains this,
+// discarding "audio" events — whisper mode needs the full text before
+// deciding whether to speak it quietly or show it as text, not
+// sentence-by-sentence audio) and askNorthAndSpeakStream (plays each "audio"
+// event as it arrives — the actual point of streaming this at all).
+async function* parseSSEStream(response: Response): AsyncGenerator<{ event: string; data: Record<string, unknown> }> {
+  if (!response.body) return;
+  const reader = response.body.getReader();
+  const decoder = new TextDecoder();
+  let buffer = "";
+
+  while (true) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    buffer += decoder.decode(value, { stream: true });
+
+    let sepIndex: number;
+    while ((sepIndex = buffer.indexOf("\n\n")) !== -1) {
+      const rawEvent = buffer.slice(0, sepIndex);
+      buffer = buffer.slice(sepIndex + 2);
+
+      const eventMatch = rawEvent.match(/^event: (.+)$/m);
+      const dataMatch = rawEvent.match(/^data: (.+)$/m);
+      if (!eventMatch || !dataMatch) continue;
+
+      try {
+        yield { event: eventMatch[1], data: JSON.parse(dataMatch[1]) };
+      } catch {
+        // Malformed frame — skip rather than crash the whole stream over one bad event.
+      }
+    }
+  }
+}
+
+function base64ToBytes(base64: string): Uint8Array<ArrayBuffer> {
+  const binary = atob(base64);
+  const bytes = new Uint8Array(new ArrayBuffer(binary.length));
+  for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
+  return bytes;
+}
+
+function parseVoiceRespondDoneEvent(data: Record<string, unknown>): VoiceRespondResult {
+  return {
+    responseText:
+      typeof data.responseText === "string" ? data.responseText : "I didn't catch that clearly — mind trying again?",
+    toolsUsed: Array.isArray(data.toolsUsed) ? (data.toolsUsed as string[]) : [],
+    visual: isMapVisual(data.visual) ? data.visual : null,
+  };
+}
+
+async function postVoiceRespond(text: string, sessionId: string): Promise<Response> {
   const idToken = await auth.currentUser?.getIdToken();
 
   const response = await fetch("/api/v1/voice/respond", {
@@ -255,7 +303,7 @@ async function askNorth(text: string, sessionId: string): Promise<VoiceRespondRe
     body: JSON.stringify({ text, sessionId }),
   });
 
-  if (!response.ok) {
+  if (!response.ok || !response.body) {
     let detail = "";
     try {
       const errorBody = await response.json();
@@ -266,13 +314,27 @@ async function askNorth(text: string, sessionId: string): Promise<VoiceRespondRe
     throw new Error(`Voice request failed (${response.status}${detail ? `: ${detail}` : ""}).`);
   }
 
-  const data = await response.json();
-  const responseText =
-    typeof data.responseText === "string" ? data.responseText : "I didn't catch that clearly — mind trying again?";
-  const toolsUsed = Array.isArray(data.toolsUsed) ? data.toolsUsed : [];
-  const visual = isMapVisual(data.visual) ? data.visual : null;
+  return response;
+}
 
-  return { responseText, toolsUsed, visual };
+// Calls the tool-calling voice endpoint directly. sessionId carries
+// multi-turn continuity across separate spoken utterances (see
+// lib/voice-session-store.ts); the endpoint itself decides which tool(s), if
+// any, the transcript needs. Used by whisper mode, which needs the whole
+// response text up front to decide whether to speak it quietly or show it
+// as text — see askNorthAndSpeakStream for the progressive-audio version
+// the normal (non-whisper) path uses instead.
+async function askNorth(text: string, sessionId: string): Promise<VoiceRespondResult> {
+  const response = await postVoiceRespond(text, sessionId);
+
+  for await (const { event, data } of parseSSEStream(response)) {
+    if (event === "done") return parseVoiceRespondDoneEvent(data);
+    if (event === "error") {
+      throw new Error(typeof data.error === "string" ? data.error : "Voice stream error.");
+    }
+  }
+
+  throw new Error("Voice stream ended without a final response.");
 }
 
 export default function SandboxPage() {
@@ -555,6 +617,92 @@ export default function SandboxPage() {
     [startBargeInMonitor, stopBargeInMonitor, updateStatus]
   );
 
+  // Streaming sibling of speak() — plays each sentence's audio as it
+  // arrives from app/api/v1/voice/respond's SSE stream instead of waiting
+  // for the whole response then fetching one complete audio file (the
+  // actual time-to-first-word fix). Sequential chunk playback via chained
+  // <audio> elements, not a single element — see the streaming pipeline
+  // plan's Section 3. speak() itself stays untouched above for whisper
+  // mode's quiet/single-shot path, which needs the full text up front
+  // anyway (see askNorth) and doesn't benefit from per-sentence streaming.
+  //
+  // Barge-in is set up ONCE for the whole response (not per chunk) — a
+  // sustained loud stretch pauses whatever chunk is currently playing and
+  // stops the loop from starting any more queued chunks, matching speak()'s
+  // existing interrupt-and-return semantics rather than only interrupting
+  // the one sentence that happened to be playing.
+  //
+  // NOT YET LIVE-TESTED: gaps/clicks between chunks, and whether the
+  // network stream reliably keeps ahead of playback so there's no audible
+  // stall waiting on a later sentence — see streaming pipeline plan Section
+  // 5's testing checklist.
+  const askNorthAndSpeakStream = useCallback(
+    async (text: string, sessionId: string): Promise<VoiceRespondResult> => {
+      const response = await postVoiceRespond(text, sessionId);
+
+      updateStatus("speaking");
+
+      let bargedIn = false;
+      let currentAudioElement: HTMLAudioElement | null = null;
+      startBargeInMonitor(() => {
+        bargedIn = true;
+        currentAudioElement?.pause();
+      });
+
+      let finalMeta: VoiceRespondResult | null = null;
+
+      try {
+        for await (const { event, data } of parseSSEStream(response)) {
+          if (bargedIn) break;
+
+          if (event === "audio") {
+            const audioBase64 = typeof data.audioBase64 === "string" ? data.audioBase64 : "";
+            const mimeType = typeof data.mimeType === "string" ? data.mimeType : "audio/ogg";
+            if (!audioBase64) continue;
+
+            const blob = new Blob([base64ToBytes(audioBase64)], { type: mimeType });
+            const url = URL.createObjectURL(blob);
+            const audioElement = audioRef.current ?? new Audio();
+            audioRef.current = audioElement;
+            currentAudioElement = audioElement;
+            audioElement.src = url;
+
+            await new Promise<void>((resolve) => {
+              let settled = false;
+              const finish = () => {
+                if (settled) return;
+                settled = true;
+                resolve();
+              };
+              audioElement.onended = finish;
+              audioElement.onerror = () => {
+                console.warn("[Sandbox] Audio chunk playback failed, skipping.");
+                finish();
+              };
+              audioElement.play().catch(() => finish());
+            });
+
+            URL.revokeObjectURL(url);
+          } else if (event === "done") {
+            finalMeta = parseVoiceRespondDoneEvent(data);
+          } else if (event === "error") {
+            throw new Error(typeof data.error === "string" ? data.error : "Voice stream error.");
+          }
+        }
+      } finally {
+        stopBargeInMonitor();
+        updateStatus("idle");
+      }
+
+      if (!finalMeta) {
+        throw new Error("Voice stream ended without a final response.");
+      }
+
+      return finalMeta;
+    },
+    [startBargeInMonitor, stopBargeInMonitor, updateStatus]
+  );
+
   const handleTranscript = useCallback(
     async (text: string) => {
       setTranscript(text);
@@ -565,17 +713,20 @@ export default function SandboxPage() {
       resetInactivityTimer(); // real interaction — push back the dormant deadline
 
       try {
-        const result = await askNorth(text, sessionIdRef.current);
-        setResponseText(result.responseText);
-        setToolsUsed(result.toolsUsed);
-        if (result.visual) setVisual(result.visual); // only ever set, never cleared by a non-map turn — see hud-map close button / goDormant for the ways it goes away
-
         if (isWhisperModeRef.current) {
-          // Whisper mode's response routing — quiet audio if a private
-          // listening device (Bluetooth today, real Core2 later) is
-          // connected, text-only otherwise. Text-only skips speak()
-          // entirely (saves the TTS call too) and forces the response
-          // readout open, since it's hidden by default.
+          // Whisper mode needs the whole response text up front to decide
+          // its routing below, not sentence-by-sentence audio — askNorth
+          // drains the same SSE stream askNorthAndSpeakStream plays
+          // progressively, it just discards the "audio" events.
+          const result = await askNorth(text, sessionIdRef.current);
+          setResponseText(result.responseText);
+          setToolsUsed(result.toolsUsed);
+          if (result.visual) setVisual(result.visual); // only ever set, never cleared by a non-map turn — see hud-map close button / goDormant for the ways it goes away
+
+          // Quiet audio if a private listening device (Bluetooth today,
+          // real Core2 later) is connected, text-only otherwise. Text-only
+          // skips speak() entirely (saves the TTS call too) and forces the
+          // response readout open, since it's hidden by default.
           const hasPrivateOutput = await isPrivateAudioOutputConnected();
           if (hasPrivateOutput) {
             await speak(result.responseText, { quiet: true });
@@ -587,7 +738,17 @@ export default function SandboxPage() {
             await new Promise((resolve) => setTimeout(resolve, WHISPER_TEXT_READ_DELAY_MS));
           }
         } else {
-          await speak(result.responseText);
+          // Normal mode — progressive per-sentence playback, the actual
+          // time-to-first-word fix. responseText/toolsUsed/visual only
+          // become known once the stream's final "done" event arrives
+          // (effectively when the last sentence finishes generating), so
+          // the debug readout now updates after speech starts rather than
+          // before it — an expected trade-off of speaking before the whole
+          // response is known, not a bug.
+          const result = await askNorthAndSpeakStream(text, sessionIdRef.current);
+          setResponseText(result.responseText);
+          setToolsUsed(result.toolsUsed);
+          if (result.visual) setVisual(result.visual);
         }
       } catch (error) {
         setErrorMessage(error instanceof Error ? error.message : "Something went wrong.");
@@ -601,7 +762,7 @@ export default function SandboxPage() {
         startListeningRef.current();
       }
     },
-    [speak, resetInactivityTimer, updateStatus]
+    [speak, askNorthAndSpeakStream, resetInactivityTimer, updateStatus]
   );
 
   const transcribeAndRoute = useCallback(

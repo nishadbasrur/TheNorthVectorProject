@@ -105,6 +105,71 @@ export async function askClaudeWithTools(params: {
   }
 }
 
+// Streaming sibling of askClaudeWithTools — same tool-aware multi-turn shape,
+// but yields text as it's generated instead of waiting for the full
+// response, so a caller can start speaking sentence 1 while sentence 2 is
+// still being generated (see app/api/v1/voice/respond/route.ts's
+// sentence-boundary chunking). Text deltas are yielded as they stream in;
+// tool_use blocks and the final stop_reason/content are only available once
+// the stream ends, since the SDK's MessageStream only assembles the final
+// message after all raw stream events have been consumed — deliberately NOT
+// calling stream.finalMessage() per content_block_stop event, since that's
+// wasteful (finalMessage() is the whole-message accumulator, not a
+// per-block snapshot) and would race the still-in-progress accumulation.
+export async function* streamClaudeWithTools(params: {
+  systemPrompt: string;
+  messages: Anthropic.MessageParam[];
+  tools: Anthropic.Tool[];
+  maxTokens?: number;
+}): AsyncGenerator<
+  | { type: "text_delta"; text: string }
+  | { type: "tool_use"; block: Anthropic.ToolUseBlock }
+  | { type: "done"; stopReason: string; content: Anthropic.ContentBlock[] }
+  | { type: "error"; error: string }
+> {
+  if (!process.env.ANTHROPIC_API_KEY) {
+    yield { type: "error", error: "ANTHROPIC_API_KEY not configured" };
+    return;
+  }
+
+  if (callsToday >= SOFT_DAILY_CALL_CAP) {
+    console.warn(`[anthropic-client] Soft daily call cap (${SOFT_DAILY_CALL_CAP}) reached — refusing call.`);
+    yield { type: "error", error: "Daily call cap reached" };
+    return;
+  }
+
+  callsToday += 1;
+
+  try {
+    const stream = client.messages.stream({
+      model: DEFAULT_MODEL,
+      max_tokens: params.maxTokens ?? 400,
+      system: params.systemPrompt,
+      messages: params.messages,
+      tools: params.tools,
+    });
+
+    for await (const event of stream) {
+      if (event.type === "content_block_delta" && event.delta.type === "text_delta") {
+        yield { type: "text_delta", text: event.delta.text };
+      }
+    }
+
+    const final = await stream.finalMessage();
+    const toolUseBlocks = final.content.filter(
+      (block): block is Anthropic.ToolUseBlock => block.type === "tool_use"
+    );
+    for (const block of toolUseBlocks) {
+      yield { type: "tool_use", block };
+    }
+
+    yield { type: "done", stopReason: final.stop_reason ?? "end_turn", content: final.content };
+  } catch (err) {
+    console.error("[anthropic-client] Streaming tool-use API call failed:", err);
+    yield { type: "error", error: err instanceof Error ? err.message : "Unknown error" };
+  }
+}
+
 // Synchronous, single-call helper for on-demand web-grounded questions —
 // currently lib/tool-dispatcher.ts's general-purpose research tool (any
 // topic, not scoped to a specific subject). Uses Claude's server-side

@@ -1,7 +1,8 @@
 import { NextResponse, after } from "next/server";
 import type Anthropic from "@anthropic-ai/sdk";
 import { requireOwner } from "@/lib/require-owner";
-import { askClaudeWithTools } from "@/lib/anthropic-client";
+import { streamClaudeWithTools } from "@/lib/anthropic-client";
+import { streamSynthesizeSentence, synthesizeSpeech } from "@/lib/google-tts";
 import { getPreferences, formatPreferencesForPrompt } from "@/lib/preferences-store";
 import { detectAndStorePreference } from "@/lib/preference-detector";
 import { detectIntentSignal } from "@/lib/intent-signal-detector";
@@ -245,6 +246,44 @@ function buildSystemPrompt(
   );
 }
 
+// Splits a growing text buffer into complete sentences as soon as they're
+// available, for the time-to-first-word pipeline — the whole point is
+// handing a sentence to TTS the moment it's finished, not waiting for
+// Claude's whole response. Only splits on terminal punctuation (., ?, !)
+// that's followed by whitespace WITHIN the buffer — punctuation sitting at
+// the very end of the buffer is deliberately left in `remainder` rather
+// than treated as a sentence boundary, since at that point there's no way
+// to tell "real sentence end, more text just hasn't arrived yet" apart from
+// "mid-stream chunk boundary right after a period." The caller's final
+// flush (after streamClaudeWithTools's "done" event) handles whatever's
+// left in remainder once the stream genuinely ends. Doesn't special-case
+// abbreviations ("Mr.", "3.5") — the persona prompt's spoken-sentence style
+// (short, plain, no decimals/titles in practice) makes this not worth the
+// complexity; revisit if it turns out to matter live.
+function extractCompleteSentences(buffer: string): { complete: string[]; remainder: string } {
+  const complete: string[] = [];
+  const boundaryRe = /[.?!]+(?=\s)/g;
+  let lastEnd = 0;
+  let match: RegExpExecArray | null;
+
+  while ((match = boundaryRe.exec(buffer)) !== null) {
+    const end = match.index + match[0].length;
+    const sentence = buffer.slice(lastEnd, end).trim();
+    if (sentence) complete.push(sentence);
+    lastEnd = end;
+    while (lastEnd < buffer.length && /\s/.test(buffer[lastEnd])) lastEnd++;
+    boundaryRe.lastIndex = lastEnd;
+  }
+
+  return { complete, remainder: buffer.slice(lastEnd) };
+}
+
+// SSE framing helper — one JSON payload per named event, blank-line
+// terminated per the SSE spec.
+function sseEvent(encoder: TextEncoder, event: string, data: unknown): Uint8Array {
+  return encoder.encode(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`);
+}
+
 export async function POST(request: Request) {
   const auth = await requireOwner(request);
   if (auth instanceof NextResponse) return auth;
@@ -323,114 +362,223 @@ export async function POST(request: Request) {
   let finalText: string | null = null;
   let visual: VisualState | undefined; // set only if show_map ran — last call wins if it ran more than once
 
-  for (let i = 0; i < MAX_TOOL_ITERATIONS; i++) {
-    const callStart = performance.now();
-    const result = await askClaudeWithTools({
-      systemPrompt,
-      messages,
-      tools: TOOL_DEFINITIONS,
-      maxTokens: 300, // was 150, was 400 originally — 150 turned out tight
-                       // enough to truncate mid-tool-call on some turns
-                       // (stop_reason "max_tokens" instead of "tool_use",
-                       // no completed text block, finalText came back
-                       // null). 300 keeps a real backstop against the model
-                       // ignoring the 60-word/no-markdown rule while giving
-                       // tool-calling turns enough room to actually finish.
-    });
-    console.log(
-      `[voice-respond] Claude call ${i + 1}: stopReason=${result.ok ? result.stopReason : "error"} in ${Math.round(performance.now() - callStart)}ms`
-    );
+  const encoder = new TextEncoder();
 
-    if (!result.ok) {
-      return NextResponse.json({ error: result.error }, { status: 502 });
-    }
+  const stream = new ReadableStream<Uint8Array>({
+    start(controller) {
+      // Sentence-level synthesis pipeline — streamSynthesizeSentence is
+      // fired the instant a sentence is extracted, not awaited there, so
+      // synthesis for sentence N+1 overlaps with sentence N being sent to
+      // (and starting to play on) the client instead of happening strictly
+      // after it. audioQueue holds these promises in emission order;
+      // drainReady() awaits them in that same order (even though the
+      // underlying calls may resolve out of order) so playback order is
+      // never at risk.
+      const audioQueue: Promise<{ audioBase64: string; mimeType: string } | null>[] = [];
+      let drainIndex = 0;
 
-    messages.push({ role: "assistant", content: result.content });
+      function enqueueSentence(sentenceText: string) {
+        audioQueue.push(
+          streamSynthesizeSentence(sentenceText)
+            .then((buf) => ({ audioBase64: buf.toString("base64"), mimeType: "audio/ogg" }))
+            .catch(async (err) => {
+              // Fall back to the existing one-shot batch synthesis for just
+              // this sentence rather than dropping it or hanging the whole
+              // turn — a sentence spoken via the slower path still beats a
+              // silent gap. See streaming pipeline plan Section 2.3/6.6.
+              console.error("[voice-respond] streamSynthesizeSentence failed, falling back to batch TTS:", err);
+              try {
+                const buf = await synthesizeSpeech(sentenceText);
+                return { audioBase64: buf.toString("base64"), mimeType: "audio/mpeg" };
+              } catch (fallbackErr) {
+                console.error("[voice-respond] Batch TTS fallback also failed:", fallbackErr);
+                return null; // client skips a null chunk rather than the whole turn failing
+              }
+            })
+        );
+      }
 
-    if (result.stopReason !== "tool_use") {
-      const textBlock = result.content.find((b) => b.type === "text");
-      finalText = textBlock && textBlock.type === "text" ? textBlock.text : null;
-      break;
-    }
-
-    const toolUseBlocks = result.content.filter(
-      (b): b is Anthropic.ToolUseBlock => b.type === "tool_use"
-    );
-
-    const toolStart = performance.now();
-    const toolResults: Anthropic.ToolResultBlockParam[] = await Promise.all(
-      toolUseBlocks.map(async (block) => {
-        toolsUsed.push(block.name);
-        const result = await executeTool(block.name, block.input, sessionId);
-        if (result.visual) visual = result.visual;
-        // Choke-point action logging (see lib/action-log-store.ts) — this is
-        // the single call site every tool execution passes through, so
-        // wrapping it here captures the full #65 activity log without
-        // instrumenting each individual tool handler.
-        void recordAction({
-          kind: "tool_call",
-          title: block.name,
-          body: null,
-          toolName: block.name,
-          outcome: "completed",
-          sessionId,
-        }).catch(() => {});
-        if (QUESTION_CATEGORY_TOOLS.has(block.name)) {
-          void recordOccurrence("question_category", block.name, `asked about ${block.name.replace(/_/g, " ")}`, 1, 3).catch(
-            () => {}
-          );
+      async function drainReady() {
+        while (drainIndex < audioQueue.length) {
+          const result = await audioQueue[drainIndex];
+          if (result) {
+            controller.enqueue(sseEvent(encoder, "audio", { index: drainIndex, ...result }));
+          }
+          drainIndex++;
         }
-        return { type: "tool_result" as const, tool_use_id: block.id, content: result.text };
-      })
-    );
-    console.log(
-      `[voice-respond] Tool execution (${toolUseBlocks.map((b) => b.name).join(", ")}) in ${Math.round(performance.now() - toolStart)}ms`
-    );
+      }
 
-    messages.push({ role: "user", content: toolResults });
-  }
+      (async () => {
+        try {
+          for (let i = 0; i < MAX_TOOL_ITERATIONS; i++) {
+            const callStart = performance.now();
+            let sentenceBuffer = "";
+            let iterationContent: Anthropic.ContentBlock[] = [];
+            let iterationStopReason = "end_turn";
+            let iterationError: string | null = null;
 
-  const responseText = finalText ?? "I didn't catch that clearly — mind trying again?";
+            for await (const event of streamClaudeWithTools({
+              systemPrompt,
+              messages,
+              tools: TOOL_DEFINITIONS,
+              maxTokens: 300, // was 150, was 400 originally — 150 turned out tight
+                               // enough to truncate mid-tool-call on some turns
+                               // (stop_reason "max_tokens" instead of "tool_use",
+                               // no completed text block, finalText came back
+                               // null). 300 keeps a real backstop against the model
+                               // ignoring the 60-word/no-markdown rule while giving
+                               // tool-calling turns enough room to actually finish.
+            })) {
+              if (event.type === "text_delta") {
+                sentenceBuffer += event.text;
+                const { complete, remainder } = extractCompleteSentences(sentenceBuffer);
+                for (const sentence of complete) {
+                  enqueueSentence(sentence);
+                  await drainReady();
+                }
+                sentenceBuffer = remainder;
+              } else if (event.type === "done") {
+                iterationContent = event.content;
+                iterationStopReason = event.stopReason;
+              } else if (event.type === "error") {
+                iterationError = event.error;
+              }
+              // tool_use events carry the same blocks already present in
+              // event.content once "done" fires — no separate handling
+              // needed here, matches the shape the old askClaudeWithTools
+              // caller already consumed via result.content.
+            }
 
-  const updatedTurns: VoiceTurn[] = [
-    ...priorTurns,
-    { role: "user", content: text },
-    { role: "assistant", content: responseText },
-  ];
+            if (iterationError) {
+              controller.enqueue(sseEvent(encoder, "error", { error: iterationError }));
+              controller.close();
+              return;
+            }
 
-  // Deferred via Next.js's after(), not a bare unawaited call — this is a
-  // serverless deploy target (see lib/voice-session-store.ts's reasoning on
-  // why session state can't be in-memory), and an un-awaited promise can be
-  // killed the instant the response is sent, which would silently drop the
-  // session write and reintroduce exactly the lost-context bug sessionId
-  // was built to fix. after() keeps the invocation alive long enough to
-  // finish without making the caller wait for it.
-  after(async () => {
-    try {
-      await saveSession(sessionId, updatedTurns);
-    } catch (error) {
-      console.error("[voice-respond] saveSession failed:", error);
-    }
+            console.log(
+              `[voice-respond] Claude call ${i + 1}: stopReason=${iterationStopReason} in ${Math.round(performance.now() - callStart)}ms`
+            );
+
+            // Flush whatever's left in the buffer once this iteration's
+            // stream ends — covers both "ended in tool_use, with leading
+            // acknowledgment prose before the tool call" (spoken live here,
+            // a deliberate behavior change from the old fully-synchronous
+            // version, which discarded pre-tool-call text entirely since it
+            // never had anywhere incremental to send it — matches the
+            // persona prompt's own "Checking now, sir, one moment" example)
+            // and "ended in end_turn, this is the final trailing partial
+            // sentence."
+            if (sentenceBuffer.trim()) {
+              enqueueSentence(sentenceBuffer.trim());
+              await drainReady();
+            }
+
+            messages.push({ role: "assistant", content: iterationContent });
+
+            if (iterationStopReason !== "tool_use") {
+              const textBlock = iterationContent.find((b) => b.type === "text");
+              finalText = textBlock && textBlock.type === "text" ? textBlock.text : null;
+              break;
+            }
+
+            const toolUseBlocks = iterationContent.filter(
+              (b): b is Anthropic.ToolUseBlock => b.type === "tool_use"
+            );
+
+            const toolStart = performance.now();
+            const toolResults: Anthropic.ToolResultBlockParam[] = await Promise.all(
+              toolUseBlocks.map(async (block) => {
+                toolsUsed.push(block.name);
+                const result = await executeTool(block.name, block.input, sessionId);
+                if (result.visual) visual = result.visual;
+                // Choke-point action logging (see lib/action-log-store.ts) — this is
+                // the single call site every tool execution passes through, so
+                // wrapping it here captures the full #65 activity log without
+                // instrumenting each individual tool handler.
+                void recordAction({
+                  kind: "tool_call",
+                  title: block.name,
+                  body: null,
+                  toolName: block.name,
+                  outcome: "completed",
+                  sessionId,
+                }).catch(() => {});
+                if (QUESTION_CATEGORY_TOOLS.has(block.name)) {
+                  void recordOccurrence("question_category", block.name, `asked about ${block.name.replace(/_/g, " ")}`, 1, 3).catch(
+                    () => {}
+                  );
+                }
+                return { type: "tool_result" as const, tool_use_id: block.id, content: result.text };
+              })
+            );
+            console.log(
+              `[voice-respond] Tool execution (${toolUseBlocks.map((b) => b.name).join(", ")}) in ${Math.round(performance.now() - toolStart)}ms`
+            );
+
+            messages.push({ role: "user", content: toolResults });
+          }
+
+          const responseText = finalText ?? "I didn't catch that clearly — mind trying again?";
+
+          const updatedTurns: VoiceTurn[] = [
+            ...priorTurns,
+            { role: "user", content: text },
+            { role: "assistant", content: responseText },
+          ];
+
+          // Deferred via Next.js's after(), not a bare unawaited call — this
+          // is a serverless deploy target (see lib/voice-session-store.ts's
+          // reasoning on why session state can't be in-memory), and an
+          // un-awaited promise can be killed the instant the response
+          // stream closes, which would silently drop the session write and
+          // reintroduce exactly the lost-context bug sessionId was built to
+          // fix. after() keeps the invocation alive long enough to finish
+          // without making the caller wait for it.
+          after(async () => {
+            try {
+              await saveSession(sessionId, updatedTurns);
+            } catch (error) {
+              console.error("[voice-respond] saveSession failed:", error);
+            }
+          });
+
+          // Only marked delivered once a real response actually went out
+          // (finalText set, not the fallback "didn't catch that" text) — if
+          // the turn failed partway through, the opener gets another chance
+          // to open the next session rather than being silently used up.
+          if (opener && finalText !== null) {
+            after(async () => {
+              try {
+                await opener.onDelivered();
+                if (opener.connection) {
+                  await savePendingEngagementCheck(sessionId, [opener.connection]);
+                }
+              } catch (error) {
+                console.error("[voice-respond] opener.onDelivered failed:", error);
+              }
+            });
+          }
+
+          console.log(`[voice-respond] Total request time: ${Math.round(performance.now() - requestStart)}ms`);
+
+          controller.enqueue(sseEvent(encoder, "done", { responseText, toolsUsed, visual }));
+        } catch (error) {
+          console.error("[voice-respond] Streaming turn failed:", error);
+          controller.enqueue(
+            sseEvent(encoder, "error", { error: error instanceof Error ? error.message : "Unknown error" })
+          );
+        } finally {
+          controller.close();
+        }
+      })();
+    },
   });
 
-  // Only marked delivered once a real response actually went out (finalText
-  // set, not the fallback "didn't catch that" text) — if the turn failed
-  // partway through, the opener gets another chance to open the next
-  // session rather than being silently used up.
-  if (opener && finalText !== null) {
-    after(async () => {
-      try {
-        await opener.onDelivered();
-        if (opener.connection) {
-          await savePendingEngagementCheck(sessionId, [opener.connection]);
-        }
-      } catch (error) {
-        console.error("[voice-respond] opener.onDelivered failed:", error);
-      }
-    });
-  }
-
-  console.log(`[voice-respond] Total request time: ${Math.round(performance.now() - requestStart)}ms`);
-
-  return NextResponse.json({ responseText, toolsUsed, visual });
+  return new Response(stream, {
+    headers: {
+      "Content-Type": "text/event-stream",
+      "Cache-Control": "no-cache, no-transform",
+      Connection: "keep-alive",
+    },
+  });
 }
