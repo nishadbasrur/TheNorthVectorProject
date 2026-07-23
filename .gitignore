@@ -21,6 +21,10 @@ data/memories/
 # Cloud Functions build output (bundled by esbuild, not source)
 functions/lib/
 
+# stt-stream-service build output (bundled by esbuild, not source — see
+# that directory's package.json build script)
+stt-stream-service/server.js
+
 # Cloud Functions plain (non-secret) env vars, same treatment as .env.local
 functions/.env
 

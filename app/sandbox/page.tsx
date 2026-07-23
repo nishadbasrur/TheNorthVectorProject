@@ -161,37 +161,27 @@ function createSilentAudioUrl(): string {
   return URL.createObjectURL(blob);
 }
 
-// Encodes captured Float32 PCM (from ScriptProcessorNode, range [-1, 1])
-// into a 16-bit LINEAR16 mono WAV blob — see lib/google-stt.ts for why this
-// exact format was chosen over browser-native MediaRecorder output
-// (inconsistent codec support across browsers, most notably Safari).
-function encodeWav(samples: Float32Array, sampleRate: number): Blob {
-  const dataLength = samples.length * 2; // 16-bit = 2 bytes/sample
-  const buffer = new ArrayBuffer(44 + dataLength);
-  const view = new DataView(buffer);
-
-  writeWavHeader(view, dataLength, sampleRate, 1, 16);
-
-  let offset = 44;
+// Same clamp/scale math the old batch WAV-encoding path used (16-bit
+// LINEAR16, see lib/google-stt.ts for why this format over browser-native
+// MediaRecorder — inconsistent codec support across browsers, most notably
+// Safari). No WAV header needed here — streaming sends raw PCM chunks
+// directly, the service declares sample rate once up front instead (see
+// stt-stream-service/src/server.ts's "config" message handling).
+function float32ToInt16(samples: Float32Array): Int16Array<ArrayBuffer> {
+  const out = new Int16Array(new ArrayBuffer(samples.length * 2));
   for (let i = 0; i < samples.length; i++) {
     const clamped = Math.max(-1, Math.min(1, samples[i]));
-    view.setInt16(offset, clamped < 0 ? clamped * 0x8000 : clamped * 0x7fff, true);
-    offset += 2;
+    out[i] = clamped < 0 ? clamped * 0x8000 : clamped * 0x7fff;
   }
-
-  return new Blob([buffer], { type: "audio/wav" });
+  return out;
 }
 
-function mergeSamples(chunks: Float32Array[]): Float32Array {
-  const total = chunks.reduce((sum, chunk) => sum + chunk.length, 0);
-  const merged = new Float32Array(total);
-  let offset = 0;
-  for (const chunk of chunks) {
-    merged.set(chunk, offset);
-    offset += chunk.length;
-  }
-  return merged;
-}
+// wss:// endpoint for stt-stream-service (see that directory) — a fixed
+// constant rather than an env var for now, since it's public-safe
+// configuration (same category as the NEXT_PUBLIC_FIREBASE_* values already
+// hardcoded in apphosting.yaml) and moving it there would need a redeploy
+// of this app just to wire up a string.
+const STT_STREAM_URL = "wss://stt-stream-service-1011959080844.us-east4.run.app/stt-stream";
 
 function rms(data: Float32Array): number {
   let sumSquares = 0;
@@ -387,8 +377,36 @@ export default function SandboxPage() {
   const mediaStreamRef = useRef<MediaStream | null>(null);
   const audioContextRef = useRef<AudioContext | null>(null);
   const processorRef = useRef<ScriptProcessorNode | null>(null);
-  const recordedChunksRef = useRef<Float32Array[]>([]);
   const hasSpeechRef = useRef(false);
+
+  // Streaming STT — see stt-stream-service/ (a standalone Cloud Run
+  // WebSocket service, not part of this Next.js app's own deploy; Firebase
+  // Functions v2's onRequest can't expose a raw WebSocket 'upgrade' hook,
+  // and App Hosting only serves the normal Next.js request/response server,
+  // so persistent bidirectional audio streaming needed its own deploy
+  // target). Replaces the old record-the-whole-utterance-then-POST-it flow:
+  // raw PCM chunks go out continuously as they're captured, Google's
+  // interim/final transcripts come back continuously too, and the mic's
+  // existing client-side silence detection just tells the socket when to
+  // stop rather than gating when a single batch upload begins.
+  const sttSocketRef = useRef<WebSocket | null>(null);
+  // Chunks captured before the socket finishes its handshake would
+  // otherwise be silently dropped — audioprocess starts firing the instant
+  // the processor node connects, which can easily beat a fresh WebSocket's
+  // open event by a beat. Queued here and flushed once "config" has gone out.
+  const sttPendingChunksRef = useRef<Int16Array<ArrayBuffer>[]>([]);
+  const sttConfiguredRef = useRef(false);
+  // Accumulates "final" transcript segments for the turn currently in
+  // progress — Google's own endpointing can emit more than one is_final
+  // result per utterance (long sentences, natural pauses), same as the old
+  // batch recognize() call's multiple `results[]` entries, which were
+  // joined the same way (see lib/google-stt.ts's transcribeAudio).
+  const sttFinalTranscriptRef = useRef<string>("");
+  // Resolved by the "closed" WS event once Google has finished flushing
+  // every final result after a stop request — the bridge between the
+  // message-handling closure set up once in startListening() and whichever
+  // timer/handler later decides it's time to stop and get the result.
+  const sttClosedResolveRef = useRef<((finalText: string) => void) | null>(null);
   // Whisper support — true for the whole active-mode session once entered
   // via the whisper wake word, same lifecycle as `mode` itself rather than
   // resetting per-turn. Drives both the RMS threshold used in startListening
@@ -542,6 +560,15 @@ export default function SandboxPage() {
   const goDormant = useCallback(() => {
     clearInactivityTimer();
     teardownRecording();
+    // Explicit close, not left to teardownRecording — that function only
+    // tears down the mic/AudioContext, deliberately not the STT socket,
+    // since the normal stop-and-transcribe path (finishListeningAndTranscribe)
+    // needs the socket to survive its own teardownRecording() call long
+    // enough to receive trailing final results. goDormant means the whole
+    // active session is ending, though, so any still-open socket here
+    // (e.g. the 75s inactivity timeout firing mid-listen) is a real one to
+    // clean up rather than leave connected to Google for no reason.
+    sttSocketRef.current?.close();
     stopBargeInMonitor();
     audioRef.current?.pause();
     setMode("dormant");
@@ -765,83 +792,80 @@ export default function SandboxPage() {
     [speak, askNorthAndSpeakStream, resetInactivityTimer, updateStatus]
   );
 
-  const transcribeAndRoute = useCallback(
-    async (sampleRate: number) => {
-      updateStatus("transcribing");
+  // Sends the "stop" control message over the still-open STT socket and
+  // waits for the "closed" event, which fires only once Google has finished
+  // flushing every trailing final result — see sttClosedResolveRef and the
+  // "closed" handler set up in startListening's ws.onmessage. Falls back to
+  // whatever's accumulated so far (possibly empty) if "closed" never
+  // arrives — mirrors the old batch flow's 45s abort timeout, just shorter
+  // since this is only waiting on the tail of an already-streaming
+  // connection, not a whole fresh upload.
+  function requestFinalTranscript(): Promise<string> {
+    return new Promise((resolve) => {
+      const socket = sttSocketRef.current;
+      if (!socket || socket.readyState !== WebSocket.OPEN) {
+        resolve(sttFinalTranscriptRef.current.trim());
+        return;
+      }
 
-      const samples = mergeSamples(recordedChunksRef.current);
-      recordedChunksRef.current = [];
-      const wavBlob = encodeWav(samples, sampleRate);
+      const timeoutId = setTimeout(() => {
+        sttClosedResolveRef.current = null;
+        resolve(sttFinalTranscriptRef.current.trim());
+      }, 15000);
 
-      // 45s, not 15s — recordings can run up to the 60s hard watchdog below,
-      // and Google STT's synchronous recognize() call takes proportionally
-      // longer to respond the longer the audio is. 15s was only ever enough
-      // margin for short utterances; anyone who actually talked for a while
-      // was hitting this timeout on essentially every request.
-      const controller = new AbortController();
-      const timeoutId = setTimeout(() => controller.abort(), 45000);
+      sttClosedResolveRef.current = (finalText) => {
+        clearTimeout(timeoutId);
+        resolve(finalText);
+      };
 
-      try {
-        const idToken = await auth.currentUser?.getIdToken();
+      socket.send(JSON.stringify({ type: "stop" }));
+    });
+  }
 
-        const response = await fetch("/api/v1/voice/transcribe", {
-          method: "POST",
-          headers: {
-            "Content-Type": "audio/wav",
-            Authorization: `Bearer ${idToken}`,
-          },
-          body: wavBlob,
-          signal: controller.signal,
-        });
+  // Replaces the old transcribeAndRoute(sampleRate) — audio was already
+  // streamed continuously as it was captured (see startListening's
+  // onaudioprocess), so there's no clip left to upload here, just the tail
+  // wait for Google's remaining final results plus the same
+  // sleep-phrase/handleTranscript routing as before.
+  const finishListeningAndTranscribe = useCallback(async () => {
+    updateStatus("transcribing");
 
-        if (!response.ok) {
-          throw new Error("Transcription request failed.");
-        }
+    try {
+      const text = (await requestFinalTranscript()).trim();
 
-        const data = await response.json();
-        const text = typeof data.transcript === "string" ? data.transcript.trim() : "";
-
-        if (!text) {
-          setErrorMessage("Didn't catch anything — try again.");
-          updateStatus("idle");
-          if (modeRef.current === "active") startListeningRef.current();
-          return;
-        }
-
-        if (modeRef.current === "active" && isSleepPhrase(text)) {
-          setTranscript(text);
-          setResponseText(SLEEP_ACKNOWLEDGMENT);
-          setToolsUsed([]);
-
-          // Same whisper-mode routing as handleTranscript — this hardcoded
-          // acknowledgment shouldn't play out loud on a bare speaker just
-          // because it's a fixed phrase rather than a normal Claude response.
-          if (isWhisperModeRef.current && !(await isPrivateAudioOutputConnected())) {
-            setShowTranscript(true);
-            await new Promise((resolve) => setTimeout(resolve, WHISPER_TEXT_READ_DELAY_MS));
-          } else {
-            await speak(SLEEP_ACKNOWLEDGMENT, isWhisperModeRef.current ? { quiet: true } : undefined);
-          }
-
-          goDormant();
-          return;
-        }
-
-        await handleTranscript(text);
-      } catch (error) {
-        if (error instanceof DOMException && error.name === "AbortError") {
-          setErrorMessage("Transcription took too long — try again.");
-        } else {
-          setErrorMessage(error instanceof Error ? error.message : "Couldn't transcribe — try again.");
-        }
+      if (!text) {
+        setErrorMessage("Didn't catch anything — try again.");
         updateStatus("idle");
         if (modeRef.current === "active") startListeningRef.current();
-      } finally {
-        clearTimeout(timeoutId);
+        return;
       }
-    },
-    [handleTranscript, speak, goDormant, updateStatus]
-  );
+
+      if (modeRef.current === "active" && isSleepPhrase(text)) {
+        setTranscript(text);
+        setResponseText(SLEEP_ACKNOWLEDGMENT);
+        setToolsUsed([]);
+
+        // Same whisper-mode routing as handleTranscript — this hardcoded
+        // acknowledgment shouldn't play out loud on a bare speaker just
+        // because it's a fixed phrase rather than a normal Claude response.
+        if (isWhisperModeRef.current && !(await isPrivateAudioOutputConnected())) {
+          setShowTranscript(true);
+          await new Promise((resolve) => setTimeout(resolve, WHISPER_TEXT_READ_DELAY_MS));
+        } else {
+          await speak(SLEEP_ACKNOWLEDGMENT, isWhisperModeRef.current ? { quiet: true } : undefined);
+        }
+
+        goDormant();
+        return;
+      }
+
+      await handleTranscript(text);
+    } catch (error) {
+      setErrorMessage(error instanceof Error ? error.message : "Couldn't transcribe — try again.");
+      updateStatus("idle");
+      if (modeRef.current === "active") startListeningRef.current();
+    }
+  }, [handleTranscript, speak, goDormant, updateStatus]);
 
   // The core recording loop. Auto-stops on ~1.4s of silence after real
   // speech was detected (replacing the old manual tap-to-stop), gives up
@@ -889,11 +913,81 @@ export default function SandboxPage() {
     const silentGain = audioContext.createGain();
     silentGain.gain.value = 0;
 
-    recordedChunksRef.current = [];
+    // Streaming STT socket — opened fresh per listening session, same
+    // lifecycle as the mic stream/AudioContext it's paired with. Config
+    // (sample rate) goes out the instant the connection opens; audio chunks
+    // captured before that handshake completes are queued rather than
+    // dropped (see sttPendingChunksRef).
+    sttFinalTranscriptRef.current = "";
+    sttConfiguredRef.current = false;
+    sttPendingChunksRef.current = [];
+    sttClosedResolveRef.current = null;
+
+    const idToken = await auth.currentUser?.getIdToken();
+    const socket = new WebSocket(`${STT_STREAM_URL}?token=${encodeURIComponent(idToken ?? "")}`);
+    sttSocketRef.current = socket;
+
+    socket.onopen = () => {
+      socket.send(JSON.stringify({ type: "config", sampleRateHertz: audioContext.sampleRate }));
+      sttConfiguredRef.current = true;
+      for (const chunk of sttPendingChunksRef.current) {
+        socket.send(chunk.buffer);
+      }
+      sttPendingChunksRef.current = [];
+    };
+
+    socket.onmessage = (event) => {
+      let msg: { event?: string; transcript?: string; error?: string };
+      try {
+        msg = JSON.parse(event.data);
+      } catch {
+        return;
+      }
+
+      if (msg.event === "interim" && typeof msg.transcript === "string") {
+        // Live partial text — the actual point of streaming this at all.
+        // Not persisted anywhere; "final" segments below are what
+        // eventually get routed to handleTranscript.
+        setTranscript(msg.transcript);
+      } else if (msg.event === "final" && typeof msg.transcript === "string") {
+        // Google's endpointing can emit more than one is_final result per
+        // utterance (long sentences, natural pauses) — joined with spaces,
+        // same as the old batch recognize() call's multiple results[].
+        sttFinalTranscriptRef.current = `${sttFinalTranscriptRef.current} ${msg.transcript}`.trim();
+        setTranscript(sttFinalTranscriptRef.current);
+      } else if (msg.event === "closed") {
+        sttClosedResolveRef.current?.(sttFinalTranscriptRef.current.trim());
+        sttClosedResolveRef.current = null;
+      } else if (msg.event === "error") {
+        console.warn("[Sandbox] STT stream error:", msg.error);
+      }
+    };
+
+    socket.onerror = (event) => {
+      console.warn("[Sandbox] STT socket error:", event);
+    };
+
+    socket.onclose = () => {
+      sttSocketRef.current = null;
+      // If a stop was already requested but the socket closed before
+      // "closed" arrived (dropped connection, service hiccup), resolve with
+      // whatever's accumulated so far rather than hang until the 15s
+      // fallback timeout in requestFinalTranscript.
+      if (sttClosedResolveRef.current) {
+        const resolve = sttClosedResolveRef.current;
+        sttClosedResolveRef.current = null;
+        resolve(sttFinalTranscriptRef.current.trim());
+      }
+    };
 
     processor.onaudioprocess = (event) => {
       const data = event.inputBuffer.getChannelData(0);
-      recordedChunksRef.current.push(new Float32Array(data));
+      const pcm16 = float32ToInt16(data);
+      if (sttConfiguredRef.current && socket.readyState === WebSocket.OPEN) {
+        socket.send(pcm16.buffer);
+      } else {
+        sttPendingChunksRef.current.push(pcm16);
+      }
 
       const speechThreshold = isWhisperModeRef.current ? WHISPER_SPEECH_RMS_THRESHOLD : SPEECH_RMS_THRESHOLD;
       if (rms(data) > speechThreshold) {
@@ -904,9 +998,8 @@ export default function SandboxPage() {
         // Real speech — push back the silence deadline.
         clearSilenceTimer();
         silenceTimerRef.current = setTimeout(() => {
-          const sr = audioContextRef.current?.sampleRate ?? 16000;
           teardownRecording();
-          transcribeAndRoute(sr);
+          finishListeningAndTranscribe();
         }, SILENCE_DURATION_MS);
       }
     };
@@ -924,6 +1017,7 @@ export default function SandboxPage() {
     noSpeechTimerRef.current = setTimeout(() => {
       if (modeRef.current !== "active") return;
       teardownRecording();
+      sttSocketRef.current?.close();
       updateStatus("idle");
       startListeningRef.current();
     }, NO_SPEECH_GIVEUP_MS);
@@ -932,14 +1026,13 @@ export default function SandboxPage() {
     recordingWatchdogRef.current = setTimeout(() => {
       setStatus((current) => {
         if (current !== "listening") return current;
-        const sr = audioContextRef.current?.sampleRate ?? 16000;
         teardownRecording();
-        transcribeAndRoute(sr);
+        finishListeningAndTranscribe();
         statusRef.current = "transcribing";
         return "transcribing";
       });
     }, 60000);
-  }, [teardownRecording, clearRecordingWatchdog, clearSilenceTimer, clearNoSpeechTimer, transcribeAndRoute, goDormant, updateStatus]);
+  }, [teardownRecording, clearRecordingWatchdog, clearSilenceTimer, clearNoSpeechTimer, finishListeningAndTranscribe, goDormant, updateStatus]);
 
   startListeningRef.current = () => {
     startListening();
@@ -949,18 +1042,18 @@ export default function SandboxPage() {
   // usually fire first, but this stays available in case detection is slow
   // or picks up ambient noise oddly.
   const stopListeningManual = useCallback(() => {
-    const sampleRate = audioContextRef.current?.sampleRate ?? 16000;
     teardownRecording();
 
-    if (recordedChunksRef.current.length === 0 || !hasSpeechRef.current) {
+    if (!hasSpeechRef.current) {
+      sttSocketRef.current?.close();
       setErrorMessage("Didn't catch anything — try again.");
       updateStatus("idle");
       if (modeRef.current === "active") startListeningRef.current();
       return;
     }
 
-    transcribeAndRoute(sampleRate);
-  }, [teardownRecording, transcribeAndRoute, updateStatus]);
+    finishListeningAndTranscribe();
+  }, [teardownRecording, finishListeningAndTranscribe, updateStatus]);
 
   // First-ever tap: just confirms mic permission (stops the probe stream
   // immediately, doesn't keep it open) so the wake-word engine's own
