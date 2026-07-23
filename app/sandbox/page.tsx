@@ -927,7 +927,21 @@ export default function SandboxPage() {
     const socket = new WebSocket(`${STT_STREAM_URL}?token=${encodeURIComponent(idToken ?? "")}`);
     sttSocketRef.current = socket;
 
+    // Every handler below guards on sttSocketRef.current === socket before
+    // touching any shared state. Without this, a socket explicitly closed
+    // by the no-speech-giveup timer (which closes the old socket then
+    // immediately starts a new listening session — .close() doesn't
+    // complete synchronously, the real onclose fires a moment later) could
+    // have its belated onclose/onmessage events fire AFTER a new socket for
+    // the NEXT turn already took over sttSocketRef, resolving or
+    // overwriting the new turn's in-progress transcript with the old
+    // (closed) turn's stale data. That race — confirmed by reading through
+    // this exact sequence, not just theorized — is what "goes right back to
+    // listening right after finishing a real sentence" was: not a failure
+    // to hear anything, a stale event from the previous cycle stomping on
+    // the current one's pending promise.
     socket.onopen = () => {
+      if (sttSocketRef.current !== socket) return;
       socket.send(JSON.stringify({ type: "config", sampleRateHertz: audioContext.sampleRate }));
       sttConfiguredRef.current = true;
       for (const chunk of sttPendingChunksRef.current) {
@@ -937,6 +951,8 @@ export default function SandboxPage() {
     };
 
     socket.onmessage = (event) => {
+      if (sttSocketRef.current !== socket) return;
+
       let msg: { event?: string; transcript?: string; error?: string };
       try {
         msg = JSON.parse(event.data);
@@ -964,10 +980,12 @@ export default function SandboxPage() {
     };
 
     socket.onerror = (event) => {
+      if (sttSocketRef.current !== socket) return;
       console.warn("[Sandbox] STT socket error:", event);
     };
 
     socket.onclose = () => {
+      if (sttSocketRef.current !== socket) return;
       sttSocketRef.current = null;
       // If a stop was already requested but the socket closed before
       // "closed" arrived (dropped connection, service hiccup), resolve with

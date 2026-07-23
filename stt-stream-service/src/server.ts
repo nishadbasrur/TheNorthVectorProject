@@ -122,6 +122,7 @@ httpServer.on("upgrade", (request, socket: Socket, head) => {
 wss.on("connection", (ws: WebSocket) => {
   let googleStream: ReturnType<typeof speechClient._streamingRecognize> | null = null;
   let configured = false;
+  let stopReceivedAt: number | null = null;
 
   const recognizerName = speechClient.recognizerPath(sttServiceAccount.project_id, LOCATION, "_");
 
@@ -132,6 +133,9 @@ wss.on("connection", (ws: WebSocket) => {
       for (const result of response.results ?? []) {
         const transcript = result.alternatives?.[0]?.transcript ?? "";
         if (!transcript) continue;
+        if (result.isFinal && stopReceivedAt !== null) {
+          console.log(`[stt-stream] final result ${Date.now() - stopReceivedAt}ms after stop: "${transcript}"`);
+        }
         send(ws, { event: result.isFinal ? "final" : "interim", transcript });
       }
     });
@@ -143,6 +147,9 @@ wss.on("connection", (ws: WebSocket) => {
     });
 
     googleStream.on("end", () => {
+      if (stopReceivedAt !== null) {
+        console.log(`[stt-stream] stream ended ${Date.now() - stopReceivedAt}ms after stop`);
+      }
       send(ws, { event: "closed" });
       ws.close();
     });
@@ -190,6 +197,8 @@ wss.on("connection", (ws: WebSocket) => {
       if (message.type === "config") {
         configureStream(message.sampleRateHertz);
       } else if (message.type === "stop") {
+        stopReceivedAt = Date.now();
+        console.log("[stt-stream] stop received, ending Google stream");
         googleStream?.end();
       }
       return;
