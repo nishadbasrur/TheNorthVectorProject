@@ -328,21 +328,10 @@ export default function SandboxPage() {
   const recordedChunksRef = useRef<Float32Array[]>([]);
   const hasSpeechRef = useRef(false);
   // Whisper support — true for the whole active-mode session once entered
-  // via the whisper wake word (or, temporarily, the dev-test hook below),
-  // same lifecycle as `mode` itself rather than resetting per-turn. Drives
-  // both the RMS threshold used in startListening and the response-delivery
-  // branch in handleTranscript.
+  // via the whisper wake word, same lifecycle as `mode` itself rather than
+  // resetting per-turn. Drives both the RMS threshold used in startListening
+  // and the response-delivery branch in handleTranscript.
   const isWhisperModeRef = useRef(false);
-  // TEMPORARY, Phase A only — dev-test entry point for whisper mode ahead of
-  // Phase B's real whisper wake word (WAKE_WORD_KEYWORD_WHISPER isn't wired
-  // into the active keywords list yet, see use-wake-word.ts). Set via
-  // ?whisperTest=1 in the URL; forces the manual tap-to-start bypass in
-  // handleMicTap into whisper mode instead of normal mode. Remove this whole
-  // block once Phase B ships and the real wake word can be tested directly.
-  const isWhisperTestModeRef = useRef(false);
-  useEffect(() => {
-    isWhisperTestModeRef.current = new URLSearchParams(window.location.search).get("whisperTest") === "1";
-  }, []);
   // Reused across the page session (not recreated per response) — once this
   // exact element has played from within a user gesture, Safari allows later
   // programmatic .play() calls on it even outside a gesture call stack.
@@ -856,11 +845,10 @@ export default function SandboxPage() {
       if (!micArmed) {
         armMic();
       } else {
-        // Manual bypass — skip the wake word, go straight to active.
+        // Manual bypass — skip the wake word, go straight to active (normal mode).
         setMode("active");
         setErrorMessage(null);
-        // TEMPORARY, Phase A dev-test hook — see isWhisperTestModeRef above.
-        isWhisperModeRef.current = isWhisperTestModeRef.current;
+        isWhisperModeRef.current = false;
         resetInactivityTimer();
         startListeningRef.current();
       }
