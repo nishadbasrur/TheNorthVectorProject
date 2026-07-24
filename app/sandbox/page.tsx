@@ -711,7 +711,20 @@ export default function SandboxPage() {
 
             URL.revokeObjectURL(url);
           } else if (event === "done") {
+            // Set as soon as it's known, not after this whole function
+            // returns — "done" typically arrives partway through the
+            // remaining audio queue (there's usually a sentence or two
+            // still left to play), and the caller's own setResponseText
+            // call happens right before the auto-relisten loop clears it
+            // again for the next turn. Those two writes landing back to
+            // back was invisible in practice (same React-batching shape as
+            // a prior whisper-mode bug in this file) — setting it here
+            // instead gives it real, visible time on screen while the
+            // remaining sentences play.
             finalMeta = parseVoiceRespondDoneEvent(data);
+            setResponseText(finalMeta.responseText);
+            setToolsUsed(finalMeta.toolsUsed);
+            if (finalMeta.visual) setVisual(finalMeta.visual);
           } else if (event === "error") {
             throw new Error(typeof data.error === "string" ? data.error : "Voice stream error.");
           }
@@ -766,16 +779,11 @@ export default function SandboxPage() {
           }
         } else {
           // Normal mode — progressive per-sentence playback, the actual
-          // time-to-first-word fix. responseText/toolsUsed/visual only
-          // become known once the stream's final "done" event arrives
-          // (effectively when the last sentence finishes generating), so
-          // the debug readout now updates after speech starts rather than
-          // before it — an expected trade-off of speaking before the whole
-          // response is known, not a bug.
-          const result = await askNorthAndSpeakStream(text, sessionIdRef.current);
-          setResponseText(result.responseText);
-          setToolsUsed(result.toolsUsed);
-          if (result.visual) setVisual(result.visual);
+          // time-to-first-word fix. askNorthAndSpeakStream sets
+          // responseText/toolsUsed/visual itself the moment its "done"
+          // event arrives (partway through the remaining audio queue, not
+          // after this call returns) — see that function for why.
+          await askNorthAndSpeakStream(text, sessionIdRef.current);
         }
       } catch (error) {
         setErrorMessage(error instanceof Error ? error.message : "Something went wrong.");
@@ -1012,6 +1020,16 @@ export default function SandboxPage() {
         if (!hasSpeechRef.current) {
           hasSpeechRef.current = true;
           clearNoSpeechTimer();
+          // Push back the 75s dormant deadline the moment real speech
+          // starts, not just once a full utterance is transcribed
+          // (handleTranscript's own resetInactivityTimer call). That
+          // deadline runs continuously from the END of the previous turn —
+          // through North's own response-speaking time, think-time, and any
+          // no-speech-giveup retries — so without this, it's possible to
+          // still be mid-sentence when it expires and get bounced all the
+          // way back to dormant (confirmed live: "cut me off and went back
+          // to say hey north").
+          resetInactivityTimer();
         }
         // Real speech — push back the silence deadline.
         clearSilenceTimer();
@@ -1050,7 +1068,16 @@ export default function SandboxPage() {
         return "transcribing";
       });
     }, 60000);
-  }, [teardownRecording, clearRecordingWatchdog, clearSilenceTimer, clearNoSpeechTimer, finishListeningAndTranscribe, goDormant, updateStatus]);
+  }, [
+    teardownRecording,
+    clearRecordingWatchdog,
+    clearSilenceTimer,
+    clearNoSpeechTimer,
+    resetInactivityTimer,
+    finishListeningAndTranscribe,
+    goDormant,
+    updateStatus,
+  ]);
 
   startListeningRef.current = () => {
     startListening();
