@@ -26,6 +26,7 @@ import { logToolError, getRecentToolErrors } from "./tool-error-log";
 import { logTechnicalError } from "./error-log-store";
 import { askClaudeWithWebSearch } from "./anthropic-client";
 import { getRecentTextMessages, searchTextMessages } from "./text-message-store";
+import { requiresConfirmation } from "./tool-tiers";
 
 // Single source of truth for what North can do via voice — read directly by
 // Claude as tool schemas, not maintained separately as prose (that
@@ -416,6 +417,38 @@ export const TOOL_DEFINITIONS: Anthropic.Tool[] = [
         query: { type: "string", description: "What to look up or research, in plain language." },
       },
       required: ["query"],
+    },
+  },
+  {
+    name: "run_agent_task",
+    description:
+      "Spin up an autonomous coding agent (Claude Agent SDK) to carry out a real software task — " +
+      "write code, fix a bug, open a PR — against a real git repo. This is a MUCH bigger action than " +
+      "any other tool you have: it can read, write, and run arbitrary commands against a real " +
+      "working tree and push real commits. Because of that, it requires the user's explicit, spoken " +
+      "confirmation before it actually runs. The FIRST time you'd call this for a given request, call " +
+      "it with confirmed left unset (or false) — this only describes the plan back and does not " +
+      "start anything. Read that description to the user, and only call this again with " +
+      "confirmed: true after they clearly say yes out loud in their next reply. Never set " +
+      "confirmed: true on the first call.",
+    input_schema: {
+      type: "object",
+      properties: {
+        task: {
+          type: "string",
+          description: "The task for the agent to carry out, in clear, complete natural language.",
+        },
+        targetRepo: {
+          type: "string",
+          description: "The GitHub repo to run against, as \"owner/repo\". Omit if no repo applies.",
+        },
+        confirmed: {
+          type: "boolean",
+          description:
+            "Only true once the user has explicitly confirmed out loud, in a reply after hearing the plan. Defaults to false.",
+        },
+      },
+      required: ["task"],
     },
   },
 ];
@@ -990,6 +1023,112 @@ async function handleResearch(input: { query: string }): Promise<string> {
   }
 }
 
+// Cloud Run's standard service-to-service auth: ask the GCP metadata server
+// (only reachable from inside a GCP compute environment — App Hosting runs
+// on Cloud Run under the hood) for a Google-signed identity token scoped to
+// the target service's URL as its audience. agent-runner-service is
+// deployed without --allow-unauthenticated, so it only accepts requests
+// bearing a token from a principal (here, App Hosting's own runtime
+// service account) that's been granted roles/run.invoker on it.
+async function fetchGoogleIdToken(audience: string): Promise<string> {
+  const response = await fetch(
+    `http://metadata.google.internal/computeMetadata/v1/instance/service-accounts/default/identity?audience=${encodeURIComponent(audience)}`,
+    { headers: { "Metadata-Flavor": "Google" } }
+  );
+  if (!response.ok) {
+    throw new Error(`Failed to fetch Google ID token: ${response.status}`);
+  }
+  return response.text();
+}
+
+// Blocks for the whole run (agent-runner-service/src/server.ts streams SSE
+// over a single request/response) rather than firing-and-forgetting — there
+// is no live-activity surface for a "check back later" reply to point to
+// yet (that's a separate, not-yet-built piece), so the honest contract for
+// now is: this tool call doesn't return until the agent run is actually
+// done, however long that takes.
+async function handleRunAgentTask(input: { task: string; targetRepo?: string; confirmed?: boolean }): Promise<string> {
+  if (!requiresConfirmation("run_agent_task") || input.confirmed !== true) {
+    const target = input.targetRepo ? ` against ${input.targetRepo}` : "";
+    return (
+      `Here's the plan before I start: run an autonomous coding agent${target} to do the following — ` +
+      `"${input.task}". This will read, write, and run commands against a real working tree and can ` +
+      `open a real PR. Say the word to confirm and I'll actually start it.`
+    );
+  }
+
+  const serviceUrl = process.env.AGENT_RUNNER_SERVICE_URL;
+  const sharedSecret = process.env.AGENT_RUNNER_SHARED_SECRET;
+  if (!serviceUrl || !sharedSecret) {
+    reportToolError("run_agent_task", new Error("AGENT_RUNNER_SERVICE_URL/AGENT_RUNNER_SHARED_SECRET not set."), input);
+    return "The agent runner isn't configured yet — tell Nishad to finish setting it up.";
+  }
+
+  try {
+    const idToken = await fetchGoogleIdToken(serviceUrl);
+
+    const response = await fetch(`${serviceUrl}/run-agent-task`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        // Layer 1: Cloud Run's own IAM (roles/run.invoker), checked by the
+        // platform before this request ever reaches agent-runner-service's
+        // own code — the service is deployed without --allow-unauthenticated.
+        Authorization: `Bearer ${idToken}`,
+        // Layer 2: app-level shared secret, in its own header so it doesn't
+        // collide with the platform's own use of Authorization above.
+        "X-Agent-Runner-Secret": sharedSecret,
+      },
+      body: JSON.stringify({ task: input.task, targetRepo: input.targetRepo }),
+    });
+
+    if (!response.ok || !response.body) {
+      reportToolError("run_agent_task", new Error(`agent-runner-service returned ${response.status}`), input);
+      return "Couldn't reach the agent runner just now — tell Nishad to check on it.";
+    }
+
+    const reader = response.body.getReader();
+    const decoder = new TextDecoder();
+    let buffer = "";
+    let runId: string | undefined;
+
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      buffer += decoder.decode(value, { stream: true });
+
+      let boundary: number;
+      while ((boundary = buffer.indexOf("\n\n")) !== -1) {
+        const frame = buffer.slice(0, boundary);
+        buffer = buffer.slice(boundary + 2);
+
+        const eventLine = frame.split("\n").find((line) => line.startsWith("event: "));
+        const dataLine = frame.split("\n").find((line) => line.startsWith("data: "));
+        if (!eventLine || !dataLine) continue;
+
+        const event = eventLine.slice("event: ".length);
+        const data = JSON.parse(dataLine.slice("data: ".length));
+
+        if (event === "run") {
+          runId = data.runId;
+        } else if (event === "done") {
+          return data.status === "completed"
+            ? `Agent run ${runId} finished: ${data.result ?? "done, no summary returned."}`
+            : `Agent run ${runId} failed: ${data.error ?? "unknown error"}.`;
+        } else if (event === "error") {
+          reportToolError("run_agent_task", new Error(data.error), input);
+          return `The agent run hit an error: ${data.error}`;
+        }
+      }
+    }
+
+    return `Agent run ${runId ?? "unknown"} ended without a final result — tell Nishad to check the logs.`;
+  } catch (error) {
+    reportToolError("run_agent_task", error, input);
+    return "Couldn't run that agent task just now — tell Nishad to try again.";
+  }
+}
+
 // Returns { text, visual } uniformly — text is what goes back to Claude as
 // the tool_result content, visual is only ever set by show_map and is what
 // app/api/v1/voice/respond/route.ts lifts into the API response for the
@@ -1065,6 +1204,10 @@ export async function executeTool(
       };
     case "research":
       return { text: await handleResearch(input as { query: string }) };
+    case "run_agent_task":
+      return {
+        text: await handleRunAgentTask(input as { task: string; targetRepo?: string; confirmed?: boolean }),
+      };
     default:
       return { text: `Unknown tool: ${name}` };
   }

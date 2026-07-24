@@ -105,3 +105,9 @@ env:
     secret: ICLOUD_APP_PASSWORD
   - variable: MAC_AGENT_INGEST_SECRET
     secret: MAC_AGENT_INGEST_SECRET
+  - variable: AGENT_RUNNER_SERVICE_URL
+    value: "https://agent-runner-service-1011959080844.us-east4.run.app"
+    availability:
+      - RUNTIME
+  - variable: AGENT_RUNNER_SHARED_SECRET
+    secret: AGENT_RUNNER_SHARED_SECRET
