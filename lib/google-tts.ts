@@ -113,7 +113,20 @@ export function streamSynthesizeSentence(text: string): Promise<Buffer> {
     duplex.on("end", () => {
       if (settled) return;
       settled = true;
-      resolve(Buffer.concat(chunks));
+      const full = Buffer.concat(chunks);
+      // TEMPORARY diagnostic — reported "raspy"/distorted audio on the
+      // streaming path specifically (batch synthesizeSpeech sounds fine),
+      // and the proto's own doc comment for StreamingSynthesizeResponse is
+      // self-contradictory about whether audio is really encoded as
+      // requested (OGG_OPUS) or always headerless LINEAR16 regardless.
+      // "OggS" (4F 67 67 53) is the real Ogg container magic number — if
+      // this isn't present, the browser is being handed raw PCM tagged as
+      // audio/ogg, which would explain exactly this kind of distortion.
+      console.log(
+        `[google-tts] streaming response: ${chunks.length} chunk(s), ${full.length} total bytes, ` +
+        `first 8 bytes: ${full.subarray(0, 8).toString("hex")} (expect "4f676753" = "OggS" if truly OGG_OPUS)`
+      );
+      resolve(full);
     });
 
     const configRequest: protos.google.cloud.texttospeech.v1.IStreamingSynthesizeRequest = {
