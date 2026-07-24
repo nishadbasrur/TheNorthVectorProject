@@ -2,7 +2,7 @@ import { NextResponse, after } from "next/server";
 import type Anthropic from "@anthropic-ai/sdk";
 import { requireOwner } from "@/lib/require-owner";
 import { streamClaudeWithTools } from "@/lib/anthropic-client";
-import { streamSynthesizeSentence, synthesizeSpeech } from "@/lib/google-tts";
+import { synthesizeSpeech } from "@/lib/google-tts";
 import { getPreferences, formatPreferencesForPrompt } from "@/lib/preferences-store";
 import { detectAndStorePreference } from "@/lib/preference-detector";
 import { detectIntentSignal } from "@/lib/intent-signal-detector";
@@ -366,34 +366,34 @@ export async function POST(request: Request) {
 
   const stream = new ReadableStream<Uint8Array>({
     start(controller) {
-      // Sentence-level synthesis pipeline — streamSynthesizeSentence is
-      // fired the instant a sentence is extracted, not awaited there, so
-      // synthesis for sentence N+1 overlaps with sentence N being sent to
-      // (and starting to play on) the client instead of happening strictly
+      // Sentence-level synthesis pipeline — synthesizeSpeech is fired the
+      // instant a sentence is extracted, not awaited there, so synthesis
+      // for sentence N+1 overlaps with sentence N being sent to (and
+      // starting to play on) the client instead of happening strictly
       // after it. audioQueue holds these promises in emission order;
       // drainReady() awaits them in that same order (even though the
       // underlying calls may resolve out of order) so playback order is
       // never at risk.
+      //
+      // Uses the batch synthesizeSpeech (MP3) here, not the true streaming
+      // streamSynthesizeSentence (OGG_OPUS) — confirmed live that Google's
+      // streaming synthesis produces genuinely lower-fidelity ("raspy")
+      // audio for this Chirp3 HD voice specifically (verified the OGG
+      // container itself was valid — real "OggS" magic bytes — so this is
+      // a real quality difference in Google's pipeline, not a bug in this
+      // code). Still gets the actual latency win (pipelining across
+      // sentences), just via the known-good batch call per sentence
+      // instead of a true duplex stream per sentence.
       const audioQueue: Promise<{ audioBase64: string; mimeType: string } | null>[] = [];
       let drainIndex = 0;
 
       function enqueueSentence(sentenceText: string) {
         audioQueue.push(
-          streamSynthesizeSentence(sentenceText)
-            .then((buf) => ({ audioBase64: buf.toString("base64"), mimeType: "audio/ogg" }))
-            .catch(async (err) => {
-              // Fall back to the existing one-shot batch synthesis for just
-              // this sentence rather than dropping it or hanging the whole
-              // turn — a sentence spoken via the slower path still beats a
-              // silent gap. See streaming pipeline plan Section 2.3/6.6.
-              console.error("[voice-respond] streamSynthesizeSentence failed, falling back to batch TTS:", err);
-              try {
-                const buf = await synthesizeSpeech(sentenceText);
-                return { audioBase64: buf.toString("base64"), mimeType: "audio/mpeg" };
-              } catch (fallbackErr) {
-                console.error("[voice-respond] Batch TTS fallback also failed:", fallbackErr);
-                return null; // client skips a null chunk rather than the whole turn failing
-              }
+          synthesizeSpeech(sentenceText)
+            .then((buf) => ({ audioBase64: buf.toString("base64"), mimeType: "audio/mpeg" }))
+            .catch((err) => {
+              console.error("[voice-respond] synthesizeSpeech failed for sentence:", err);
+              return null; // client skips a null chunk rather than the whole turn failing
             })
         );
       }

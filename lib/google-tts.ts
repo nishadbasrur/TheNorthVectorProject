@@ -58,94 +58,13 @@ export async function synthesizeSpeech(text: string, options?: { quiet?: boolean
   return Buffer.from(response.audioContent);
 }
 
-// True bidirectional streaming synthesis via streamingSynthesize, for the
-// time-to-first-word pipeline (app/api/v1/voice/respond/route.ts) — a
-// genuinely different RPC from synthesizeSpeech's one-shot REST call, not a
-// wrapper around it. synthesizeSpeech stays exactly as-is above for every
-// caller that doesn't need streaming (including whisper mode's quiet path —
-// StreamingAudioConfig has no volumeGainDb field, so the quiet-volume trick
-// only exists on the batch API anyway).
-//
-// Deliberately scoped to ONE sentence per call rather than exposing the raw
-// duplex stream (Duplex, not a promise — .write()/.on('data')/.end(), a
-// different programming model than every other promise-based call in this
-// file) to callers: the caller still gets the pipelining win — it can open
-// this call for sentence 2 while sentence 1 is still playing, rather than
-// waiting for Claude's whole response — without the duplex-stream style
-// leaking past this one function, or requiring the frontend to reassemble
-// arbitrary byte-range fragments of one continuous audio stream (MediaSource
-// Extensions would be the correct tool for true sub-sentence progressive
-// playback; out of scope for this pass — see the streaming pipeline plan's
-// Section 2.3).
-//
-// Streaming synthesis doesn't support MP3 (only PCM/ALAW/MULAW/OGG_OPUS per
-// the StreamingAudioConfig proto docs) — OGG_OPUS chosen since it's directly
-// playable by an <audio> element without needing a WAV header wrapped
-// around raw PCM.
-//
-// NOT YET LIVE-VERIFIED: the StreamingSynthesizeResponse proto's own doc
-// comment is internally inconsistent — "encoded as specified in the
-// request" and "headerless LINEAR16 audio... 24000" in the same sentence,
-// which reads like stale boilerplate from an older/default-config version
-// of this API rather than a real constraint. This trusts "encoded as
-// specified in the request" and requests OGG_OPUS explicitly; confirm
-// against a real synthesized response during live testing before assuming
-// this is right. Chirp3 HD voice parity between batch and streaming
-// synthesis is similarly unverified — confirm live rather than assume.
-export function streamSynthesizeSentence(text: string): Promise<Buffer> {
-  return new Promise((resolve, reject) => {
-    const duplex = getClient().streamingSynthesize();
-    const chunks: Buffer[] = [];
-    let settled = false;
-
-    duplex.on("data", (response: protos.google.cloud.texttospeech.v1.IStreamingSynthesizeResponse) => {
-      if (response.audioContent) {
-        chunks.push(Buffer.from(response.audioContent));
-      }
-    });
-
-    duplex.on("error", (err: Error) => {
-      if (settled) return;
-      settled = true;
-      reject(err);
-    });
-
-    duplex.on("end", () => {
-      if (settled) return;
-      settled = true;
-      const full = Buffer.concat(chunks);
-      // TEMPORARY diagnostic — reported "raspy"/distorted audio on the
-      // streaming path specifically (batch synthesizeSpeech sounds fine),
-      // and the proto's own doc comment for StreamingSynthesizeResponse is
-      // self-contradictory about whether audio is really encoded as
-      // requested (OGG_OPUS) or always headerless LINEAR16 regardless.
-      // "OggS" (4F 67 67 53) is the real Ogg container magic number — if
-      // this isn't present, the browser is being handed raw PCM tagged as
-      // audio/ogg, which would explain exactly this kind of distortion.
-      console.log(
-        `[google-tts] streaming response: ${chunks.length} chunk(s), ${full.length} total bytes, ` +
-        `first 8 bytes: ${full.subarray(0, 8).toString("hex")} (expect "4f676753" = "OggS" if truly OGG_OPUS)`
-      );
-      resolve(full);
-    });
-
-    const configRequest: protos.google.cloud.texttospeech.v1.IStreamingSynthesizeRequest = {
-      streamingConfig: {
-        voice: {
-          languageCode: "en-US",
-          name: CHIRP_HD_VOICE,
-        },
-        streamingAudioConfig: {
-          audioEncoding: "OGG_OPUS",
-        },
-      },
-    };
-    const inputRequest: protos.google.cloud.texttospeech.v1.IStreamingSynthesizeRequest = {
-      input: { text },
-    };
-
-    duplex.write(configRequest);
-    duplex.write(inputRequest);
-    duplex.end();
-  });
-}
+// A true bidirectional streamingSynthesize-based sentence synthesizer
+// (OGG_OPUS) lived here briefly for the time-to-first-word pipeline
+// (app/api/v1/voice/respond/route.ts) — removed after confirming live that
+// Google's streaming synthesis produces genuinely lower-fidelity ("raspy")
+// audio for this Chirp3 HD voice specifically. Verified the container
+// itself was valid (real "OggS" magic bytes on the response), so this was a
+// real quality difference in Google's pipeline, not a bug in that code.
+// That route now calls synthesizeSpeech (below) once per sentence instead —
+// same pipelining win (sentence N+1 synthesizes while sentence N plays),
+// known-good audio quality.
