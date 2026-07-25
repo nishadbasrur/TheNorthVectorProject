@@ -215,6 +215,43 @@ const HUD_PARTICLES = [
   { x: 4, y: 40, size: 1.5, blur: 1.5 },
 ];
 
+// Thinking/speaking indicator: a dense, STATIC field of dots (never move,
+// never rotate) filling an annulus — outside the NORTH/status text's own
+// circular footprint, capped at an invisible outer boundary (no drawn
+// ring line; see hud-ring-outer/hud-ring-inner's removal below). No
+// separate light source sweeps over them: each dot animates its OWN
+// opacity, staggered by a per-dot delay proportional to its angle, so the
+// same rotating-wave illusion emerges purely from each dot lighting
+// itself up in turn (see .hud-wave-dot's animation in globals.css).
+// HUD_WAVE_DOT_AMP is a per-dot peak-brightness ceiling that fades out
+// smoothly over the outer ~45% of the band — this is what makes the whole
+// field "radiate and fade out" near the invisible boundary instead of
+// stopping at a hard edge. Positions use a Fibonacci/sunflower spiral
+// generalized to an annulus (radius grows with sqrt of swept area, not
+// sqrt of index, to stay evenly dense across a ring-shaped region rather
+// than a full disc) — deterministic, not Math.random(), same reasoning as
+// HUD_TICKS/HUD_PARTICLES above.
+const HUD_WAVE_DOT_COUNT = 1040;
+const HUD_WAVE_INNER_RADIUS = 70; // clear gap outside hud-ring-hit's own footprint (61.5) — dots must not bleed into the text/button
+const HUD_WAVE_OUTER_RADIUS = 90; // the invisible enclosure — dots never go past this
+const HUD_WAVE_FADE_START = 0.55; // fraction of the band width where the fade-out begins
+const HUD_WAVE_GOLDEN_ANGLE = (137.50776405003785 * Math.PI) / 180;
+const HUD_WAVE_DOTS = Array.from({ length: HUD_WAVE_DOT_COUNT }, (_, i) => {
+  const areaFrac = (i + 0.5) / HUD_WAVE_DOT_COUNT;
+  const r = Math.sqrt(
+    HUD_WAVE_INNER_RADIUS ** 2 + (HUD_WAVE_OUTER_RADIUS ** 2 - HUD_WAVE_INNER_RADIUS ** 2) * areaFrac
+  );
+  const theta = i * HUD_WAVE_GOLDEN_ANGLE;
+  const t = (r - HUD_WAVE_INNER_RADIUS) / (HUD_WAVE_OUTER_RADIUS - HUD_WAVE_INNER_RADIUS);
+  const amp = t <= HUD_WAVE_FADE_START ? 1 : Math.max(0.05, 1 - (t - HUD_WAVE_FADE_START) / (1 - HUD_WAVE_FADE_START));
+  return {
+    cx: Math.round((100 + r * Math.cos(theta)) * 100) / 100,
+    cy: Math.round((100 + r * Math.sin(theta)) * 100) / 100,
+    frac: Math.round((theta / (2 * Math.PI) - Math.floor(theta / (2 * Math.PI))) * 1000) / 1000,
+    amp: Math.round(amp * 100) / 100,
+  };
+});
+
 type VoiceRespondResult = { responseText: string; toolsUsed: string[]; visual: MapVisual | null };
 
 function isMapVisual(value: unknown): value is MapVisual {
@@ -1204,7 +1241,7 @@ export default function SandboxPage() {
         </div>
 
         <div className="hud-stage">
-          <div className={`hud-ring-wrap hud-ring-${ringState}`}>
+          <div className={`hud-ring-wrap hud-ring-${ringState}${errorMessage ? " hud-ring-error" : ""}`}>
             {/* Solid-ish dark backing behind the glow — without it the
                 mostly-transparent orb blended into light backgrounds (e.g.
                 a light map, before the map switched to a dark theme).
@@ -1247,14 +1284,20 @@ export default function SandboxPage() {
               ))}
             </div>
 
-            <svg className="hud-ring-svg" viewBox="0 0 200 200">
-              <circle className="hud-ring-outer" cx="100" cy="100" r="94" />
-              <circle className="hud-ring-inner" cx="100" cy="100" r="80" />
-              <path
-                className="hud-ring-arc"
-                d="M 100 22 A 78 78 0 0 1 178 100"
-                pathLength={100}
-              />
+            {/* No drawn ring lines anymore — see HUD_WAVE_DOTS above.
+                The dot field's own radial fade-out (amp) is what implies
+                the outer boundary now, instead of a stroked circle. */}
+            <svg className="hud-wave-field" viewBox="0 0 200 200">
+              {HUD_WAVE_DOTS.map(({ cx, cy, frac, amp }, i) => (
+                <circle
+                  key={i}
+                  className="hud-wave-dot"
+                  cx={cx}
+                  cy={cy}
+                  r="0.7"
+                  style={{ "--dot-frac": frac, "--dot-amp": amp } as React.CSSProperties}
+                />
+              ))}
             </svg>
 
             <button className="hud-ring-hit" onClick={handleMicTap} aria-label={statusLabel}>

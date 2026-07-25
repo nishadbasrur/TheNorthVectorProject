@@ -1,0 +1,125 @@
+{
+  "schemaVersion": 2,
+  "generatedAt": "2026-07-25T03:25:48Z",
+  "title": "Design System: North",
+  "extensions": {
+    "colorMeta": {
+      "hud-cyan": { "role": "primary", "displayName": "HUD Signal Cyan", "canonical": "#3ad6ff" },
+      "teal-cyan": { "role": "secondary", "displayName": "Teal-Cyan", "canonical": "#4dcabc" },
+      "navy-accent": { "role": "secondary", "displayName": "Navy Interactive Blue", "canonical": "#3b5bdb" },
+      "warm-gold": { "role": "tertiary", "displayName": "Warm Gold", "canonical": "#c9a84c" },
+      "navy-950": { "role": "neutral", "displayName": "Navy Base — Deepest", "canonical": "#04091a" },
+      "slate-800": { "role": "neutral", "displayName": "Slate Surface", "canonical": "#161b27" },
+      "white": { "role": "neutral", "displayName": "Primary Text White", "canonical": "#f0f2f8" },
+      "status-success": { "role": "neutral", "displayName": "Status Success Green", "canonical": "#22c55e" },
+      "status-warning": { "role": "neutral", "displayName": "Status Warning Amber", "canonical": "#f59e0b" },
+      "status-risk": { "role": "neutral", "displayName": "Status Risk Red", "canonical": "#ef4444" }
+    },
+    "typographyMeta": {
+      "display": { "displayName": "Display", "purpose": "Page titles only." },
+      "numeral": { "displayName": "Numeral", "purpose": "Large serif numbers — stat values, countdowns, review scores, greeting text." },
+      "body": { "displayName": "Body", "purpose": "General UI text — cards, nav, rows. Times New Roman — a deliberate departure from the technical-HUD sans that preceded it, explicit user direction." },
+      "chrome-label": { "displayName": "Chrome Label", "purpose": "Structural uppercase labels — eyebrows, card labels, badges." },
+      "telemetry": { "displayName": "Telemetry", "purpose": "Live/instrument-style text only — HUD status, transcripts, map labels, errors." }
+    },
+    "shadows": [
+      { "name": "hud-glow-bloom", "value": "radial-gradient(circle, rgba(58,214,255,0.55) 0%, rgba(58,214,255,0.28) 35%, transparent 68%); filter: blur(28px)", "purpose": "The HUD ring's primary depth cue — luminance, not cast shadow." },
+      { "name": "active-nav-glow", "value": "-1px 0 8px rgba(58, 214, 255, 0.25)", "purpose": "Marks the active nav item, not general elevation." },
+      { "name": "drawer-shadow", "value": "8px 0 24px rgba(0, 0, 0, 0.4)", "purpose": "The one conventional cast shadow — mobile nav drawer slide-in only." }
+    ],
+    "motion": [
+      { "name": "hud-breathe", "value": "2.2s ease-in-out infinite, opacity 0.4→0.65 + scale 1→1.04", "purpose": "Listening state — slow breathing pulse." },
+      { "name": "hud-dormant-breathe", "value": "5s ease-in-out infinite, opacity 0.6→1", "purpose": "Dormant state — very slow, reads as quietly waiting, not off." },
+      { "name": "hud-pulse-fast", "value": "0.9s ease-in-out infinite, opacity 0.5→0.85 + scale 1→1.07", "purpose": "Speaking state — faster, sharper pulse than listening." },
+      { "name": "hud-dot-illuminate", "value": "1.1–1.6s ease-in-out infinite per dot, opacity 0.04→[--dot-amp]→0.04, animation-delay: calc(var(--dot-frac) * duration)", "purpose": "Each dot in the static wave field animates its own opacity, staggered by angle — the traveling-wave sweep across the ring emerges from every dot lighting itself up in turn, not from an external light source or rotation. Positive delay makes the sweep read clockwise." }
+    ],
+    "breakpoints": [
+      { "name": "tablet", "value": "1024px" },
+      { "name": "phone", "value": "767px" }
+    ]
+  },
+  "components": [
+    {
+      "name": "Primary Button",
+      "kind": "button",
+      "refersTo": "button-primary",
+      "description": "Default actionable button — navy fill, white text.",
+      "html": "<button class=\"ds-btn-primary\">Save Changes</button>",
+      "css": ".ds-btn-primary { display: inline-flex; align-items: center; gap: 6px; background: #3b5bdb; color: #fff; padding: 7px 16px; border-radius: 6px; font-size: 13px; font-weight: 500; border: none; cursor: pointer; transition: all 0.15s; } .ds-btn-primary:hover { background: #4a6ae0; }"
+    },
+    {
+      "name": "Pill Button",
+      "kind": "button",
+      "refersTo": "button-pill",
+      "description": "Cyan-outlined pill button — used in Tasks, Settings, Capability Review, Accounts.",
+      "html": "<button class=\"ds-btn-pill\">Approve</button>",
+      "css": ".ds-btn-pill { border: 1px solid #3ad6ff; background: rgba(34, 211, 238, 0.12); color: #4dcabc; padding: 10px 16px; border-radius: 999px; font-weight: 700; cursor: pointer; } .ds-btn-pill:disabled { opacity: 0.55; cursor: not-allowed; }"
+    },
+    {
+      "name": "Card",
+      "kind": "card",
+      "refersTo": "card",
+      "description": "Standard content card — current flat convention, superseded going forward by a glass treatment.",
+      "html": "<div class=\"ds-card\"><div class=\"ds-card-label\">STATUS</div><div class=\"ds-card-title\">Card title</div></div>",
+      "css": ".ds-card { background: #161b27; border: 1px solid rgba(60, 80, 130, 0.3); border-radius: 10px; padding: 18px 20px; transition: border-color 0.15s; } .ds-card:hover { border-color: rgba(80, 110, 170, 0.5); } .ds-card-label { font-family: 'Times New Roman', serif; font-size: 10px; font-weight: 600; letter-spacing: 0.12em; text-transform: uppercase; color: #5a6e96; margin-bottom: 8px; } .ds-card-title { font-family: 'Times New Roman', serif; font-size: 15px; font-weight: 600; color: #f0f2f8; }"
+    },
+    {
+      "name": "Cyan Badge",
+      "kind": "chip",
+      "refersTo": "badge-cyan",
+      "description": "Status/tag badge in the teal-cyan accent.",
+      "html": "<span class=\"ds-badge-cyan\">ACTIVE</span>",
+      "css": ".ds-badge-cyan { display: inline-flex; align-items: center; gap: 4px; padding: 2px 8px; border-radius: 4px; font-size: 11px; font-weight: 500; letter-spacing: 0.03em; background: rgba(77, 202, 188, 0.1); color: #4dcabc; border: 1px solid rgba(77, 202, 188, 0.25); }"
+    },
+    {
+      "name": "Nav Item",
+      "kind": "nav",
+      "refersTo": "nav-item",
+      "description": "Sidebar navigation item, default and active states.",
+      "html": "<button class=\"ds-nav-item ds-nav-item-active\">Sandbox</button>",
+      "css": ".ds-nav-item { display: flex; align-items: center; gap: 8px; padding: 7px 8px; border-radius: 6px; color: #8898b8; text-decoration: none; font-size: 13px; font-weight: 450; transition: all 0.15s; cursor: pointer; border: none; background: none; width: 100%; text-align: left; } .ds-nav-item:hover { color: #f0f2f8; background: rgba(59, 91, 219, 0.12); } .ds-nav-item-active { color: #f0f2f8; background: rgba(59, 91, 219, 0.2); border-left: 2px solid #3ad6ff; padding-left: 6px; box-shadow: -1px 0 8px rgba(58, 214, 255, 0.25); }"
+    },
+    {
+      "name": "HUD Ring (signature)",
+      "kind": "custom",
+      "refersTo": "hud-ring",
+      "description": "The system's signature status indicator — no drawn ring lines anymore. A dense static field of dots fills an annulus around the NORTH wordmark (an invisible outer boundary, no stroke), each dot self-illuminating with a staggered delay so a traveling wave of light sweeps clockwise across the fixed field. Color is state-driven: cyan while transcribing, teal while processing/thinking, red on error.",
+      "html": "<div class=\"ds-hud-ring\"><div class=\"ds-hud-glow\"></div><div class=\"ds-hud-glow-core\"></div><svg class=\"ds-hud-wave\" viewBox=\"0 0 200 200\"><circle class=\"ds-hud-dot\" cx=\"120\" cy=\"60\" r=\"0.7\" style=\"--dot-amp:1;--dot-frac:0.2\" /></svg></div>",
+      "css": ".ds-hud-ring { position: relative; width: 160px; height: 160px; border-radius: 50%; } .ds-hud-glow { position: absolute; inset: 0; border-radius: 50%; background: radial-gradient(circle, rgba(58,214,255,0.55) 0%, rgba(58,214,255,0.28) 35%, transparent 68%); filter: blur(28px); opacity: 0.42; } .ds-hud-glow-core { position: absolute; width: 40%; height: 40%; top: 30%; left: 30%; border-radius: 50%; background: radial-gradient(circle, rgba(255,255,255,0.9) 0%, #3ad6ff 30%, transparent 72%); filter: blur(10px); opacity: 0.32; } .ds-hud-dot { fill: #3ad6ff; opacity: 0.04; animation: ds-dot-illuminate 1.6s ease-in-out infinite; animation-delay: calc(var(--dot-frac) * 1.6s); } @keyframes ds-dot-illuminate { 0%, 82% { opacity: 0.04; } 90% { opacity: var(--dot-amp, 1); } 100% { opacity: 0.04; } }"
+    }
+  ],
+  "narrative": {
+    "northStar": "North",
+    "overview": "North is a single-operator instrument panel, not a product being sold to anyone. Every surface is built for exactly one person (Nishad) who already knows the system intimately — so the aesthetic optimizes for a HUD an expert operator glances at and trusts, not a landing page persuading a stranger. The register is JARVIS: dry, direct, technical, confident. Density and precision read as competence, not as clutter to soften.\n\nThe system already carries a real, deliberately-built identity: a glowing cyan signal ring as its signature HUD element (now expressed as a self-illuminating dot field, not drawn ring lines), a dark navy-grounded base with a faint repeating grid texture behind all chrome, and a type pairing that splits duties cleanly. This is refinement territory, not a blank canvas.\n\nNorth should never read as a generic SaaS dashboard. No purple-to-blue gradients, no cards nested in cards, no rounded-square icon tiles stacked above headings.",
+    "keyCharacteristics": [
+      "Dark, navy-grounded base with a faint cyan grid texture behind every chrome surface — never a flat, textureless background.",
+      "One signature circular HUD element — a self-illuminating dot field, no drawn ring lines — carries the system's entire emotional range through which dots light up, how fast, and in what color.",
+      "Two labeling registers, used deliberately: Times New Roman uppercase for structural chrome, JetBrains Mono uppercase for live telemetry only.",
+      "Cyan and navy-blue are the informational/interactive defaults; warm gold is reserved for one specific content category; red is reserved for genuine errors."
+    ],
+    "rules": [
+      { "name": "The Signal-vs-Action Rule", "body": "HUD Signal Cyan means the system is telling you something. Navy Interactive Blue means you can act on this. Don't swap their roles.", "section": "colors" },
+      { "name": "The One Gold Rule", "body": "Warm Gold is reserved for the long-horizon goal category. It does not become a general secondary accent elsewhere.", "section": "colors" },
+      { "name": "The Two Labels Rule", "body": "Chrome Label (Times New Roman) names static UI structure. Telemetry (JetBrains Mono) names something genuinely live or system-reported right now.", "section": "typography" },
+      { "name": "The Glow-Not-Shadow Rule", "body": "Depth in this system comes from luminance far more than cast shadow. Reach for a glow treatment before box-shadow.", "section": "elevation" }
+    ],
+    "dos": [
+      "Do use HUD Signal Cyan for anything reporting live system state or telemetry; use Navy Interactive Blue for anything actionable.",
+      "Do build new panels and cards glass-first — low-opacity fill, backdrop blur, glowing border (but never on a circular element — see Don'ts).",
+      "Do use JetBrains Mono only for genuinely live/telemetry text.",
+      "Do keep the grid-texture + gradient-vignette background on every chrome surface.",
+      "Do express component state through glow, opacity, color, and motion on existing shapes before reaching for a new icon or shape.",
+      "Do set appearance: none on any custom-styled <button> up front, not just override its colors."
+    ],
+    "donts": [
+      "Don't introduce a purple-to-blue gradient, nested cards, or rounded-square icon tiles above headings.",
+      "Don't introduce a third cyan shade.",
+      "Don't use Warm Gold as a general secondary accent.",
+      "Don't add a third button shape — reconcile the existing rectangular and pill systems first.",
+      "Don't attempt floating 3D wireframe holograms or literal dated browser-chrome styling — both out of scope for a 2D web app.",
+      "Don't ship new nv-input/nv-textarea/nv-button usage without first fixing the missing --cyan-500, --cyan-300, and --border-subtle custom properties.",
+      "Don't put backdrop-filter: blur() on a circular element — the blur clips hard to the border-radius and shows up as a visible gray/black circular edge (confirmed live bug).",
+      "Don't rely on background/border overrides alone to hide a <button>'s native chrome — appearance: none is required (confirmed live bug)."
+    ]
+  }
+}

@@ -18,6 +18,13 @@ data/imports/
 # Local memory database
 data/memories/
 
+# Impeccable design-hook per-developer state — consent flag and session
+# dedup cache (has machine-local absolute paths). The shared
+# .impeccable/config.json (detector ignores) is real project config and
+# stays committed.
+.impeccable/config.local.json
+.impeccable/hook.cache.json
+
 # Cloud Functions build output (bundled by esbuild, not source)
 functions/lib/
 

@@ -9,7 +9,7 @@ const config: Config = {
   theme: {
     extend: {
       fontFamily: {
-        sans: ["Inter", "system-ui", "sans-serif"],
+        sans: ["Times New Roman", "Times", "serif"],
         display: ["DM Serif Display", "Georgia", "serif"],
         mono: ["JetBrains Mono", "monospace"],
       },
