@@ -16,6 +16,8 @@ import { dispatchCapabilityDraft } from "./capability-gap-dispatch";
 import { verifyPipelineCallback } from "./verify-pipeline-callback";
 import { submitOpportunityScan, pollOpportunityScan } from "./opportunity-scan";
 import { getPendingBatch } from "../../lib/opportunity-store";
+import { submitTranscriptBatch, pollTranscriptBatch } from "./transcript-batch-scan";
+import { getPendingBatch as getPendingTranscriptBatch } from "../../lib/transcript-batch-store";
 import { handleCalendarWebhook, registerOrRenewCalendarWatch } from "./calendar-webhook";
 import { handleGmailPush, registerOrRenewGmailWatch } from "./gmail-webhook";
 import { onMessagePublished } from "firebase-functions/v2/pubsub";
@@ -231,6 +233,12 @@ export const triggerCalendarWatchRenew = onRequest(
 // reasoning pass itself.
 const gmailRefreshToken = defineSecret("GMAIL_REFRESH_TOKEN");
 const anthropicApiKey = defineSecret("ANTHROPIC_API_KEY");
+// Only transcriptBatchPoll below actually needs this (it's the one call
+// site under functions/ that generates NEW embeddings via
+// lib/memory-embeddings.ts — the Weekly Retrospective's promotion engine
+// only ever READS existing ones) — declared here alongside the other
+// cross-cutting API keys for visibility, not because every job uses it.
+const voyageApiKey = defineSecret("VOYAGE_API_KEY");
 
 const synthesisScanSecrets = [
   googleCalendarClientId,
@@ -631,6 +639,51 @@ export const opportunityScanPoll = onSchedule(
       await pollOpportunityScan(anthropicApiKey.value());
     } catch (error) {
       logger.error("[opportunityScanPoll] Failed to poll batch:", error);
+    }
+  }
+);
+
+// Three-tier memory pipeline, tier 1 → tier 2: nightly batch filter of raw
+// Transcripts/ captures (see lib/transcript-store.ts and
+// app/api/v1/voice/respond/route.ts) into General/. See
+// North_Vector_Three_Tier_Memory_Pipeline_Plan.md. Same submit+poll Batch
+// API split as opportunityScanSubmit/opportunityScanPoll above, and the
+// same reasoning for the split (a batch can outlive one invocation's
+// timeout budget).
+//
+// weeklyRetrospectiveSecrets covers Drive (rides on the Calendar OAuth
+// token) + Anthropic; voyageApiKey is added on top because poll (unlike
+// submit) writes new General notes and generates real embeddings for them
+// — the one thing weeklyRetrospectiveSecrets' existing consumer never
+// needed.
+const transcriptBatchSecrets = [...weeklyRetrospectiveSecrets, voyageApiKey];
+
+// 2am Eastern, after urgencyScan/synthesisScan/etc.'s own daily cadences,
+// per the plan's own scheduling note.
+export const transcriptBatchSubmit = onSchedule(
+  { schedule: "0 2 * * *", timeZone: "America/New_York", secrets: transcriptBatchSecrets },
+  async () => {
+    const pending = await getPendingTranscriptBatch();
+    if (pending) {
+      logger.log(`[transcriptBatchSubmit] Skipping — batch ${pending.batchId} still outstanding.`);
+      return;
+    }
+
+    try {
+      await submitTranscriptBatch(anthropicApiKey.value());
+    } catch (error) {
+      logger.error("[transcriptBatchSubmit] Failed to submit batch:", error);
+    }
+  }
+);
+
+export const transcriptBatchPoll = onSchedule(
+  { schedule: "every 30 minutes", secrets: transcriptBatchSecrets },
+  async () => {
+    try {
+      await pollTranscriptBatch(anthropicApiKey.value());
+    } catch (error) {
+      logger.error("[transcriptBatchPoll] Failed to poll batch:", error);
     }
   }
 );

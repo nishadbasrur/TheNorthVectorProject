@@ -20,6 +20,7 @@ import { recordAction } from "@/lib/action-log-store";
 import { recordOccurrence } from "@/lib/recurring-signal-store";
 import { detectEngagement } from "@/lib/engagement-detector";
 import { detectRushSignal } from "@/lib/rush-detector";
+import { createTranscript } from "@/lib/transcript-store";
 
 // #96 — read-only "check"/"search" tools stand in for question categories:
 // Claude already picked the tool, so the category is free and deterministic,
@@ -313,6 +314,25 @@ export async function POST(request: Request) {
   }
 
   const requestStart = performance.now();
+
+  // Tier 1 of the three-tier memory pipeline (Transcripts → General →
+  // Distilled) — raw, verbatim capture of every voice message, no AI, on
+  // the actual live entry point for a voice turn (the old comments
+  // elsewhere in this file referencing a separate "Judgment Engine" call
+  // describe an architecture that's since been folded into this same
+  // route — this IS the one real place "every voice message" passes
+  // through now). Wrapped in after(), not a bare fire-and-forget, for the
+  // same reason saveSession below is: this is a streaming response route,
+  // and an un-awaited promise can be killed the instant the stream closes.
+  // Never blocks or slows the response — see
+  // North_Vector_Three_Tier_Memory_Pipeline_Plan.md.
+  after(async () => {
+    try {
+      await createTranscript(text);
+    } catch (error) {
+      console.error("[voice-respond] createTranscript failed:", error);
+    }
+  });
 
   const [preferences, priorTurns] = await Promise.all([getPreferences(), loadSession(sessionId)]);
   console.log(`[voice-respond] Session loaded (${priorTurns.length} prior turn(s)) in ${Math.round(performance.now() - requestStart)}ms`);

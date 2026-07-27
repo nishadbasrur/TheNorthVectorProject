@@ -1,6 +1,7 @@
 import "server-only";
-import { loadLocalMemories, type LocalMemory } from "@/lib/local-memory-loader";
-import { adminDb } from "@/lib/firebase-admin";
+import { loadLocalMemories, type LocalMemory } from "./local-memory-loader";
+import { adminDb } from "./firebase-admin";
+import { loadObsidianMemories } from "./obsidian-memory-retrieval";
 
 const STOP_WORDS = new Set([
   "what",
@@ -66,8 +67,9 @@ export type RetrievedMemory = LocalMemory & {
 };
 
 // Common shape every scoreable memory record must have, regardless of
-// whether it came from the local curated file or Firestore.
-type ScoreableMemory = {
+// whether it came from the local curated file, Firestore, or (new) Obsidian
+// vault markdown files synced via Google Drive.
+export type ScoreableMemory = {
   content: string;
   domain: string;
   type: string;
@@ -184,7 +186,7 @@ export async function retrieveMemories(
 ): Promise<FirestoreRetrievedMemory[]> {
   const snapshot = await adminDb.collection("memories").get();
 
-  const memories = snapshot.docs.map((doc) => {
+  const memories = snapshot.docs.map((doc: FirebaseFirestore.QueryDocumentSnapshot) => {
     const data = doc.data();
     return {
       id: doc.id,
@@ -195,5 +197,21 @@ export async function retrieveMemories(
     };
   });
 
+  return scoreMemories(memories, query, limit);
+}
+
+// Obsidian/Google-Drive-backed equivalent of retrieveMemories above — same
+// scoreMemories() call, sourced from markdown files instead of Firestore.
+// NOT yet wired into app/api/v1/judgment/route.ts's call site: that swap
+// waits on the three real-world setup steps (Drive OAuth scope, Drive
+// desktop app mirroring the vault, Obsidian Sync's selective-sync
+// exclusion) actually being done and confirmed, so retrieveMemories stays
+// the live path — and the old Firestore `memories` collection stays
+// intact — until then.
+export async function retrieveObsidianMemories(
+  query: string,
+  limit = 5
+): Promise<(ScoreableMemory & { relevanceScore: number; matchScore: number })[]> {
+  const memories = await loadObsidianMemories();
   return scoreMemories(memories, query, limit);
 }

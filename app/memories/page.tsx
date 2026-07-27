@@ -7,6 +7,9 @@ import { createMemory, getMemories } from "@/lib/memory-store";
 type FirestoreMemory = {
   id: string;
   content?: string;
+  domain?: string;
+  type?: string;
+  tier?: "general" | "distilled";
   createdAt?: string;
 };
 
@@ -24,6 +27,9 @@ export default function MemoriesPage() {
   const [memories, setMemories] = useState<FirestoreMemory[]>([]);
   const [localMemories, setLocalMemories] = useState<LocalMemory[]>([]);
   const [content, setContent] = useState("");
+  const [domain, setDomain] = useState("");
+  const [type, setType] = useState("");
+  const [tier, setTier] = useState<"general" | "distilled">("distilled");
   const [isSaving, setIsSaving] = useState(false);
 
   async function loadMemories() {
@@ -43,14 +49,18 @@ export default function MemoriesPage() {
   }, []);
 
   async function handleSave() {
-    const trimmed = content.trim();
-    if (!trimmed) return;
+    const trimmedContent = content.trim();
+    const trimmedDomain = domain.trim();
+    const trimmedType = type.trim();
+    if (!trimmedContent || !trimmedDomain || !trimmedType) return;
 
     setIsSaving(true);
 
     try {
-      await createMemory(trimmed);
+      await createMemory({ content: trimmedContent, domain: trimmedDomain, type: trimmedType, tier });
       setContent("");
+      setDomain("");
+      setType("");
       await loadMemories();
     } finally {
       setIsSaving(false);
@@ -92,9 +102,56 @@ export default function MemoriesPage() {
             }}
           />
 
+          <div style={{ display: "flex", gap: 12, marginBottom: 12 }}>
+            <input
+              value={domain}
+              onChange={(event) => setDomain(event.target.value)}
+              placeholder="Domain (e.g. academic, health, finance)"
+              style={{
+                flex: 1,
+                borderRadius: 10,
+                border: "1px solid var(--border-subtle)",
+                background: "rgba(4, 9, 26, 0.6)",
+                color: "var(--text-primary)",
+                padding: "10px 12px",
+                fontSize: 13,
+                outline: "none",
+              }}
+            />
+            <input
+              value={type}
+              onChange={(event) => setType(event.target.value)}
+              placeholder="Type (e.g. preference, fact, goal)"
+              style={{
+                flex: 1,
+                borderRadius: 10,
+                border: "1px solid var(--border-subtle)",
+                background: "rgba(4, 9, 26, 0.6)",
+                color: "var(--text-primary)",
+                padding: "10px 12px",
+                fontSize: 13,
+                outline: "none",
+              }}
+            />
+          </div>
+
+          <div style={{ display: "flex", gap: 16, marginBottom: 16, alignItems: "center" }}>
+            <span style={{ fontSize: 12, color: "var(--text-faint)", textTransform: "uppercase", letterSpacing: "0.08em" }}>
+              Tier
+            </span>
+            <label style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 13, color: "var(--text-primary)", cursor: "pointer" }}>
+              <input type="radio" name="tier" checked={tier === "distilled"} onChange={() => setTier("distilled")} />
+              Distilled (curated, durable)
+            </label>
+            <label style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 13, color: "var(--text-primary)", cursor: "pointer" }}>
+              <input type="radio" name="tier" checked={tier === "general"} onChange={() => setTier("general")} />
+              General (everything else)
+            </label>
+          </div>
+
           <button
             onClick={handleSave}
-            disabled={isSaving || !content.trim()}
+            disabled={isSaving || !content.trim() || !domain.trim() || !type.trim()}
             style={{
               border: "1px solid var(--cyan-500)",
               background: "rgba(34, 211, 238, 0.12)",
@@ -103,7 +160,7 @@ export default function MemoriesPage() {
               borderRadius: 999,
               fontWeight: 700,
               cursor: isSaving ? "wait" : "pointer",
-              opacity: isSaving || !content.trim() ? 0.55 : 1,
+              opacity: isSaving || !content.trim() || !domain.trim() || !type.trim() ? 0.55 : 1,
             }}
           >
             {isSaving ? "Saving..." : "Save Memory"}
@@ -170,6 +227,21 @@ export default function MemoriesPage() {
                 <div className="memory-icon">🧠</div>
 
                 <div style={{ flex: 1 }}>
+                  {(memory.domain || memory.type || memory.tier) && (
+                    <div
+                      style={{
+                        fontSize: 12,
+                        fontWeight: 700,
+                        color: "var(--cyan-300)",
+                        marginBottom: 6,
+                        textTransform: "uppercase",
+                        letterSpacing: "0.08em",
+                      }}
+                    >
+                      {[memory.domain, memory.type, memory.tier].filter(Boolean).join(" · ")}
+                    </div>
+                  )}
+
                   <div
                     style={{
                       fontSize: 13,

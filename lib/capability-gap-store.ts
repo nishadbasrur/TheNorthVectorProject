@@ -44,7 +44,13 @@ export type CapabilityGap = {
   // noticed Nishad meant to send — reuses this same review-gated
   // propose/approve/deny shape and page, with prNumber/targetFile/diff
   // replaced by to/subject/body/reasoning/draftId below.
-  kind: "capability" | "bug_fix" | "draft_email";
+  // "memory_promotion" = the Weekly Retrospective engine noticed a pattern
+  // across several General/ memory entries that looks durable enough for
+  // Distilled/ — see lib/memory-promotion-engine.ts. Same review-gated
+  // shape again; approving actually writes the memory (via
+  // lib/obsidian-memory-store.ts's createMemory, tier: "distilled")
+  // instead of merging a PR or sending an email.
+  kind: "capability" | "bug_fix" | "draft_email" | "memory_promotion";
   request: string;
   capability: string;
   status: "pending_gap" | "pending_review" | "approved" | "denied";
@@ -65,11 +71,24 @@ export type CapabilityGap = {
   body: string | null;
   reasoning: string | null;
   draftId: string | null;
+  // Only set for kind "memory_promotion" — the actual candidate content to
+  // write into Distilled/ if approved, plus the fields createMemory needs.
+  proposedContent: string | null;
+  proposedDomain: string | null;
+  proposedType: string | null;
+  proposedTags: string[] | null;
 };
 
 function parseCapabilityGap(data: FirebaseFirestore.DocumentData): CapabilityGap {
   return {
-    kind: data.kind === "bug_fix" ? "bug_fix" : data.kind === "draft_email" ? "draft_email" : "capability",
+    kind:
+      data.kind === "bug_fix"
+        ? "bug_fix"
+        : data.kind === "draft_email"
+          ? "draft_email"
+          : data.kind === "memory_promotion"
+            ? "memory_promotion"
+            : "capability",
     request: typeof data.request === "string" ? data.request : "",
     capability: typeof data.capability === "string" ? data.capability : "",
     status: (data.status as CapabilityGap["status"]) ?? "pending_gap",
@@ -84,6 +103,10 @@ function parseCapabilityGap(data: FirebaseFirestore.DocumentData): CapabilityGap
     body: typeof data.body === "string" ? data.body : null,
     reasoning: typeof data.reasoning === "string" ? data.reasoning : null,
     draftId: typeof data.draftId === "string" ? data.draftId : null,
+    proposedContent: typeof data.proposedContent === "string" ? data.proposedContent : null,
+    proposedDomain: typeof data.proposedDomain === "string" ? data.proposedDomain : null,
+    proposedType: typeof data.proposedType === "string" ? data.proposedType : null,
+    proposedTags: Array.isArray(data.proposedTags) ? data.proposedTags.filter((t: unknown) => typeof t === "string") : null,
   };
 }
 
@@ -115,6 +138,38 @@ export async function logDraftEmailGap(params: {
 
   await sendPushNotification(
     `North: drafted an email to ${params.to}`,
+    params.reasoning,
+    `${APP_URL}/capability-review/${doc.id}`
+  );
+
+  return doc.id;
+}
+
+// lib/memory-promotion-engine.ts — proposes, never auto-promotes, per the
+// standing project-wide caution around autonomous actions that are hard to
+// undo. Reuses this exact review-gated shape rather than a new mechanism.
+export async function logMemoryPromotionProposal(params: {
+  content: string;
+  domain: string;
+  type: string;
+  tags: string[];
+  reasoning: string;
+}): Promise<string> {
+  const doc = await adminDb.collection("capability_gaps").add({
+    kind: "memory_promotion",
+    status: "pending_review",
+    request: params.reasoning,
+    capability: "Promote a General/ pattern to Distilled/",
+    summary: params.reasoning,
+    proposedContent: params.content,
+    proposedDomain: params.domain,
+    proposedType: params.type,
+    proposedTags: params.tags,
+    createdAt: FieldValue.serverTimestamp(),
+  });
+
+  await sendPushNotification(
+    "North: proposed a memory promotion",
     params.reasoning,
     `${APP_URL}/capability-review/${doc.id}`
   );

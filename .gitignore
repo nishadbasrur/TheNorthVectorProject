@@ -43,9 +43,10 @@ functions/.env
 public/models/
 public/ort/
 
-# One-time throwaway OAuth re-consent script (see its own header comment) —
-# a local tool to run once when widening Gmail/Calendar scopes, not app code.
+# One-time throwaway OAuth re-consent scripts (see each one's own header
+# comment) — local tools to run once when widening OAuth scopes, not app code.
 scripts/oauth-widen-scopes.js
+scripts/oauth-widen-scopes-drive.js
 
 # Mac Mini Messages agent's real secret + runtime state — machine-specific,
 # never committed. agent.js and the LaunchAgent plist template are the real

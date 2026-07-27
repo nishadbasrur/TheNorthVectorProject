@@ -2,6 +2,7 @@ import { logger } from "firebase-functions";
 import { assembleWeeklyRetrospectiveContext } from "../../lib/weekly-retrospective-context";
 import { runWeeklyRetrospective } from "../../lib/weekly-retrospective-engine";
 import { saveRetrospective } from "../../lib/weekly-retrospective-store";
+import { proposeMemoryPromotions } from "../../lib/memory-promotion-engine";
 import { sendPushNotification } from "./push";
 
 // #86 — Sunday-morning weekly retrospective. Structurally mirrors
@@ -38,5 +39,19 @@ export async function runWeeklyRetrospectiveScan(): Promise<WeeklyRetrospectiveS
   }
 
   logger.info(`[weeklyRetrospectiveScan] Retrospective saved for week ${retrospective.weekId}.`);
+
+  // Genuinely separate concern from the retrospective itself — a failure
+  // here must never take down the retrospective that already saved
+  // successfully above, so it's wrapped independently rather than let an
+  // uncaught error here fail runWeeklyRetrospectiveScan as a whole.
+  try {
+    const promotions = await proposeMemoryPromotions();
+    logger.info(
+      `[weeklyRetrospectiveScan] Memory promotions: reviewed ${promotions.entriesReviewed} General/ entries, logged ${promotions.proposalsLogged} proposal(s).`
+    );
+  } catch (error) {
+    logger.error("[weeklyRetrospectiveScan] Memory promotion proposal step failed:", error);
+  }
+
   return { ok: true, weekId: retrospective.weekId };
 }
