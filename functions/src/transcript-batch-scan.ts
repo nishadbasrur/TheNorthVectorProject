@@ -111,12 +111,14 @@ export async function pollTranscriptBatch(apiKey: string): Promise<void> {
       (block): block is Anthropic.TextBlock => block.type === "text"
     );
     const responseText = textBlocks.map((block) => block.text).join("\n\n");
-    const paraphrase = parseTranscriptExtraction(responseText);
+    const extraction = parseTranscriptExtraction(responseText);
 
-    if (paraphrase === null) {
+    if (extraction === null) {
       skipped++;
       continue;
     }
+
+    const { category, paraphrase } = extraction;
 
     try {
       const tags = await extractTags(paraphrase);
@@ -126,6 +128,10 @@ export async function pollTranscriptBatch(apiKey: string): Promise<void> {
         type: "transcript-extract",
         tier: "general",
         tags,
+        // Classified in the same Haiku call above (see
+        // TRANSCRIPT_EXTRACTION_SYSTEM_PROMPT) rather than costing a
+        // second Claude call inside createMemory itself.
+        category,
         extraFrontmatter: {
           source: "transcript-batch",
           "original-transcript": transcriptFileName,

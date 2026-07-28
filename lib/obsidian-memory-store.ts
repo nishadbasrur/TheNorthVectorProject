@@ -83,6 +83,15 @@ export type CreateMemoryParams = {
   // per North_Vector_Three_Tier_Memory_Pipeline_Plan.md. Never overrides
   // the fields above even if a key collides (see the spread order below).
   extraFrontmatter?: Record<string, string | number>;
+  // General tier only — a category the caller already determined (e.g.
+  // functions/src/transcript-batch-scan.ts folds classification into the
+  // same Haiku call it already makes to decide what's worth promoting, so
+  // it doesn't cost a second Claude call here). Must be one of CATEGORIES
+  // below (case-insensitive) or it's ignored and classifyCategory runs as
+  // usual. Omit to have createMemory classify content itself, as every
+  // other General-tier caller (e.g. app/api/v1/memories/create/route.ts)
+  // does.
+  category?: string;
 };
 
 // Appended to every Distilled note's body — the Obsidian-side hub note
@@ -124,6 +133,21 @@ async function classifyCategory(content: string): Promise<string> {
     console.error(`[obsidian-memory-store] Category classification returned unrecognized category: "${result.text.trim()}"`);
   }
   return match ?? "Misc";
+}
+
+// Uses params.category if the caller already determined one (and it's
+// actually one of CATEGORIES); otherwise classifies from scratch. Keeps
+// classifyCategory as the single source of truth for both the prompt-based
+// path and the fallback when a caller-provided category doesn't validate.
+async function resolveCategory(content: string, providedCategory?: string): Promise<string> {
+  if (providedCategory) {
+    const match = CATEGORIES.find((category) => category.toLowerCase() === providedCategory.toLowerCase());
+    if (match) return match;
+    console.error(
+      `[obsidian-memory-store] Provided category "${providedCategory}" is not recognized, classifying instead.`
+    );
+  }
+  return classifyCategory(content);
 }
 
 function linkTargetFromFileName(name: string): string {
@@ -219,7 +243,7 @@ async function createDistilledMemory(client: drive_v3.Drive, params: CreateMemor
 }
 
 async function createGeneralMemory(client: drive_v3.Drive, params: CreateMemoryParams): Promise<{ fileId: string }> {
-  const category = await classifyCategory(params.content);
+  const category = await resolveCategory(params.content, params.category);
   const bodyWithLinks = `${params.content}\n\n[[${category}]]`;
 
   const fileContent = matter.stringify(bodyWithLinks, {
