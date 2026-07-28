@@ -322,14 +322,11 @@ export async function POST(request: Request) {
   // describe an architecture that's since been folded into this same
   // route — this IS the one real place "every voice message" passes
   // through now). Awaited directly rather than deferred via after() —
-  // after() was silently not executing here (diagnostic logging added
-  // below to confirm behavior either way). try/catch keeps a transcript
+  // after() was silently not executing here. try/catch keeps a transcript
   // failure from ever breaking the voice response itself. See
   // North_Vector_Three_Tier_Memory_Pipeline_Plan.md.
-  console.log("createTranscript starting");
   try {
     await createTranscript(text);
-    console.log("createTranscript succeeded");
   } catch (error) {
     console.error("[voice-respond] createTranscript failed:", error);
   }

@@ -1,6 +1,7 @@
 import { onSchedule } from "firebase-functions/v2/scheduler";
 import { onRequest } from "firebase-functions/v2/https";
 import { onDocumentCreated } from "firebase-functions/v2/firestore";
+import { setGlobalOptions } from "firebase-functions/v2";
 import { defineSecret } from "firebase-functions/params";
 import { initializeApp, getApps } from "firebase-admin/app";
 import { getFirestore, FieldValue } from "firebase-admin/firestore";
@@ -22,6 +23,12 @@ import { handleCalendarWebhook, registerOrRenewCalendarWatch } from "./calendar-
 import { handleGmailPush, registerOrRenewGmailWatch } from "./gmail-webhook";
 import { onMessagePublished } from "firebase-functions/v2/pubsub";
 import { handleNotionWebhook } from "./notion-webhook";
+
+// Every function must deploy into the same Cloud Run region the App
+// Hosting backend already uses (us-east4). Without this, firebase-functions
+// v2 defaults to us-central1, and a project can only span 3 Cloud Run
+// regions total — mixing regions burns through that quota fast.
+setGlobalOptions({ region: "us-east4" });
 
 if (!getApps().length) {
   // No explicit credential — the deployed function runs under its own
