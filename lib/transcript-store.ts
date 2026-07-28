@@ -51,47 +51,15 @@ function getDriveClient(): drive_v3.Drive {
 }
 
 // Hardcoded rather than looked up by name — avoids a Drive files.list
-// query (and its failure mode if the folder gets renamed) for the one
-// folder ID that never changes.
-const ROOT_FOLDER_ID = "1iRjFUTYdImEedwpij_FOW-mHobXA57Eo";
-const TRANSCRIPTS_SUBFOLDER_NAME = "Transcripts";
+// query (and its failure mode if the folder gets renamed, or if the
+// name-search just can't find it — the "Transcripts" name lookup under
+// the root folder was failing even though the subfolder exists) for the
+// one folder ID that never changes.
+const TRANSCRIPTS_FOLDER_ID = "1biOfzjeDtrragbFG9NaeHEyAICKsAEM9";
 
-let cachedFolderId: string | null = null;
-
-async function findFolderIdByName(
-  client: drive_v3.Drive,
-  name: string,
-  parentId: string
-): Promise<string | null> {
-  const { data } = await client.files.list({
-    q: `name = '${name}' and mimeType = 'application/vnd.google-apps.folder' and trashed = false and '${parentId}' in parents`,
-    fields: "files(id, name)",
-  });
-
-  return data.files?.[0]?.id ?? null;
-}
-
-async function findTranscriptsFolderId(client: drive_v3.Drive): Promise<string> {
-  if (cachedFolderId) {
-    return cachedFolderId;
-  }
-
+async function findTranscriptsFolderId(): Promise<string> {
   const envFolderId = process.env.OBSIDIAN_TRANSCRIPTS_FOLDER_ID;
-  if (envFolderId) {
-    cachedFolderId = envFolderId;
-    return envFolderId;
-  }
-
-  const transcriptsFolderId = await findFolderIdByName(client, TRANSCRIPTS_SUBFOLDER_NAME, ROOT_FOLDER_ID);
-  if (!transcriptsFolderId) {
-    throw new Error(
-      `No "${TRANSCRIPTS_SUBFOLDER_NAME}" subfolder found under the "North Vector Memories" folder in Drive — create a ` +
-        `"${TRANSCRIPTS_SUBFOLDER_NAME}" subfolder there before capturing transcripts.`
-    );
-  }
-
-  cachedFolderId = transcriptsFolderId;
-  return transcriptsFolderId;
+  return envFolderId ?? TRANSCRIPTS_FOLDER_ID;
 }
 
 // YYYY-MM-DD-HH-MM-SS, in America/New_York — matches the timezone
@@ -125,7 +93,7 @@ function transcriptFileName(date: Date): string {
 // where this is invoked).
 export async function createTranscript(text: string): Promise<{ fileId: string }> {
   const client = getDriveClient();
-  const folderId = await findTranscriptsFolderId(client);
+  const folderId = await findTranscriptsFolderId();
 
   const now = new Date();
   const bodyWithCenterPoint = `${text}\n\n[[Transcript Memories Center Point]]`;
@@ -166,7 +134,7 @@ export type StoredTranscript = {
 // Transcripts/ folder grows into the thousands over time.
 export async function listTranscriptsSince(since: Date): Promise<StoredTranscript[]> {
   const client = getDriveClient();
-  const folderId = await findTranscriptsFolderId(client);
+  const folderId = await findTranscriptsFolderId();
 
   const { data } = await client.files.list({
     q: `'${folderId}' in parents and mimeType = 'text/markdown' and trashed = false and createdTime > '${since.toISOString()}'`,
