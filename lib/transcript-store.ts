@@ -50,7 +50,10 @@ function getDriveClient(): drive_v3.Drive {
   return cachedClient;
 }
 
-const ROOT_FOLDER_NAME = "North Vector Memories";
+// Hardcoded rather than looked up by name — avoids a Drive files.list
+// query (and its failure mode if the folder gets renamed) for the one
+// folder ID that never changes.
+const ROOT_FOLDER_ID = "1iRjFUTYdImEedwpij_FOW-mHobXA57Eo";
 const TRANSCRIPTS_SUBFOLDER_NAME = "Transcripts";
 
 let cachedFolderId: string | null = null;
@@ -58,11 +61,10 @@ let cachedFolderId: string | null = null;
 async function findFolderIdByName(
   client: drive_v3.Drive,
   name: string,
-  parentId?: string
+  parentId: string
 ): Promise<string | null> {
-  const parentClause = parentId ? ` and '${parentId}' in parents` : "";
   const { data } = await client.files.list({
-    q: `name = '${name}' and mimeType = 'application/vnd.google-apps.folder' and trashed = false${parentClause}`,
+    q: `name = '${name}' and mimeType = 'application/vnd.google-apps.folder' and trashed = false and '${parentId}' in parents`,
     fields: "files(id, name)",
   });
 
@@ -80,16 +82,11 @@ async function findTranscriptsFolderId(client: drive_v3.Drive): Promise<string> 
     return envFolderId;
   }
 
-  const rootFolderId = await findFolderIdByName(client, ROOT_FOLDER_NAME);
-  if (!rootFolderId) {
-    throw new Error(`No "${ROOT_FOLDER_NAME}" folder found in Drive.`);
-  }
-
-  const transcriptsFolderId = await findFolderIdByName(client, TRANSCRIPTS_SUBFOLDER_NAME, rootFolderId);
+  const transcriptsFolderId = await findFolderIdByName(client, TRANSCRIPTS_SUBFOLDER_NAME, ROOT_FOLDER_ID);
   if (!transcriptsFolderId) {
     throw new Error(
-      `No "${ROOT_FOLDER_NAME}/${TRANSCRIPTS_SUBFOLDER_NAME}" folder found in Drive — create a ` +
-        `"${TRANSCRIPTS_SUBFOLDER_NAME}" subfolder inside the vault's "${ROOT_FOLDER_NAME}" folder before capturing transcripts.`
+      `No "${TRANSCRIPTS_SUBFOLDER_NAME}" subfolder found under the "North Vector Memories" folder in Drive — create a ` +
+        `"${TRANSCRIPTS_SUBFOLDER_NAME}" subfolder there before capturing transcripts.`
     );
   }
 

@@ -45,7 +45,10 @@ function getDriveClient(): drive_v3.Drive {
   return cachedClient;
 }
 
-const ROOT_FOLDER_NAME = "North Vector Memories";
+// Hardcoded rather than looked up by name — avoids a Drive files.list
+// query (and its failure mode if the folder gets renamed) for the one
+// folder ID that never changes.
+const ROOT_FOLDER_ID = "1iRjFUTYdImEedwpij_FOW-mHobXA57Eo";
 const TIER_SUBFOLDER_NAME: Record<MemoryTier, string> = {
   general: "General",
   distilled: "Distilled",
@@ -56,11 +59,10 @@ const cachedFolderIds: Partial<Record<MemoryTier, string>> = {};
 async function findFolderIdByName(
   client: drive_v3.Drive,
   name: string,
-  parentId?: string
+  parentId: string
 ): Promise<string | null> {
-  const parentClause = parentId ? ` and '${parentId}' in parents` : "";
   const { data } = await client.files.list({
-    q: `name = '${name}' and mimeType = 'application/vnd.google-apps.folder' and trashed = false${parentClause}`,
+    q: `name = '${name}' and mimeType = 'application/vnd.google-apps.folder' and trashed = false and '${parentId}' in parents`,
     fields: "files(id, name)",
   });
 
@@ -79,15 +81,10 @@ async function findOrCacheTierFolderId(client: drive_v3.Drive, tier: MemoryTier)
     return envFolderId;
   }
 
-  const rootFolderId = await findFolderIdByName(client, ROOT_FOLDER_NAME);
-  if (!rootFolderId) {
-    throw new Error(`No "${ROOT_FOLDER_NAME}" folder found in Drive.`);
-  }
-
   const subfolderName = TIER_SUBFOLDER_NAME[tier];
-  const tierFolderId = await findFolderIdByName(client, subfolderName, rootFolderId);
+  const tierFolderId = await findFolderIdByName(client, subfolderName, ROOT_FOLDER_ID);
   if (!tierFolderId) {
-    throw new Error(`No "${ROOT_FOLDER_NAME}/${subfolderName}" folder found in Drive.`);
+    throw new Error(`No "${subfolderName}" subfolder found under the "North Vector Memories" folder in Drive.`);
   }
 
   cachedFolderIds[tier] = tierFolderId;
