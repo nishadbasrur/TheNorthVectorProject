@@ -1,4 +1,3 @@
-import "server-only";
 import { text as readStreamAsText } from "node:stream/consumers";
 import { drive, auth as googleAuth, type drive_v3 } from "@googleapis/drive";
 import matter from "gray-matter";
@@ -7,6 +6,15 @@ import { embedText, findCandidatesByTags, cosineSimilarity } from "./memory-embe
 import type { MemoryTier } from "./obsidian-memory-store";
 import { adminDb } from "./firebase-admin";
 
+// Deliberately no "server-only" guard — shared with the esbuild-bundled
+// Cloud Functions runtime (functions/src/transcript-batch-scan.ts and,
+// transitively, weekly-retrospective-scan.ts via memory-promotion-engine.ts),
+// same reasoning as lib/google-calendar-client.ts and
+// lib/opportunity-store.ts. Confirmed the hard way: the real "server-only"
+// package's default export unconditionally throws unless a bundler sets
+// the "react-server" import condition (only Next.js's own webpack config
+// does) — plain Node/esbuild always resolve to the throwing branch.
+//
 // Read path for the Obsidian/Drive-backed memory store — see
 // lib/obsidian-memory-store.ts for the write path and the shared OAuth
 // setup this mirrors exactly (same cached-client pattern, same env vars,
@@ -36,7 +44,7 @@ function getDriveClient(): drive_v3.Drive {
   return cachedClient;
 }
 
-const ROOT_FOLDER_NAME = "Memories";
+const ROOT_FOLDER_NAME = "North Vector Memories";
 const TIER_SUBFOLDER_NAME: Record<MemoryTier, string> = {
   general: "General",
   distilled: "Distilled",

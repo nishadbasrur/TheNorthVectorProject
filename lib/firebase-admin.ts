@@ -1,4 +1,11 @@
-import "server-only";
+// Deliberately no "server-only" guard — shared with the esbuild-bundled
+// Cloud Functions runtime (reachable via lib/capability-gap-store.ts's
+// logMemoryPromotionProposal, called from lib/memory-promotion-engine.ts,
+// called from functions/src/weekly-retrospective-scan.ts), same reasoning
+// as lib/google-calendar-client.ts and lib/opportunity-store.ts. getApps()
+// guard below already makes this safe to share — it reuses whatever app
+// Cloud Functions' own firebase-admin/app init already created rather than
+// double-initializing.
 import { cert, getApps, initializeApp, type App } from "firebase-admin/app";
 import { getFirestore } from "firebase-admin/firestore";
 import { getAuth } from "firebase-admin/auth";

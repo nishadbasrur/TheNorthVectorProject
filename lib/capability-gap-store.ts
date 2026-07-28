@@ -1,7 +1,53 @@
-import "server-only";
-import { adminDb } from "./firebase-admin";
+import { adminDb, adminMessaging } from "./firebase-admin";
 import { FieldValue } from "firebase-admin/firestore";
-import { sendPushNotification } from "./push-server";
+import { recordAction } from "./action-log-store";
+
+// Deliberately no "server-only" guard — logMemoryPromotionProposal below is
+// reachable from the esbuild-bundled Cloud Functions runtime (via
+// lib/memory-promotion-engine.ts, called from
+// functions/src/weekly-retrospective-scan.ts). Same reasoning as
+// lib/transcript-store.ts and lib/obsidian-memory-store.ts: the real
+// "server-only" package throws unless a bundler sets the "react-server"
+// import condition, which only Next.js's own webpack config does.
+//
+// logCapabilityGap and logDraftEmailGap below are Next.js-only in practice
+// (called from lib/tool-dispatcher.ts and the Gmail draft-watching route),
+// so they still reach lib/push-server.ts via a dynamic import — keeping
+// that module's adminMessaging-from-"./firebase-admin" Next.js wiring out
+// of the static Cloud Functions bundle graph entirely. logMemoryPromotionProposal
+// instead sends its push inline via adminMessaging directly, mirroring
+// functions/src/push.ts's own logic, so it never touches push-server.ts.
+async function sendPushNotificationInline(title: string, body: string, link?: string): Promise<boolean> {
+  const subscriptions = await adminDb.collection("push_subscriptions").get();
+  if (subscriptions.empty) return false;
+
+  let sentCount = 0;
+  for (const doc of subscriptions.docs) {
+    const token = doc.data().token as string | undefined;
+    if (!token) continue;
+
+    try {
+      await adminMessaging.send({ token, data: { title, body, ...(link ? { link } : {}) } });
+      sentCount += 1;
+    } catch (error) {
+      console.error(`[capability-gap-store] Push send failed for a registered device (doc ${doc.id}):`, error);
+    }
+  }
+
+  const sent = sentCount > 0;
+  if (sent) {
+    void recordAction({
+      kind: "push",
+      title,
+      body,
+      toolName: null,
+      outcome: null,
+      sessionId: null,
+    }).catch(() => {});
+  }
+
+  return sent;
+}
 
 // Public production URL — same hardcoded-not-sensitive treatment as
 // functions/src/index.ts's own APP_URL constant. Needed here (not just
@@ -26,6 +72,7 @@ export async function logCapabilityGap(request: string, capability: string): Pro
     status: "pending_gap",
   });
 
+  const { sendPushNotification } = await import("./push-server");
   await sendPushNotification(
     "North: capability gap",
     `${capability} — asked: "${request}"`
@@ -136,6 +183,7 @@ export async function logDraftEmailGap(params: {
     createdAt: FieldValue.serverTimestamp(),
   });
 
+  const { sendPushNotification } = await import("./push-server");
   await sendPushNotification(
     `North: drafted an email to ${params.to}`,
     params.reasoning,
@@ -168,7 +216,7 @@ export async function logMemoryPromotionProposal(params: {
     createdAt: FieldValue.serverTimestamp(),
   });
 
-  await sendPushNotification(
+  await sendPushNotificationInline(
     "North: proposed a memory promotion",
     params.reasoning,
     `${APP_URL}/capability-review/${doc.id}`

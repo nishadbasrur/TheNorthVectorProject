@@ -1,8 +1,17 @@
-import "server-only";
 import { text as readStreamAsText } from "node:stream/consumers";
 import { drive, auth as googleAuth, type drive_v3 } from "@googleapis/drive";
 import matter from "gray-matter";
 
+// Deliberately no "server-only" guard — shared with the esbuild-bundled
+// Cloud Functions runtime (functions/src/transcript-batch-scan.ts), same
+// reasoning as lib/google-calendar-client.ts and lib/opportunity-store.ts.
+// Confirmed the hard way: the real "server-only" package's default export
+// unconditionally throws unless a bundler sets the "react-server" import
+// condition (only Next.js's own webpack config does) — plain Node/esbuild
+// always resolve to the throwing branch, so this guard would crash the
+// Cloud Functions runtime the instant this module loads, not just fail to
+// protect anything.
+//
 // Tier 1 of the three-tier memory pipeline — raw, unfiltered voice-message
 // capture, no AI involved. See
 // North_Vector_Three_Tier_Memory_Pipeline_Plan.md. Deliberately its own
@@ -41,7 +50,7 @@ function getDriveClient(): drive_v3.Drive {
   return cachedClient;
 }
 
-const ROOT_FOLDER_NAME = "Memories";
+const ROOT_FOLDER_NAME = "North Vector Memories";
 const TRANSCRIPTS_SUBFOLDER_NAME = "Transcripts";
 
 let cachedFolderId: string | null = null;
@@ -80,7 +89,7 @@ async function findTranscriptsFolderId(client: drive_v3.Drive): Promise<string> 
   if (!transcriptsFolderId) {
     throw new Error(
       `No "${ROOT_FOLDER_NAME}/${TRANSCRIPTS_SUBFOLDER_NAME}" folder found in Drive — create a ` +
-        `"${TRANSCRIPTS_SUBFOLDER_NAME}" subfolder inside the vault's Memories/ folder before capturing transcripts.`
+        `"${TRANSCRIPTS_SUBFOLDER_NAME}" subfolder inside the vault's "${ROOT_FOLDER_NAME}" folder before capturing transcripts.`
     );
   }
 

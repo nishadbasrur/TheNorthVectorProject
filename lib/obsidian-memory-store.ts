@@ -1,8 +1,16 @@
-import "server-only";
 import { drive, auth as googleAuth, type drive_v3 } from "@googleapis/drive";
 import matter from "gray-matter";
 import { askClaude } from "./anthropic-client";
 
+// Deliberately no "server-only" guard — shared with the esbuild-bundled
+// Cloud Functions runtime (functions/src/transcript-batch-scan.ts), same
+// reasoning as lib/google-calendar-client.ts and lib/opportunity-store.ts.
+// Confirmed the hard way: the real "server-only" package's default export
+// unconditionally throws unless a bundler sets the "react-server" import
+// condition (only Next.js's own webpack config does) — plain Node/esbuild
+// always resolve to the throwing branch, so this guard would crash the
+// Cloud Functions runtime the instant this module loads.
+//
 // Memory storage, migrated from Firestore to markdown files in a Google
 // Drive folder that's mirrored into an Obsidian vault by the Drive desktop
 // app — see North_Vector_Memory_Storage_Migration_Obsidian_Two_Tier.md.
@@ -42,7 +50,7 @@ function getDriveClient(): drive_v3.Drive {
   return cachedClient;
 }
 
-const ROOT_FOLDER_NAME = "Memories";
+const ROOT_FOLDER_NAME = "North Vector Memories";
 
 export type MemoryTier = "general" | "distilled";
 

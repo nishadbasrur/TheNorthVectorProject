@@ -1,8 +1,15 @@
-import "server-only";
 import { VoyageAIClient } from "voyageai";
 import { adminDb } from "./firebase-admin";
 import { FieldValue } from "firebase-admin/firestore";
 
+// Deliberately no "server-only" guard — shared with the esbuild-bundled
+// Cloud Functions runtime (functions/src/transcript-batch-scan.ts), same
+// reasoning as lib/google-calendar-client.ts and lib/opportunity-store.ts.
+// Confirmed the hard way: the real "server-only" package's default export
+// unconditionally throws unless a bundler sets the "react-server" import
+// condition (only Next.js's own webpack config does) — plain Node/esbuild
+// always resolve to the throwing branch.
+//
 // Semantic layer for General/ tier memories — see
 // North_Vector_Memory_Storage_Migration_Obsidian_Two_Tier.md Section 3.2.
 // Distilled/ keeps using lib/memory-retrieval.ts's keyword scoreMemories();
