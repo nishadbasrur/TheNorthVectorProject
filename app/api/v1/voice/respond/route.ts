@@ -321,18 +321,18 @@ export async function POST(request: Request) {
   // elsewhere in this file referencing a separate "Judgment Engine" call
   // describe an architecture that's since been folded into this same
   // route — this IS the one real place "every voice message" passes
-  // through now). Wrapped in after(), not a bare fire-and-forget, for the
-  // same reason saveSession below is: this is a streaming response route,
-  // and an un-awaited promise can be killed the instant the stream closes.
-  // Never blocks or slows the response — see
+  // through now). Awaited directly rather than deferred via after() —
+  // after() was silently not executing here (diagnostic logging added
+  // below to confirm behavior either way). try/catch keeps a transcript
+  // failure from ever breaking the voice response itself. See
   // North_Vector_Three_Tier_Memory_Pipeline_Plan.md.
-  after(async () => {
-    try {
-      await createTranscript(text);
-    } catch (error) {
-      console.error("[voice-respond] createTranscript failed:", error);
-    }
-  });
+  console.log("createTranscript starting");
+  try {
+    await createTranscript(text);
+    console.log("createTranscript succeeded");
+  } catch (error) {
+    console.error("[voice-respond] createTranscript failed:", error);
+  }
 
   const [preferences, priorTurns] = await Promise.all([getPreferences(), loadSession(sessionId)]);
   console.log(`[voice-respond] Session loaded (${priorTurns.length} prior turn(s)) in ${Math.round(performance.now() - requestStart)}ms`);
