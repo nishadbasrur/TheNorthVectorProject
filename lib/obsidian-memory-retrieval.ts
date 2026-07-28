@@ -18,7 +18,8 @@ import { adminDb } from "./firebase-admin";
 // Read path for the Obsidian/Drive-backed memory store — see
 // lib/obsidian-memory-store.ts for the write path and the shared OAuth
 // setup this mirrors exactly (same cached-client pattern, same env vars,
-// same Memories/General + Memories/Distilled folder structure).
+// same "North Vector Memories"/General + "North Vector Memories"/Distilled
+// folder structure).
 
 let cachedClient: drive_v3.Drive | null = null;
 

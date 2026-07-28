@@ -20,11 +20,12 @@ import { askClaude } from "./anthropic-client";
 // as Gmail/Calendar once it's re-consented with the added drive.file scope
 // (see scripts/oauth-widen-scopes-drive.js), not a separate credential.
 //
-// Two tiers, both under one root "Memories" folder: Memories/General (low
-// bar, everything, write-only as far as keyword/semantic retrieval design
-// goes — see lib/obsidian-memory-retrieval.ts's retrieveGeneralMemories)
-// and Memories/Distilled (small, curated, the set lib/memory-retrieval.ts's
-// scoreMemories() was actually designed for).
+// Two tiers, both under one root "North Vector Memories" folder:
+// North Vector Memories/General (low bar, everything, write-only as far as
+// keyword/semantic retrieval design goes — see
+// lib/obsidian-memory-retrieval.ts's retrieveGeneralMemories) and
+// North Vector Memories/Distilled (small, curated, the set
+// lib/memory-retrieval.ts's scoreMemories() was actually designed for).
 
 let cachedClient: drive_v3.Drive | null = null;
 
@@ -97,7 +98,7 @@ async function findOrCacheTierFolderId(client: drive_v3.Drive, tier: MemoryTier)
   const rootFolderId = await findFolderIdByName(client, ROOT_FOLDER_NAME);
   if (!rootFolderId) {
     throw new Error(
-      `No "${ROOT_FOLDER_NAME}" folder found in Drive — confirm the Google Drive desktop app is mirroring the Obsidian vault's Memories/ folder before writing memories.`
+      `No "${ROOT_FOLDER_NAME}" folder found in Drive — confirm the Google Drive desktop app is mirroring the Obsidian vault's "${ROOT_FOLDER_NAME}" folder before writing memories.`
     );
   }
 
@@ -105,7 +106,7 @@ async function findOrCacheTierFolderId(client: drive_v3.Drive, tier: MemoryTier)
   const tierFolderId = await findFolderIdByName(client, subfolderName, rootFolderId);
   if (!tierFolderId) {
     throw new Error(
-      `No "${ROOT_FOLDER_NAME}/${subfolderName}" folder found in Drive — create a "${subfolderName}" subfolder inside the vault's Memories/ folder before writing ${tier}-tier memories.`
+      `No "${ROOT_FOLDER_NAME}/${subfolderName}" folder found in Drive — create a "${subfolderName}" subfolder inside the vault's "${ROOT_FOLDER_NAME}" folder before writing ${tier}-tier memories.`
     );
   }
 
