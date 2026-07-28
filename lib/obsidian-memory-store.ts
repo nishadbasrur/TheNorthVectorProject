@@ -1,3 +1,4 @@
+import { text as readStreamAsText } from "node:stream/consumers";
 import { drive, auth as googleAuth, type drive_v3 } from "@googleapis/drive";
 import matter from "gray-matter";
 import { askClaude } from "./anthropic-client";
@@ -84,17 +85,106 @@ export type CreateMemoryParams = {
   extraFrontmatter?: Record<string, string | number>;
 };
 
-// Appended to every note's body, tier-conditional — the Obsidian-side
-// hub note each tier's individual notes link back to.
-const TIER_CENTER_POINT_LINK: Record<MemoryTier, string> = {
-  general: "[[General Memories Central Point]]",
-  distilled: "[[Distilled Memories Center Point]]",
-};
+// Appended to every Distilled note's body — the Obsidian-side hub note
+// every Distilled note links back to, on top of the full mesh below.
+// General/Transcript notes no longer link to their center point directly —
+// see CATEGORIES below, they link to their category note instead, which is
+// itself the thing that links to the center point.
+const DISTILLED_CENTER_POINT_LINK = "[[Distilled Memories Center Point]]";
 
-export async function createMemory(params: CreateMemoryParams): Promise<{ fileId: string }> {
-  const bodyWithCenterPoint = `${params.content}\n\n${TIER_CENTER_POINT_LINK[params.tier]}`;
+// The 8 category sub-hubs living in both General/ and Transcript/ (see
+// scripts/import/create-category-hubs.mjs) — every note written to either
+// tier gets classified into exactly one of these and links to it instead
+// of the tier's center point, so the center point isn't a single node with
+// thousands of direct edges.
+const CATEGORIES = ["Identity", "Goals", "Finance", "Academic", "Relationships", "Health", "Career", "Misc"];
 
-  const fileContent = matter.stringify(bodyWithCenterPoint, {
+const CATEGORY_CLASSIFICATION_SYSTEM_PROMPT =
+  `Classify this memory into exactly one of these categories: ${CATEGORIES.join(", ")}. ` +
+  "Respond with ONLY the category name, exactly as written above, nothing else.";
+
+// Shared by createMemory (General tier) and lib/transcript-store.ts's
+// createTranscript — same categories, same prompt, kept duplicated rather
+// than shared per this codebase's existing convention of each Drive-facing
+// store file being self-contained (see getDriveClient above).
+async function classifyCategory(content: string): Promise<string> {
+  const result = await askClaude({
+    systemPrompt: CATEGORY_CLASSIFICATION_SYSTEM_PROMPT,
+    userMessage: content,
+    maxTokens: 20,
+  });
+
+  if (!result.ok) {
+    console.error("[obsidian-memory-store] Category classification failed:", result.error);
+    return "Misc";
+  }
+
+  const match = CATEGORIES.find((category) => category.toLowerCase() === result.text.trim().toLowerCase());
+  if (!match) {
+    console.error(`[obsidian-memory-store] Category classification returned unrecognized category: "${result.text.trim()}"`);
+  }
+  return match ?? "Misc";
+}
+
+function linkTargetFromFileName(name: string): string {
+  return name.replace(/\.md$/, "");
+}
+
+function extractWikilinkTargets(body: string): Set<string> {
+  const targets = new Set<string>();
+  const regex = /\[\[([^\]]+)\]\]/g;
+  let match: RegExpExecArray | null;
+  while ((match = regex.exec(body))) {
+    targets.add(match[1]);
+  }
+  return targets;
+}
+
+type DistilledNoteRef = { fileId: string; linkTarget: string };
+
+async function listDistilledNotes(client: drive_v3.Drive): Promise<DistilledNoteRef[]> {
+  const folderId = await findOrCacheTierFolderId("distilled");
+  const { data } = await client.files.list({
+    q: `'${folderId}' in parents and mimeType = 'text/markdown' and trashed = false`,
+    fields: "files(id, name)",
+  });
+
+  const files = data.files ?? [];
+  return files.map((file) => ({ fileId: file.id!, linkTarget: linkTargetFromFileName(file.name!) }));
+}
+
+// Appends `[[linkTarget]]` to an existing Distilled note's body, under a
+// "---" separator, unless that link is already present — keeps the full
+// mesh (every Distilled note links to every other) up to date whenever a
+// new note is added. Shared logic with
+// scripts/import/build-distilled-mesh.mjs's retroactive pass, duplicated
+// rather than imported since that script runs standalone via node,
+// outside the Next.js/esbuild module graph.
+async function appendLinkToDistilledNote(client: drive_v3.Drive, fileId: string, linkTarget: string): Promise<void> {
+  const response = await client.files.get({ fileId, alt: "media" }, { responseType: "stream" });
+  const raw = await readStreamAsText(response.data);
+
+  if (extractWikilinkTargets(raw).has(linkTarget)) {
+    return;
+  }
+
+  const updated = `${raw.trimEnd()}\n\n---\n[[${linkTarget}]]\n`;
+  await client.files.update({
+    fileId,
+    media: { mimeType: "text/markdown", body: updated },
+  });
+}
+
+async function createDistilledMemory(client: drive_v3.Drive, params: CreateMemoryParams): Promise<{ fileId: string }> {
+  const existingNotes = await listDistilledNotes(client);
+
+  const meshSection =
+    existingNotes.length > 0
+      ? `\n\n---\n${existingNotes.map((note) => `[[${note.linkTarget}]]`).join("\n")}`
+      : "";
+  const bodyWithLinks = `${params.content}\n\n${DISTILLED_CENTER_POINT_LINK}${meshSection}`;
+
+  const fileContent = matter.stringify(bodyWithLinks, {
     ...params.extraFrontmatter,
     domain: params.domain,
     type: params.type,
@@ -105,19 +195,49 @@ export async function createMemory(params: CreateMemoryParams): Promise<{ fileId
     created_at: new Date().toISOString(),
   });
 
-  const client = getDriveClient();
-  const folderId = await findOrCacheTierFolderId(params.tier);
+  const folderId = await findOrCacheTierFolderId("distilled");
+  const fileName = `${Date.now()}-memory.md`;
 
   const { data } = await client.files.create({
-    requestBody: {
-      name: `${Date.now()}-memory.md`,
-      parents: [folderId],
-      mimeType: "text/markdown",
-    },
-    media: {
-      mimeType: "text/markdown",
-      body: fileContent,
-    },
+    requestBody: { name: fileName, parents: [folderId], mimeType: "text/markdown" },
+    media: { mimeType: "text/markdown", body: fileContent },
+  });
+
+  if (!data.id) {
+    throw new Error("Drive did not return a file ID for the newly created memory.");
+  }
+
+  // Sequential, not Promise.all — Distilled is small/curated by design (see
+  // file header), so this stays cheap, and it avoids bursting Drive's
+  // per-user request quota with dozens of concurrent read+update pairs.
+  const newLinkTarget = linkTargetFromFileName(fileName);
+  for (const note of existingNotes) {
+    await appendLinkToDistilledNote(client, note.fileId, newLinkTarget);
+  }
+
+  return { fileId: data.id };
+}
+
+async function createGeneralMemory(client: drive_v3.Drive, params: CreateMemoryParams): Promise<{ fileId: string }> {
+  const category = await classifyCategory(params.content);
+  const bodyWithLinks = `${params.content}\n\n[[${category}]]`;
+
+  const fileContent = matter.stringify(bodyWithLinks, {
+    ...params.extraFrontmatter,
+    domain: params.domain,
+    type: params.type,
+    status: params.status ?? "active",
+    confidence: params.confidence ?? 0.7,
+    tier: params.tier,
+    tags: params.tags ?? [],
+    created_at: new Date().toISOString(),
+  });
+
+  const folderId = await findOrCacheTierFolderId("general");
+
+  const { data } = await client.files.create({
+    requestBody: { name: `${Date.now()}-memory.md`, parents: [folderId], mimeType: "text/markdown" },
+    media: { mimeType: "text/markdown", body: fileContent },
   });
 
   if (!data.id) {
@@ -125,6 +245,16 @@ export async function createMemory(params: CreateMemoryParams): Promise<{ fileId
   }
 
   return { fileId: data.id };
+}
+
+export async function createMemory(params: CreateMemoryParams): Promise<{ fileId: string }> {
+  const client = getDriveClient();
+
+  if (params.tier === "distilled") {
+    return createDistilledMemory(client, params);
+  }
+
+  return createGeneralMemory(client, params);
 }
 
 const TAG_EXTRACTION_SYSTEM_PROMPT =

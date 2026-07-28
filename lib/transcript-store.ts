@@ -1,6 +1,7 @@
 import { text as readStreamAsText } from "node:stream/consumers";
 import { drive, auth as googleAuth, type drive_v3 } from "@googleapis/drive";
 import matter from "gray-matter";
+import { askClaude } from "./anthropic-client";
 
 // Deliberately no "server-only" guard — shared with the esbuild-bundled
 // Cloud Functions runtime (functions/src/transcript-batch-scan.ts), same
@@ -62,6 +63,38 @@ async function findTranscriptsFolderId(): Promise<string> {
   return envFolderId ?? TRANSCRIPTS_FOLDER_ID;
 }
 
+// The 8 category sub-hubs living in both General/ and Transcript/ (see
+// scripts/import/create-category-hubs.mjs) — every transcript gets
+// classified into exactly one and links to it instead of the tier's
+// center point directly. Same categories/prompt as
+// lib/obsidian-memory-store.ts's classifyCategory, duplicated rather than
+// shared per this codebase's existing convention of each Drive-facing
+// store file being self-contained (see getDriveClient above).
+const CATEGORIES = ["Identity", "Goals", "Finance", "Academic", "Relationships", "Health", "Career", "Misc"];
+
+const CATEGORY_CLASSIFICATION_SYSTEM_PROMPT =
+  `Classify this memory into exactly one of these categories: ${CATEGORIES.join(", ")}. ` +
+  "Respond with ONLY the category name, exactly as written above, nothing else.";
+
+async function classifyCategory(content: string): Promise<string> {
+  const result = await askClaude({
+    systemPrompt: CATEGORY_CLASSIFICATION_SYSTEM_PROMPT,
+    userMessage: content,
+    maxTokens: 20,
+  });
+
+  if (!result.ok) {
+    console.error("[transcript-store] Category classification failed:", result.error);
+    return "Misc";
+  }
+
+  const match = CATEGORIES.find((category) => category.toLowerCase() === result.text.trim().toLowerCase());
+  if (!match) {
+    console.error(`[transcript-store] Category classification returned unrecognized category: "${result.text.trim()}"`);
+  }
+  return match ?? "Misc";
+}
+
 // YYYY-MM-DD-HH-MM-SS, in America/New_York — matches the timezone
 // convention already used everywhere else voice-facing in this codebase
 // (lib/google-calendar-client.ts's EVENT_TIME_ZONE,
@@ -96,8 +129,9 @@ export async function createTranscript(text: string): Promise<{ fileId: string }
   const folderId = await findTranscriptsFolderId();
 
   const now = new Date();
-  const bodyWithCenterPoint = `${text}\n\n[[Transcript Memories Center Point]]`;
-  const fileContent = matter.stringify(bodyWithCenterPoint, {
+  const category = await classifyCategory(text);
+  const bodyWithCategoryLink = `${text}\n\n[[${category}]]`;
+  const fileContent = matter.stringify(bodyWithCategoryLink, {
     date: now.toISOString(),
     source: "voice",
   });
