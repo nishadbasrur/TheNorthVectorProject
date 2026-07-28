@@ -66,8 +66,9 @@ export type RetrievedMemory = LocalMemory & {
 };
 
 // Common shape every scoreable memory record must have, regardless of
-// whether it came from the local curated file or Firestore.
-type ScoreableMemory = {
+// whether it came from the local curated file, Firestore, or the
+// Obsidian/Drive-backed memory store (lib/obsidian-memory-retrieval.ts).
+export type ScoreableMemory = {
   content: string;
   domain: string;
   type: string;

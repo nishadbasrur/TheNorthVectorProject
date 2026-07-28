@@ -21,10 +21,12 @@
     "@google-cloud/speech": "^7.5.0",
     "@google-cloud/text-to-speech": "^6.4.1",
     "@googleapis/calendar": "^15.0.0",
+    "@googleapis/drive": "^20.2.0",
     "@googleapis/gmail": "^17.0.0",
     "@notionhq/client": "^5.22.0",
     "firebase": "^12.14.0",
     "firebase-admin": "^14.1.0",
+    "gray-matter": "^4.0.3",
     "imapflow": "^1.4.7",
     "leaflet": "^1.9.4",
     "next": "latest",
@@ -35,6 +37,7 @@
     "react-dom": "latest",
     "react-plaid-link": "^4.1.1",
     "server-only": "^0.0.1",
+    "voyageai": "^0.4.0",
     "zod": "latest"
   },
   "devDependencies": {
