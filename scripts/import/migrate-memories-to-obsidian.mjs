@@ -12,10 +12,10 @@
 // search ever needs to include historically-migrated content" later.
 //
 // Does NOT touch or delete the Firestore collection — this is a copy, not
-// a move. Run it again safely if it fails partway (it doesn't dedupe
-// against files already written, so re-running after a partial failure
-// will create duplicates for whatever succeeded before the failure — check
-// the printed count against Drive before re-running a second time).
+// a move. Safe to re-run: before writing, it reads every existing note
+// already in Distilled/ (including the 5 created by hand) and skips any
+// Firestore record whose content matches one already there, so a partial
+// failure or a second run won't create duplicates.
 //
 // Every existing Firestore memory predates the domain/type fields (the
 // original schema only ever stored `content` + `createdAt` — see
@@ -32,10 +32,11 @@
 // Requires: FIREBASE_SERVICE_ACCOUNT_KEY, GOOGLE_CALENDAR_CLIENT_ID,
 // GOOGLE_CALENDAR_CLIENT_SECRET, GOOGLE_CALENDAR_REFRESH_TOKEN (re-consented
 // with the added drive.file scope — see scripts/oauth-widen-scopes-drive.js),
-// ANTHROPIC_API_KEY (tag extraction), VOYAGE_API_KEY (embeddings), and
-// either OBSIDIAN_DISTILLED_FOLDER_ID or a "Memories/Distilled" folder
-// already visible to that account in Drive.
+// ANTHROPIC_API_KEY (tag extraction), VOYAGE_API_KEY (embeddings). Writes
+// into the hardcoded Distilled folder ID below (same pattern as
+// lib/obsidian-memory-store.ts) unless OBSIDIAN_DISTILLED_FOLDER_ID is set.
 
+import { text as readStreamAsText } from "node:stream/consumers";
 import { initializeApp, cert } from "firebase-admin/app";
 import { getFirestore, FieldValue } from "firebase-admin/firestore";
 import { drive, auth as googleAuth } from "@googleapis/drive";
@@ -46,8 +47,11 @@ import { VoyageAIClient } from "voyageai";
 const DEFAULT_DOMAIN = "general";
 const DEFAULT_TYPE = "note";
 const DEFAULT_CONFIDENCE = 0.7;
-const ROOT_FOLDER_NAME = "Memories";
-const DISTILLED_SUBFOLDER_NAME = "Distilled";
+// Same hardcoded ID as lib/obsidian-memory-store.ts's TIER_FOLDER_ID.distilled
+// — avoids a Drive files.list name-search (the failure mode that bit
+// Transcripts/General/Distilled earlier).
+const DISTILLED_FOLDER_ID = "1aE-HOBcihomi7ChEK9Qmu-alDjIz4ZVV";
+const CENTER_POINT_LINK = "[[Distilled Memories Center Point]]";
 const EMBEDDING_MODEL = "voyage-3.5-lite";
 
 const serviceAccount = JSON.parse(process.env.FIREBASE_SERVICE_ACCOUNT_KEY);
@@ -83,39 +87,48 @@ const driveClient = drive({ version: "v3", auth: oauth2Client });
 const anthropic = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
 const voyage = new VoyageAIClient({ apiKey: process.env.VOYAGE_API_KEY });
 
-async function findFolderIdByName(name, parentId) {
-  const parentClause = parentId ? ` and '${parentId}' in parents` : "";
-  const { data } = await driveClient.files.list({
-    q: `name = '${name}' and mimeType = 'application/vnd.google-apps.folder' and trashed = false${parentClause}`,
-    fields: "files(id, name)",
-  });
-  return data.files?.[0]?.id ?? null;
+function getDistilledFolderId() {
+  return process.env.OBSIDIAN_DISTILLED_FOLDER_ID ?? DISTILLED_FOLDER_ID;
 }
 
-async function findDistilledFolderId() {
-  if (process.env.OBSIDIAN_DISTILLED_FOLDER_ID) {
-    return process.env.OBSIDIAN_DISTILLED_FOLDER_ID;
-  }
+// Dedup guard — the 5 notes already created by hand through the /memories
+// page use a different filename pattern (`${Date.now()}-memory.md`) than
+// this script's own (`${doc.id}-memory.md`), so filenames alone can't
+// detect an overlap. Compares by body content instead: reads every
+// existing file in Distilled/, strips frontmatter and the trailing center
+// point link, and returns the set of existing bodies so main() can skip
+// any Firestore record whose content already exists there.
+async function loadExistingDistilledContents(folderId) {
+  const { data } = await driveClient.files.list({
+    q: `'${folderId}' in parents and mimeType = 'text/markdown' and trashed = false`,
+    fields: "files(id, name)",
+  });
 
-  const rootId = await findFolderIdByName(ROOT_FOLDER_NAME);
-  if (!rootId) {
-    console.error(
-      `No "${ROOT_FOLDER_NAME}" folder found in Drive. Confirm the Google Drive desktop app is mirroring ` +
-        "the Obsidian vault's Memories/ folder before running this script."
+  const files = data.files ?? [];
+  const existing = new Set();
+
+  for (const file of files) {
+    const response = await driveClient.files.get(
+      { fileId: file.id, alt: "media" },
+      { responseType: "stream" }
     );
-    process.exit(1);
+    const raw = await readStreamAsText(response.data);
+    const parsed = matter(raw);
+    const body = parsed.content.replace(CENTER_POINT_LINK, "").trim();
+    existing.add(body);
   }
 
-  const distilledId = await findFolderIdByName(DISTILLED_SUBFOLDER_NAME, rootId);
-  if (!distilledId) {
-    console.error(
-      `No "${ROOT_FOLDER_NAME}/${DISTILLED_SUBFOLDER_NAME}" folder found in Drive. Create a ` +
-        `"${DISTILLED_SUBFOLDER_NAME}" subfolder inside the vault's Memories/ folder before running this script.`
-    );
-    process.exit(1);
-  }
+  return existing;
+}
 
-  return distilledId;
+// Claude sometimes wraps its JSON response in a ```json ... ``` fence
+// despite the "ONLY a JSON array" instruction — strip it before parsing
+// rather than tightening the prompt further, since the fence is easy to
+// strip and prompt-only fixes for this are unreliable.
+function stripCodeFence(text) {
+  const trimmed = text.trim();
+  const fenced = trimmed.match(/^```(?:json)?\s*([\s\S]*?)\s*```$/);
+  return fenced ? fenced[1] : trimmed;
 }
 
 async function extractTags(content) {
@@ -129,7 +142,7 @@ async function extractTags(content) {
       messages: [{ role: "user", content }],
     });
     const text = response.content[0]?.type === "text" ? response.content[0].text : "[]";
-    const parsed = JSON.parse(text);
+    const parsed = JSON.parse(stripCodeFence(text));
     return Array.isArray(parsed) ? parsed.filter((t) => typeof t === "string").slice(0, 5) : [];
   } catch (error) {
     console.warn("  Tag extraction failed for this record, continuing with no tags:", error.message || error);
@@ -137,17 +150,44 @@ async function extractTags(content) {
   }
 }
 
+function sleep(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+// Voyage accounts without a payment method on file are capped at 3 RPM —
+// exponential backoff starting at 20s (60s / 3 requests) so a 429 has a
+// real chance of clearing by the next attempt, doubling up to 5 retries
+// (20s, 40s, 80s, 160s, 320s) before giving up on that record.
 async function embedText(text) {
-  // Always "document" here — this script only ever embeds existing stored
-  // memories being migrated, never a live retrieval query.
-  const response = await voyage.embed({ input: text, model: EMBEDDING_MODEL, inputType: "document" });
-  const values = response.data?.[0]?.embedding;
-  if (!values) throw new Error("Voyage embedding API returned no vector.");
-  return values;
+  const maxRetries = 5;
+  const baseDelayMs = 20_000;
+
+  for (let attempt = 0; ; attempt++) {
+    try {
+      // Always "document" here — this script only ever embeds existing
+      // stored memories being migrated, never a live retrieval query.
+      const response = await voyage.embed({ input: text, model: EMBEDDING_MODEL, inputType: "document" });
+      const values = response.data?.[0]?.embedding;
+      if (!values) throw new Error("Voyage embedding API returned no vector.");
+      return values;
+    } catch (error) {
+      const isRateLimit = error?.statusCode === 429 || /429/.test(error?.message ?? "");
+      if (!isRateLimit || attempt >= maxRetries) {
+        throw error;
+      }
+      const delayMs = baseDelayMs * 2 ** attempt;
+      console.warn(`  Voyage rate limit hit, retrying in ${Math.round(delayMs / 1000)}s (attempt ${attempt + 1}/${maxRetries})...`);
+      await sleep(delayMs);
+    }
+  }
 }
 
 async function main() {
-  const folderId = await findDistilledFolderId();
+  const folderId = getDistilledFolderId();
+
+  console.log("Checking existing notes in Distilled/ for duplicates...");
+  const existingContents = await loadExistingDistilledContents(folderId);
+  console.log(`Found ${existingContents.size} existing note(s) already in Distilled/.`);
 
   const snapshot = await db.collection("memories").get();
   const originalCount = snapshot.size;
@@ -155,6 +195,8 @@ async function main() {
 
   const defaulted = [];
   let written = 0;
+  let skippedDuplicate = 0;
+  let skippedNoContent = 0;
 
   for (const doc of snapshot.docs) {
     const data = doc.data();
@@ -162,6 +204,13 @@ async function main() {
 
     if (!content) {
       console.warn(`Skipping ${doc.id}: no content field.`);
+      skippedNoContent += 1;
+      continue;
+    }
+
+    if (existingContents.has(content)) {
+      console.log(`Skipping ${doc.id}: already exists in Distilled/ (matched by content).`);
+      skippedDuplicate += 1;
       continue;
     }
 
@@ -177,7 +226,8 @@ async function main() {
     console.log(`Processing ${doc.id}...`);
     const tags = await extractTags(content);
 
-    const fileContent = matter.stringify(content, {
+    const bodyWithCenterPoint = `${content}\n\n${CENTER_POINT_LINK}`;
+    const fileContent = matter.stringify(bodyWithCenterPoint, {
       domain,
       type,
       status,
@@ -212,13 +262,13 @@ async function main() {
     written += 1;
   }
 
-  console.log(`\nWrote ${written} of ${originalCount} Firestore documents to Drive.`);
+  console.log(
+    `\nWrote ${written} of ${originalCount} Firestore documents to Drive ` +
+      `(${skippedDuplicate} skipped as duplicates, ${skippedNoContent} skipped for missing content).`
+  );
 
-  if (written !== originalCount) {
-    console.warn(
-      `Count mismatch: ${originalCount - written} document(s) were skipped (see warnings above, ` +
-        "usually missing content). Review before considering the migration complete."
-    );
+  if (written + skippedDuplicate + skippedNoContent !== originalCount) {
+    console.warn("Count mismatch — review the log above before considering the migration complete.");
   }
 
   if (defaulted.length > 0) {
