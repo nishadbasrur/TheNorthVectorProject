@@ -51,62 +51,21 @@ function getDriveClient(): drive_v3.Drive {
   return cachedClient;
 }
 
-// Hardcoded rather than looked up by name — avoids a Drive files.list
-// query (and its failure mode if the folder gets renamed) for the one
-// folder ID that never changes.
-const ROOT_FOLDER_ID = "1iRjFUTYdImEedwpij_FOW-mHobXA57Eo";
-
 export type MemoryTier = "general" | "distilled";
 
-const TIER_SUBFOLDER_NAME: Record<MemoryTier, string> = {
-  general: "General",
-  distilled: "Distilled",
+// Hardcoded rather than looked up by name — avoids a Drive files.list
+// query (and its failure mode if the name-search can't find the
+// subfolder, as happened with Transcripts) for folder IDs that never
+// change.
+const TIER_FOLDER_ID: Record<MemoryTier, string> = {
+  general: "1L8vkmxQh4t86oSKM2O4zJPOuKbwYUwf0",
+  distilled: "1aE-HOBcihomi7ChEK9Qmu-alDjIz4ZVV",
 };
 
-// Cached in module memory for the life of the server process — cheap and
-// correct here since this app runs as a small number of long-lived
-// instances (min-instances: 1, see apphosting.yaml), not ephemeral
-// per-request functions. OBSIDIAN_GENERAL_FOLDER_ID / OBSIDIAN_DISTILLED_FOLDER_ID
-// short-circuit the search entirely once each folder's real ID is known —
-// set them once Section 4.2's Drive mirroring is confirmed working, to
-// skip the lookup on every cold start.
-const cachedFolderIds: Partial<Record<MemoryTier, string>> = {};
-
-async function findFolderIdByName(
-  client: drive_v3.Drive,
-  name: string,
-  parentId: string
-): Promise<string | null> {
-  const { data } = await client.files.list({
-    q: `name = '${name}' and mimeType = 'application/vnd.google-apps.folder' and trashed = false and '${parentId}' in parents`,
-    fields: "files(id, name)",
-  });
-
-  return data.files?.[0]?.id ?? null;
-}
-
-async function findOrCacheTierFolderId(client: drive_v3.Drive, tier: MemoryTier): Promise<string> {
-  if (cachedFolderIds[tier]) {
-    return cachedFolderIds[tier]!;
-  }
-
+async function findOrCacheTierFolderId(tier: MemoryTier): Promise<string> {
   const envVar = tier === "general" ? "OBSIDIAN_GENERAL_FOLDER_ID" : "OBSIDIAN_DISTILLED_FOLDER_ID";
   const envFolderId = process.env[envVar];
-  if (envFolderId) {
-    cachedFolderIds[tier] = envFolderId;
-    return envFolderId;
-  }
-
-  const subfolderName = TIER_SUBFOLDER_NAME[tier];
-  const tierFolderId = await findFolderIdByName(client, subfolderName, ROOT_FOLDER_ID);
-  if (!tierFolderId) {
-    throw new Error(
-      `No "${subfolderName}" subfolder found under the "North Vector Memories" folder in Drive — create a "${subfolderName}" subfolder there before writing ${tier}-tier memories.`
-    );
-  }
-
-  cachedFolderIds[tier] = tierFolderId;
-  return tierFolderId;
+  return envFolderId ?? TIER_FOLDER_ID[tier];
 }
 
 export type CreateMemoryParams = {
@@ -147,7 +106,7 @@ export async function createMemory(params: CreateMemoryParams): Promise<{ fileId
   });
 
   const client = getDriveClient();
-  const folderId = await findOrCacheTierFolderId(client, params.tier);
+  const folderId = await findOrCacheTierFolderId(params.tier);
 
   const { data } = await client.files.create({
     requestBody: {
