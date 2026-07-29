@@ -7,6 +7,7 @@ import { auth } from "@/lib/firebase";
 import { isPrivateAudioOutputConnected } from "@/lib/audio-output-detector";
 import { useWakeWord, WAKE_WORD_KEYWORD_WHISPER } from "./use-wake-word";
 import { HudMap, type MapVisual } from "./hud-map";
+import { DisplayPanel, isDisplayContent, type DisplayContent } from "./display-panel";
 
 // TEMPORARY — lets Nishad grab a real ID token from the browser console for
 // manual curl testing of owner-gated endpoints (e.g. triggerSynthesisScan),
@@ -351,13 +352,24 @@ async function postVoiceRespond(text: string, sessionId: string): Promise<Respon
 // response text up front to decide whether to speak it quietly or show it
 // as text — see askNorthAndSpeakStream for the progressive-audio version
 // the normal (non-whisper) path uses instead.
-async function askNorth(text: string, sessionId: string): Promise<VoiceRespondResult> {
+async function askNorth(
+  text: string,
+  sessionId: string,
+  onDisplay?: (display: DisplayContent) => void
+): Promise<VoiceRespondResult> {
   const response = await postVoiceRespond(text, sessionId);
 
   for await (const { event, data } of parseSSEStream(response)) {
     if (event === "done") return parseVoiceRespondDoneEvent(data);
     if (event === "error") {
       throw new Error(typeof data.error === "string" ? data.error : "Voice stream error.");
+    }
+    // Fired the instant a push_to_screen tool call resolves, well before
+    // "done" — whisper mode still needs the whole response text up front
+    // (see this function's own doc comment), but there's no reason to make
+    // the display panel wait for that too.
+    if (event === "display" && isDisplayContent(data)) {
+      onDisplay?.(data);
     }
   }
 
@@ -383,6 +395,14 @@ export default function SandboxPage() {
   // lib/voice-session-store.ts's VisualState so a follow-up "zoom in" can
   // act on it without the frontend having to resend the current view.
   const [visual, setVisual] = useState<MapVisual | null>(null);
+  // What push_to_screen has pushed, if anything — set the instant the
+  // "display" SSE event arrives (before "done", see askNorth/
+  // askNorthAndSpeakStream below), not tied to any tool-specific follow-up
+  // state the way `visual` is (no server-side session record for this —
+  // nothing needs to read "what's currently displayed" back). Persists
+  // across turns until manually dismissed or replaced by a new push, same
+  // as the ticket's own spec — not cleared by goDormant the way `visual` is.
+  const [display, setDisplay] = useState<DisplayContent | null>(null);
 
   // One session per page visit — see lib/voice-session-store.ts for the
   // server-side idle expiration (10 min) that bounds how long this actually
@@ -764,6 +784,13 @@ export default function SandboxPage() {
             if (finalMeta.visual) setVisual(finalMeta.visual);
           } else if (event === "error") {
             throw new Error(typeof data.error === "string" ? data.error : "Voice stream error.");
+          } else if (event === "display") {
+            // Arrives well before "done" — the instant push_to_screen's
+            // tool call resolves, typically while an earlier iteration's
+            // audio is still playing (or before the final iteration's own
+            // audio has even started) — the actual point of this being its
+            // own event instead of bundled into "done" like visual is.
+            if (isDisplayContent(data)) setDisplay(data);
           }
         }
       } finally {
@@ -795,7 +822,7 @@ export default function SandboxPage() {
           // its routing below, not sentence-by-sentence audio — askNorth
           // drains the same SSE stream askNorthAndSpeakStream plays
           // progressively, it just discards the "audio" events.
-          const result = await askNorth(text, sessionIdRef.current);
+          const result = await askNorth(text, sessionIdRef.current, setDisplay);
           setResponseText(result.responseText);
           setToolsUsed(result.toolsUsed);
           if (result.visual) setVisual(result.visual); // only ever set, never cleared by a non-map turn — see hud-map close button / goDormant for the ways it goes away
@@ -1342,6 +1369,8 @@ export default function SandboxPage() {
               {showTranscript ? "Hide details" : "Details"}
             </button>
           </div>
+
+          {display && <DisplayPanel display={display} onClose={() => setDisplay(null)} />}
         </div>
       </div>
     </AppShell>

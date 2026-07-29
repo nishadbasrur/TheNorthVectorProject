@@ -1323,3 +1323,210 @@ html, body {
   color: var(--status-risk);
   text-align: center;
 }
+
+/* push_to_screen's display surface (app/sandbox/display-panel.tsx) — a
+   general canvas, not a set of pre-defined widgets. Sits alongside
+   .hud-panel as its own sibling under .hud-stage (not nested inside
+   .hud-panel) specifically so .hud-page-map-active .hud-panel's
+   `display: none` doesn't also hide it if a map happens to be up at the
+   same time. Invisible by default (only rendered at all when
+   sandbox/page.tsx's `display` state is non-null) and fades/slides in on
+   mount — see hud-display-in below. */
+.hud-display-panel {
+  width: 100%;
+  max-width: 640px;
+  margin-top: 20px;
+  border: 1px solid rgba(58, 214, 255, 0.18);
+  background: rgba(58, 214, 255, 0.04);
+  border-radius: 6px;
+  overflow: hidden;
+  animation: hud-display-in 0.35s ease;
+}
+
+@keyframes hud-display-in {
+  from { opacity: 0; transform: translateY(8px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
+.hud-display-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 10px 14px;
+  border-bottom: 1px solid rgba(58, 214, 255, 0.14);
+}
+
+.hud-display-title {
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 10px;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--hud-cyan);
+  opacity: 0.8;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* Subtle by design, per the ticket — a ghost text button in the same
+   register as .hud-transcript-toggle, not a prominent circular close
+   button like .hud-map-close (that one sits over a full-bleed map takeover
+   and needs to read clearly against arbitrary tile imagery; this panel is
+   already framed by its own bordered card). */
+.hud-display-close {
+  flex-shrink: 0;
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 10px;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: var(--hud-cyan);
+  opacity: 0.55;
+  background: none;
+  border: none;
+  cursor: pointer;
+  padding: 2px 4px;
+}
+
+.hud-display-close:hover {
+  opacity: 0.9;
+}
+
+.hud-display-body {
+  max-height: 50vh;
+  overflow-y: auto;
+  padding: 14px 16px;
+}
+
+/* Body copy inherits the app's default Times New Roman (see the global
+   `body` rule) — matches .hud-readout-text's own treatment, this is just a
+   bigger canvas for the same kind of content. Headers/links pick up the
+   HUD cyan accent instead of introducing a third color into this page. */
+.hud-display-markdown {
+  color: var(--text-primary);
+  font-size: 14px;
+  line-height: 1.6;
+}
+
+.hud-display-markdown :first-child {
+  margin-top: 0;
+}
+
+.hud-display-markdown :last-child {
+  margin-bottom: 0;
+}
+
+.hud-display-markdown h1,
+.hud-display-markdown h2,
+.hud-display-markdown h3,
+.hud-display-markdown h4 {
+  color: var(--hud-cyan);
+  font-weight: 600;
+  line-height: 1.3;
+  margin: 16px 0 8px;
+}
+
+.hud-display-markdown h1 { font-size: 20px; }
+.hud-display-markdown h2 { font-size: 17px; }
+.hud-display-markdown h3 { font-size: 15px; }
+.hud-display-markdown h4 { font-size: 14px; }
+
+.hud-display-markdown p {
+  margin: 0 0 10px;
+}
+
+.hud-display-markdown ul,
+.hud-display-markdown ol {
+  margin: 0 0 10px;
+  padding-left: 22px;
+}
+
+.hud-display-markdown li {
+  margin: 3px 0;
+}
+
+.hud-display-markdown a {
+  color: var(--hud-cyan);
+}
+
+.hud-display-markdown strong {
+  color: var(--white);
+}
+
+.hud-display-markdown code {
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 12px;
+  color: var(--hud-cyan);
+  background: rgba(58, 214, 255, 0.1);
+  padding: 1px 5px;
+  border-radius: 3px;
+}
+
+.hud-display-markdown pre {
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 12px;
+  color: var(--text-primary);
+  background: rgba(3, 7, 17, 0.6);
+  border: 1px solid rgba(58, 214, 255, 0.14);
+  border-radius: 4px;
+  padding: 10px 12px;
+  overflow-x: auto;
+  margin: 0 0 10px;
+}
+
+.hud-display-markdown pre code {
+  background: none;
+  color: inherit;
+  padding: 0;
+}
+
+.hud-display-markdown blockquote {
+  margin: 0 0 10px;
+  padding-left: 12px;
+  border-left: 2px solid rgba(58, 214, 255, 0.3);
+  color: var(--text-secondary);
+}
+
+.hud-display-markdown table {
+  width: 100%;
+  border-collapse: collapse;
+  margin: 0 0 10px;
+  font-size: 13px;
+}
+
+.hud-display-markdown th,
+.hud-display-markdown td {
+  border: 1px solid rgba(58, 214, 255, 0.16);
+  padding: 6px 10px;
+  text-align: left;
+}
+
+.hud-display-markdown th {
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 10px;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--hud-cyan);
+  background: rgba(58, 214, 255, 0.06);
+}
+
+.hud-display-json {
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 12px;
+  color: var(--text-primary);
+  white-space: pre-wrap;
+  word-break: break-word;
+  margin: 0;
+}
+
+.hud-display-html {
+  color: var(--text-primary);
+  font-size: 14px;
+  line-height: 1.6;
+}
+
+.hud-display-image {
+  display: block;
+  max-width: 100%;
+  border-radius: 4px;
+}

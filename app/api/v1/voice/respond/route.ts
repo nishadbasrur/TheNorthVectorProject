@@ -508,6 +508,16 @@ export async function POST(request: Request) {
                 toolsUsed.push(block.name);
                 const result = await executeTool(block.name, block.input, sessionId);
                 if (result.visual) visual = result.visual;
+                // push_to_screen's whole point is showing up before North
+                // finishes speaking — sent as its own SSE event the instant
+                // the tool call resolves, not bundled into "done" like
+                // visual is (which only fires once at the very end of the
+                // whole multi-iteration loop). See DisplayPanel/askNorth/
+                // askNorthAndSpeakStream in app/sandbox/page.tsx for the
+                // client side of this.
+                if (result.display) {
+                  controller.enqueue(sseEvent(encoder, "display", result.display));
+                }
                 // Choke-point action logging (see lib/action-log-store.ts) — this is
                 // the single call site every tool execution passes through, so
                 // wrapping it here captures the full #65 activity log without

@@ -279,6 +279,31 @@ export const TOOL_DEFINITIONS: Anthropic.Tool[] = [
     input_schema: { type: "object", properties: {} },
   },
   {
+    name: "push_to_screen",
+    description:
+      "Push rich visual content to the user's screen during a response. Use this when your response " +
+      "includes anything worth seeing rather than just hearing — comparisons, structured data, " +
+      "schematics, step-by-step breakdowns, reference material, visualizations, code, tables, or " +
+      "anything the user might want to read or refer back to while listening. Call this alongside " +
+      "your voice response, not instead of it.",
+    input_schema: {
+      type: "object",
+      properties: {
+        content: { type: "string", description: "The content to display." },
+        type: {
+          type: "string",
+          enum: ["markdown", "json", "html", "image"],
+          description:
+            "How to render the content — markdown (text, tables, lists, headers), json (formatted " +
+            "readable structure), html (sanitized, rendered inline), or image (from a URL). Defaults " +
+            "to markdown if omitted.",
+        },
+        title: { type: "string", description: "Optional title shown at the top of the display panel." },
+      },
+      required: ["content"],
+    },
+  },
+  {
     name: "note_capability_gap",
     description:
       "Log a request that's genuinely outside your current tools — instead of just declining, this " +
@@ -806,6 +831,53 @@ async function handleHighlightBuilding(sessionId: string): Promise<{ text: strin
   }
 }
 
+const DISPLAY_TYPES = ["markdown", "json", "html", "image"] as const;
+type DisplayContentType = (typeof DISPLAY_TYPES)[number];
+
+// General-purpose visual canvas push_to_screen writes to — app/sandbox/
+// display-panel.tsx has its own structurally-identical copy of this type
+// (deliberately decoupled, not imported — that file is a client component
+// and shouldn't import from this "server-only" one even for a type-only
+// import, same reasoning as hud-map.tsx's MapVisual vs VisualState above).
+// No Firestore persistence like VisualState has: nothing needs to read
+// "what's currently displayed" back for a follow-up tool call, so there's
+// nothing to load/save — the SSE "display" event (see
+// app/api/v1/voice/respond/route.ts) is the only place this travels
+// through.
+export type DisplayContent = {
+  type: DisplayContentType;
+  content: string;
+  title?: string;
+};
+
+function isDisplayContentType(value: unknown): value is DisplayContentType {
+  return (DISPLAY_TYPES as readonly string[]).includes(value as string);
+}
+
+async function handlePushToScreen(input: {
+  content?: string;
+  type?: string;
+  title?: string;
+}): Promise<{ text: string; display?: DisplayContent }> {
+  try {
+    if (!input.content || input.content.trim().length === 0) {
+      return { text: "No content given to display — nothing was pushed to the screen." };
+    }
+
+    const type: DisplayContentType = isDisplayContentType(input.type) ? input.type : "markdown";
+    const display: DisplayContent = {
+      type,
+      content: input.content,
+      ...(input.title ? { title: input.title } : {}),
+    };
+
+    return { text: "Pushed to the screen.", display };
+  } catch (error) {
+    reportToolError("push_to_screen", error, input);
+    return { text: "Pushing that to the screen failed." };
+  }
+}
+
 async function handleNoteCapabilityGap(input: { request: string; capability: string }): Promise<string> {
   try {
     await logCapabilityGap(input.request, input.capability);
@@ -1129,18 +1201,21 @@ async function handleRunAgentTask(input: { task: string; targetRepo?: string; co
   }
 }
 
-// Returns { text, visual } uniformly — text is what goes back to Claude as
-// the tool_result content, visual is only ever set by show_map and is what
-// app/api/v1/voice/respond/route.ts lifts into the API response for the
-// frontend to actually render. sessionId is unused by every handler except
-// show_map (it's the only one with "current visual" state to read/write),
-// but threading it through executeTool uniformly is simpler than a
-// show_map-only special case at the call site.
+// Returns { text, visual, display } uniformly — text is what goes back to
+// Claude as the tool_result content, visual is only ever set by show_map/
+// highlight_building and display only ever set by push_to_screen; both are
+// lifted by app/api/v1/voice/respond/route.ts into what the frontend
+// actually renders (visual via the final "done" event, display via its own
+// "display" SSE event fired the moment the tool call resolves — see that
+// route for why the two use different delivery timing). sessionId is
+// unused by every handler except show_map/highlight_building (the only
+// ones with "current visual" state to read/write), but threading it
+// through executeTool uniformly is simpler than a special case per caller.
 export async function executeTool(
   name: string,
   input: unknown,
   sessionId: string
-): Promise<{ text: string; visual?: VisualState }> {
+): Promise<{ text: string; visual?: VisualState; display?: DisplayContent }> {
   switch (name) {
     case "create_task":
       return { text: await handleCreateTask(input as { title: string }) };
@@ -1184,6 +1259,8 @@ export async function executeTool(
       return handleShowMap(input as { location?: string; zoomDelta?: number; zoomLevel?: number }, sessionId);
     case "highlight_building":
       return handleHighlightBuilding(sessionId);
+    case "push_to_screen":
+      return handlePushToScreen(input as { content?: string; type?: string; title?: string });
     case "note_capability_gap":
       return { text: await handleNoteCapabilityGap(input as { request: string; capability: string }) };
     case "check_bug_status":
