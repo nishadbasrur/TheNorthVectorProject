@@ -47,16 +47,37 @@ function looksLikeChemicalFormula(text: string): boolean {
 }
 
 // Wolfram's own NLP handles messy natural-language input fine — no attempt
-// here to extract a "clean" query, just pass the response itself, capped
-// to keep the request URL a sane length.
+// here to extract a "clean" query, just pass the response itself (after
+// stripUrls below), capped to keep the request URL a sane length.
 const WOLFRAM_QUERY_MAX_LENGTH = 300;
 
+// push_to_screen content routinely carries markdown links/images
+// (`[text](url)`, `![alt](url)`) alongside the actual subject text — e.g.
+// a Wikipedia thumbnail sitting next to a molecule's name. Left in, a URL
+// easily becomes the "subject" sent to Wolfram (it's often the longest
+// contiguous token, and matches ate it wholesale as part of the 300-char
+// slice) instead of the real topic, which Wolfram then can't answer.
+// Markdown link/image syntax is unwrapped to keep its visible text (a
+// plain "text" is still useful signal for Wolfram); bare URLs are dropped
+// outright since they have no visible text to keep.
+function stripUrls(text: string): string {
+  return text
+    .replace(/!\[([^\]]*)\]\([^)]*\)/g, "$1")
+    .replace(/\[([^\]]*)\]\([^)]*\)/g, "$1")
+    .replace(/https?:\/\/\S+/gi, "")
+    .replace(/\s{2,}/g, " ")
+    .trim();
+}
+
 export function detectWolframQuery(responseText: string): string | null {
+  const stripped = stripUrls(responseText);
+  if (!stripped) return null;
+
   const matched =
-    WOLFRAM_SIGNAL_PATTERNS.some((pattern) => pattern.test(responseText)) || looksLikeChemicalFormula(responseText);
+    WOLFRAM_SIGNAL_PATTERNS.some((pattern) => pattern.test(stripped)) || looksLikeChemicalFormula(stripped);
 
   if (!matched) return null;
-  return responseText.trim().slice(0, WOLFRAM_QUERY_MAX_LENGTH);
+  return stripped.slice(0, WOLFRAM_QUERY_MAX_LENGTH);
 }
 
 export type HologramObjectType = "card" | "molecule" | "building" | "product" | "abstract";

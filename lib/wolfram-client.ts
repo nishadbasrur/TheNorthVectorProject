@@ -7,7 +7,13 @@ import "server-only";
 // scanner or app/api/v1/wolfram/route.ts's manual endpoint. Next.js-only,
 // not shared with the Cloud Functions runtime (unlike most lib/ files in
 // this codebase), so the "server-only" guard here is safe.
-const WOLFRAM_SIMPLE_API_URL = "https://api.wolframalpha.com/v2/simple";
+// v1, not v2 — v2/simple doesn't exist. v2 is the Full Results API
+// (/v2/query, returns XML/JSON, input param named "input"); the
+// image-based Simple API this function actually wants lives at v1/simple
+// with an "i" param (confirmed against Wolfram's own Simple API docs:
+// https://products.wolframalpha.com/simple-api/documentation). Hitting the
+// wrong version here is what was producing the 401s.
+const WOLFRAM_SIMPLE_API_URL = "https://api.wolframalpha.com/v1/simple";
 
 // Returns a data: URL (the image bytes themselves, base64-encoded) rather
 // than a Wolfram-hosted image URL — DisplayPanel's "image" type just needs
