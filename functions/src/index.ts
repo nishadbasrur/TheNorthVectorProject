@@ -10,8 +10,12 @@ import { evaluateRisks, type RiskEvaluationTask, type RiskEvaluationGoal } from 
 import { resendApiKey, sendEmail, sendRiskSummaryEmail } from "./email";
 import { verifyOwner } from "./require-owner";
 import { runUrgencyScan } from "./urgency-scan";
-import { runSynthesisScan } from "./synthesis-scan";
-import { runWeeklyRetrospectiveScan } from "./weekly-retrospective-scan";
+import { runSynthesisScan, submitSynthesisScan, pollSynthesisScan } from "./synthesis-scan";
+import {
+  runWeeklyRetrospectiveScan,
+  submitWeeklyRetrospectiveScan,
+  pollWeeklyRetrospectiveScan,
+} from "./weekly-retrospective-scan";
 import { sendPushNotification } from "./push";
 import { dispatchCapabilityDraft } from "./capability-gap-dispatch";
 import { verifyPipelineCallback } from "./verify-pipeline-callback";
@@ -19,6 +23,8 @@ import { submitOpportunityScan, pollOpportunityScan } from "./opportunity-scan";
 import { getPendingBatch } from "../../lib/opportunity-store";
 import { submitTranscriptBatch, pollTranscriptBatch } from "./transcript-batch-scan";
 import { getPendingBatch as getPendingTranscriptBatch } from "../../lib/transcript-batch-store";
+import { getPendingBatch as getPendingSynthesisBatch } from "../../lib/synthesis-batch-store";
+import { getPendingBatch as getPendingWeeklyRetrospectiveBatch } from "../../lib/weekly-retrospective-batch-store";
 import { handleCalendarWebhook, registerOrRenewCalendarWatch } from "./calendar-webhook";
 import { handleGmailPush, registerOrRenewGmailWatch } from "./gmail-webhook";
 import { onMessagePublished } from "firebase-functions/v2/pubsub";
@@ -294,14 +300,38 @@ export const triggerSynthesisScan = onRequest(
 // shown won't resurface for 6 hours regardless), so this is the natural
 // cadence rather than an arbitrary pick — running more often would just
 // re-evaluate the same already-suppressed connections for no benefit.
-export const synthesisScan = onSchedule(
+//
+// On the Batch API (50% cheaper than synchronous calls), same submit
+// (every 6h) + poll (every 30 min) split as opportunityScanSubmit/
+// opportunityScanPoll — a batch can outlive one invocation's timeout
+// budget, and nothing here needs a same-minute answer (this is the
+// scheduled pass; the on-demand /synthesis/check-now route and
+// triggerSynthesisScan below both still call the synchronous path
+// directly for an immediate result). See functions/src/synthesis-scan.ts.
+export const synthesisScanSubmit = onSchedule(
   { schedule: "0 */6 * * *", secrets: synthesisScanSecrets, timeoutSeconds: 120 },
   async () => {
+    const pending = await getPendingSynthesisBatch();
+    if (pending) {
+      logger.log(`[synthesisScanSubmit] Skipping — batch ${pending.batchId} still outstanding.`);
+      return;
+    }
+
     try {
-      const summary = await runSynthesisScan();
-      logger.log(`[synthesisScan] ${JSON.stringify(summary)}`);
+      await submitSynthesisScan(anthropicApiKey.value());
     } catch (error) {
-      logger.error("[synthesisScan] Synthesis scan failed:", error);
+      logger.error("[synthesisScanSubmit] Failed to submit batch:", error);
+    }
+  }
+);
+
+export const synthesisScanPoll = onSchedule(
+  { schedule: "every 30 minutes", secrets: [anthropicApiKey] },
+  async () => {
+    try {
+      await pollSynthesisScan(anthropicApiKey.value());
+    } catch (error) {
+      logger.error("[synthesisScanPoll] Failed to poll batch:", error);
     }
   }
 );
@@ -338,14 +368,36 @@ export const triggerWeeklyRetrospective = onRequest(
 
 // Every Sunday 8am Eastern — no weekly-cadence schedule existed anywhere in
 // this codebase before this one.
-export const weeklyRetrospectiveScan = onSchedule(
+//
+// On the Batch API, same submit (Sundays 8am) + poll (every 30 min) split
+// as opportunityScanSubmit/opportunityScanPoll — see
+// functions/src/weekly-retrospective-scan.ts. triggerWeeklyRetrospective
+// above still calls the synchronous path directly for an immediate
+// verify-right-now result.
+export const weeklyRetrospectiveScanSubmit = onSchedule(
   { schedule: "0 8 * * 0", timeZone: "America/New_York", secrets: weeklyRetrospectiveSecrets, timeoutSeconds: 120 },
   async () => {
+    const pending = await getPendingWeeklyRetrospectiveBatch();
+    if (pending) {
+      logger.log(`[weeklyRetrospectiveScanSubmit] Skipping — batch ${pending.batchId} still outstanding.`);
+      return;
+    }
+
     try {
-      const summary = await runWeeklyRetrospectiveScan();
-      logger.log(`[weeklyRetrospectiveScan] ${JSON.stringify(summary)}`);
+      await submitWeeklyRetrospectiveScan(anthropicApiKey.value());
     } catch (error) {
-      logger.error("[weeklyRetrospectiveScan] Weekly retrospective scan failed:", error);
+      logger.error("[weeklyRetrospectiveScanSubmit] Failed to submit batch:", error);
+    }
+  }
+);
+
+export const weeklyRetrospectiveScanPoll = onSchedule(
+  { schedule: "every 30 minutes", secrets: [anthropicApiKey] },
+  async () => {
+    try {
+      await pollWeeklyRetrospectiveScan(anthropicApiKey.value());
+    } catch (error) {
+      logger.error("[weeklyRetrospectiveScanPoll] Failed to poll batch:", error);
     }
   }
 );

@@ -4,7 +4,6 @@
 import { getFirestore, FieldValue } from "firebase-admin/firestore";
 import { ensureFirebaseApp } from "./ensure-firebase-app";
 import type { SynthesisConnection } from "./synthesis-engine";
-import type { SynthesisContext } from "./synthesis-context";
 
 // Dedup key: same source-pair combination, not exact string match — a
 // connection between the same calendar event and email shouldn't re-surface
@@ -147,8 +146,25 @@ export async function markConnectionsSpoken(connections: SynthesisConnection[]):
   await batch.commit();
 }
 
+export type SynthesisSourceCounts = {
+  calendarEvents: number;
+  inboxMessages: number;
+  notionUrgentItems: number;
+  activeTasks: number;
+  activeGoals: number;
+};
+
+// Takes generatedAt/sourceCounts directly rather than a full SynthesisContext
+// — functions/src/synthesis-scan.ts's Batch API poll path only ever has the
+// small summary recorded at submit time (see lib/synthesis-batch-store.ts),
+// not the original context object, since the full context (Gmail bodies
+// etc.) is deliberately never persisted between submit and poll. The old
+// synchronous runSynthesisScan (still used by triggerSynthesisScan's manual
+// endpoint) derives the same shape from its own live context at the call
+// site instead.
 export async function recordSynthesisRun(params: {
-  context: SynthesisContext;
+  generatedAt: Date;
+  sourceCounts: SynthesisSourceCounts;
   allConnections: SynthesisConnection[];
   delivered: string[];
 }): Promise<void> {
@@ -160,14 +176,8 @@ export async function recordSynthesisRun(params: {
   // (docs/integrations/calendar-notion-gmail-task.md Section 3), applied
   // here across every source, not just Gmail.
   await db.collection("synthesis_runs").add({
-    generatedAt: params.context.generatedAt,
-    sourceCounts: {
-      calendarEvents: params.context.calendarEvents.length,
-      inboxMessages: params.context.inboxMessages.length,
-      notionUrgentItems: params.context.notionUrgentItems.length,
-      activeTasks: params.context.activeTasks.length,
-      activeGoals: params.context.activeGoals.length,
-    },
+    generatedAt: params.generatedAt,
+    sourceCounts: params.sourceCounts,
     connectionsFound: params.allConnections.length,
     connectionsDelivered: params.delivered,
     runAt: FieldValue.serverTimestamp(),

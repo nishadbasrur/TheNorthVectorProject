@@ -20,7 +20,12 @@ const SYNTHESIS_MODEL = "claude-sonnet-5";
 // This prompt is deliberately calibrated to surface more, score honestly,
 // and let lib/synthesis-priority.ts's delivery-channel logic (not this
 // prompt) decide what interrupts versus what waits for a summary.
-const SYNTHESIS_SYSTEM_PROMPT = `
+// Exported (not just used internally by runSynthesis below) so
+// functions/src/synthesis-scan.ts's Batch API submit/poll path can build
+// the same request and parse the same shape of result without duplicating
+// this prompt — same reasoning lib/opportunity-research.ts and
+// lib/transcript-batch-prompt.ts already export their prompts/parsers for.
+export const SYNTHESIS_SYSTEM_PROMPT = `
 You are North's synthesis reasoning pass. You will be given a snapshot of everything currently active across Nishad's calendar, inbox, Notion urgent items, recent text messages, tasks, goals, and relevant stored memories, starting with a CURRENT TIME line.
 
 Ground every timing claim in the actual timestamps given (CURRENT TIME, calendar event start times, email received times) — never say something "just arrived," "is starting soon," or similar unless the real timestamps support it. It's fine to connect an old email to a current situation (e.g. "an email from three days ago about X is still relevant now that Y is happening") — just describe the actual elapsed time honestly rather than implying immediacy that isn't there. This instruction constrains HOW you describe timing, not WHETHER something is worth surfacing at all: a connection with no urgency whatsoever — mark it "urgency": "fyi" — is still exactly as worth surfacing as an urgent one, per the generous-surfacing instruction below. Do not become more hesitant to surface something just because it isn't time-critical; "this doesn't need immediate action, but here's a real connection worth knowing about" is a completely normal, expected output, not an edge case.
@@ -56,7 +61,7 @@ export type SynthesisConnection = {
 // Deliberately compact, structured serialization — not raw JSON.stringify of
 // full objects (Gmail bodies especially need trimming, same 4000-char slice
 // precedent already used in lib/gmail-urgency.ts).
-function serializeContextForPrompt(context: SynthesisContext): string {
+export function serializeContextForPrompt(context: SynthesisContext): string {
   const calendarBlock = context.calendarEvents
     .map((e) => `- [calendar:${e.id}] "${e.title}" starts ${e.start.toISOString()}`)
     .join("\n");
@@ -112,7 +117,7 @@ function serializeContextForPrompt(context: SynthesisContext): string {
   ].join("\n\n");
 }
 
-function parseConnections(text: string): SynthesisConnection[] {
+export function parseConnections(text: string): SynthesisConnection[] {
   try {
     const parsed = JSON.parse(text);
     if (!Array.isArray(parsed)) return [];

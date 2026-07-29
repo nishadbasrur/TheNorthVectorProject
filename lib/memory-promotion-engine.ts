@@ -18,7 +18,12 @@ const PROMOTION_MODEL = "claude-sonnet-5"; // cross-entry pattern-finding, same
                                              // reasoning tier as the retrospective
                                              // itself — not a one-line verdict
 
-const PROMOTION_SYSTEM_PROMPT = `
+// Exported (not just used internally by proposeMemoryPromotions below) so
+// functions/src/weekly-retrospective-scan.ts's Batch API submit/poll path
+// can build the same request and parse the same shape of result without
+// duplicating this prompt — same reasoning lib/synthesis-engine.ts and
+// lib/weekly-retrospective-engine.ts export their own prompts/parsers for.
+export const PROMOTION_SYSTEM_PROMPT = `
 You are North's memory-promotion reasoning pass, run as part of the weekly retrospective. You will be given a list of recent "General" memory entries — everything Nishad told North this week, low bar, unfiltered. Most of these are one-off and don't deserve a permanent place in the small curated "Distilled" memory set.
 
 Your job: look for patterns ACROSS MULTIPLE entries (not just individually striking single entries) that collectively suggest something durable and worth remembering long-term — e.g. the same preference mentioned three different ways, a recurring person/topic, a fact that keeps getting referenced. A single mention of something, however interesting, is usually NOT enough on its own — the bar is "this keeps coming up" or "this is clearly a lasting fact," not "this was said."
@@ -36,11 +41,11 @@ Respond with a single JSON object with one field:
 Respond with ONLY the JSON object, nothing else.
 `.trim();
 
-function serializeEntriesForPrompt(entries: { content: string; tags: string[] }[]): string {
+export function serializeEntriesForPrompt(entries: { content: string; tags: string[] }[]): string {
   return entries.map((e, i) => `[entry ${i + 1}] (tags: ${e.tags.join(", ") || "none"})\n${e.content}`).join("\n\n");
 }
 
-type ProposedPromotion = {
+export type ProposedPromotion = {
   content: string;
   domain: string;
   type: string;
@@ -48,7 +53,7 @@ type ProposedPromotion = {
   reasoning: string;
 };
 
-function parseProposals(text: string): ProposedPromotion[] {
+export function parseProposals(text: string): ProposedPromotion[] {
   try {
     const parsed = JSON.parse(text) as Record<string, unknown>;
     if (!Array.isArray(parsed.promotions)) return [];

@@ -12,7 +12,12 @@ const RETROSPECTIVE_MODEL = "claude-sonnet-5"; // same reasoning as
                                                  // cross-source reasoning,
                                                  // not a one-line verdict
 
-const RETROSPECTIVE_SYSTEM_PROMPT = `
+// Exported (not just used internally by runWeeklyRetrospective below) so
+// functions/src/weekly-retrospective-scan.ts's Batch API submit/poll path
+// can build the same request and parse the same shape of result without
+// duplicating this prompt — same reasoning lib/synthesis-engine.ts exports
+// its own prompt/serializer/parser for.
+export const RETROSPECTIVE_SYSTEM_PROMPT = `
 You are North's weekly retrospective reasoning pass, delivered unprompted every Sunday morning. You will be given a snapshot of what happened over the past 7 days across Nishad's tasks, goals, and calendar — what was created, what was completed, what's still open, what's on the calendar, and (if available) last week's own goal-progress snapshot for comparison.
 
 Your job is to give an honest "what actually happened this week vs. what was planned" retrospective — not a neutral summary, a real assessment. If goal progress stalled relative to last week's snapshot, say so plainly. If a lot of tasks were created but few completed, that's worth naming, not glossing over. If something genuinely went well, say that plainly too — this should feel like a real chief-of-staff's Sunday check-in, not a status report.
@@ -29,7 +34,7 @@ Respond with a single JSON object with these fields:
 Respond with ONLY the JSON object, nothing else.
 `.trim();
 
-function serializeContextForPrompt(context: WeeklyRetrospectiveContext): string {
+export function serializeContextForPrompt(context: WeeklyRetrospectiveContext): string {
   const taskLine = (t: { id: string; title: string }) => `- [task:${t.id}] "${t.title}"`;
   const goalLine = (g: { id: string; title: string; progress: number }) =>
     `- [goal:${g.id}] "${g.title}" (${g.progress}% progress)`;
@@ -53,7 +58,7 @@ function serializeContextForPrompt(context: WeeklyRetrospectiveContext): string 
   ].join("\n\n");
 }
 
-function parseRetrospective(text: string, weekId: string): WeeklyRetrospective | null {
+export function parseRetrospective(text: string, weekId: string): WeeklyRetrospective | null {
   try {
     const parsed = JSON.parse(text) as Record<string, unknown>;
 
