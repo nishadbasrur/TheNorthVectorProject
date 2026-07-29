@@ -882,15 +882,29 @@ async function handlePushToScreen(input: {
     // Wolfram miss (no interpretation, network failure, missing key) — a
     // false-positive match or a Wolfram outage should never make
     // push_to_screen fail outright.
+    console.log(`[push_to_screen] Content received (${input.content.length} chars): ${input.content.slice(0, 200)}`);
+
     const wolframQuery = detectWolframQuery(input.content);
+    console.log(`[push_to_screen] detectWolframQuery: ${wolframQuery ? "hit" : "miss"}`);
     if (wolframQuery) {
+      console.log(`[push_to_screen] Wolfram query: ${wolframQuery}`);
       const imageDataUrl = await fetchWolframImage(wolframQuery);
       if (imageDataUrl) {
+        // fetchWolframImage never throws (see lib/wolfram-client.ts) — a
+        // failed lookup comes back as null, not a caught error, so there's
+        // no error object to log here on the miss path below. The actual
+        // reason (no interpretation, non-OK status, network failure) is
+        // already logged inside fetchWolframImage itself at the moment it
+        // happens.
+        console.log(`[push_to_screen] fetchWolframImage succeeded — data URL length ${imageDataUrl.length}`);
         return {
           text: "Pushed to the screen.",
           display: { type: "image", content: imageDataUrl, title: "Wolfram Alpha" },
         };
       }
+      console.log(
+        "[push_to_screen] fetchWolframImage returned null — falling back to original content. See [wolfram-client] logs above for the reason."
+      );
     }
 
     const display: DisplayContent = {
