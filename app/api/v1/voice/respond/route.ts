@@ -21,6 +21,8 @@ import { recordOccurrence } from "@/lib/recurring-signal-store";
 import { detectEngagement } from "@/lib/engagement-detector";
 import { detectRushSignal } from "@/lib/rush-detector";
 import { createTranscript } from "@/lib/transcript-store";
+import { detectWolframQuery, detectHologramSubject } from "@/lib/visual-scanner";
+import { fetchWolframImage } from "@/lib/wolfram-client";
 
 // #96 — read-only "check"/"search" tools stand in for question categories:
 // Claude already picked the tool, so the category is free and deterministic,
@@ -600,6 +602,39 @@ export async function POST(request: Request) {
           console.log(`[voice-respond] Total request time: ${Math.round(performance.now() - requestStart)}ms`);
 
           controller.enqueue(sseEvent(encoder, "done", { responseText, toolsUsed, visual }));
+
+          // Three-tier proactive visual scanner (Tier 1 Wolfram / Tier 2
+          // hologram) — deterministic regex/keyword only, zero extra Claude
+          // calls (see lib/visual-scanner.ts). Runs after "done" is already
+          // enqueued, not before: the client's SSE consumer keeps reading
+          // until the stream closes, not just until "done", so this never
+          // delays the primary spoken response landing. Skipped entirely if
+          // the screen is already claimed this turn — either a real
+          // show_map (visual truthy) or push_to_screen (toolsUsed) call —
+          // so the deterministic scanner never overrides something Claude
+          // itself deliberately put on screen. Own try/catch so a Wolfram
+          // network failure can't surface as a stream "error" and override
+          // an already-successful turn.
+          if (finalText && !visual && !toolsUsed.includes("push_to_screen")) {
+            try {
+              const wolframQuery = detectWolframQuery(finalText);
+              if (wolframQuery) {
+                const imageDataUrl = await fetchWolframImage(wolframQuery);
+                if (imageDataUrl) {
+                  controller.enqueue(
+                    sseEvent(encoder, "display", { type: "image", content: imageDataUrl, title: "Wolfram Alpha" })
+                  );
+                }
+              } else {
+                const hologramSignal = detectHologramSubject(finalText);
+                if (hologramSignal) {
+                  controller.enqueue(sseEvent(encoder, "hologram", hologramSignal));
+                }
+              }
+            } catch (error) {
+              console.error("[voice-respond] Visual scanner failed:", error);
+            }
+          }
         } catch (error) {
           console.error("[voice-respond] Streaming turn failed:", error);
           controller.enqueue(

@@ -7,6 +7,7 @@ import { isPrivateAudioOutputConnected } from "@/lib/audio-output-detector";
 import { useWakeWord, WAKE_WORD_KEYWORD_WHISPER } from "./use-wake-word";
 import type { MapVisual } from "./hud-map";
 import { isDisplayContent, type DisplayContent } from "./display-panel";
+import { isHologramVisual, type HologramVisual } from "./hologram-panel";
 
 // TEMPORARY — lets Nishad grab a real ID token from the browser console for
 // manual curl testing of owner-gated endpoints (e.g. triggerSynthesisScan),
@@ -291,7 +292,8 @@ async function postVoiceRespond(text: string, sessionId: string): Promise<Respon
 async function askNorth(
   text: string,
   sessionId: string,
-  onDisplay?: (display: DisplayContent) => void
+  onDisplay?: (display: DisplayContent) => void,
+  onHologram?: (hologram: HologramVisual) => void
 ): Promise<VoiceRespondResult> {
   const response = await postVoiceRespond(text, sessionId);
 
@@ -306,6 +308,13 @@ async function askNorth(
     // the display panel wait for that too.
     if (event === "display" && isDisplayContent(data)) {
       onDisplay?.(data);
+    }
+    // Tier 2's proactive scanner result — see
+    // app/api/v1/voice/respond/route.ts, fired after "done" (that route
+    // enqueues this after the primary response is already assembled, so
+    // it never delays "done" itself).
+    if (event === "hologram" && isHologramVisual(data)) {
+      onHologram?.(data);
     }
   }
 
@@ -325,6 +334,8 @@ type VoiceSessionValue = {
   setVisual: (visual: MapVisual | null) => void;
   display: DisplayContent | null;
   setDisplay: (display: DisplayContent | null) => void;
+  hologram: HologramVisual | null;
+  setHologram: (hologram: HologramVisual | null) => void;
   handleMicTap: () => void;
 };
 
@@ -369,7 +380,7 @@ export function VoiceSessionProvider({ children }: { children: ReactNode }) {
   // manual dismiss or going dormant. Server-side mirror lives in
   // lib/voice-session-store.ts's VisualState so a follow-up "zoom in" can
   // act on it without the frontend having to resend the current view.
-  const [visual, setVisual] = useState<MapVisual | null>(null);
+  const [visualState, setVisualState] = useState<MapVisual | null>(null);
   // What push_to_screen has pushed, if anything — set the instant the
   // "display" SSE event arrives (before "done", see askNorth/
   // askNorthAndSpeakStream below), not tied to any tool-specific follow-up
@@ -378,6 +389,22 @@ export function VoiceSessionProvider({ children }: { children: ReactNode }) {
   // across turns until manually dismissed or replaced by a new push, same
   // as the ticket's own spec — not cleared by goDormant the way `visual` is.
   const [display, setDisplay] = useState<DisplayContent | null>(null);
+  // Tier 2's full-screen holographic takeover — set the instant a
+  // "hologram" SSE event arrives (see askNorth/askNorthAndSpeakStream
+  // below). Both this and `visual` (the map) are full-screen takeovers, so
+  // setting either one clears the other — see setVisual/setHologram below,
+  // not the raw state setters — to keep two overlays from ever stacking.
+  const [hologramState, setHologramState] = useState<HologramVisual | null>(null);
+
+  const setVisual = useCallback((next: MapVisual | null) => {
+    if (next) setHologramState(null);
+    setVisualState(next);
+  }, []);
+
+  const setHologram = useCallback((next: HologramVisual | null) => {
+    if (next) setVisualState(null);
+    setHologramState(next);
+  }, []);
 
   // One session per app visit (this provider mounts once at the root
   // layout and never remounts on navigation — see the module comment
@@ -609,8 +636,9 @@ export function VoiceSessionProvider({ children }: { children: ReactNode }) {
     setMode("dormant");
     updateStatus("idle");
     setVisual(null); // map (if any) doesn't survive back to the resting orb-only screen
+    setHologram(null); // same treatment as the map takeover above
     isWhisperModeRef.current = false;
-  }, [clearInactivityTimer, teardownRecording, stopBargeInMonitor, updateStatus]);
+  }, [clearInactivityTimer, teardownRecording, stopBargeInMonitor, updateStatus, setVisual, setHologram]);
 
   const resetInactivityTimer = useCallback(() => {
     clearInactivityTimer();
@@ -782,6 +810,11 @@ export function VoiceSessionProvider({ children }: { children: ReactNode }) {
             // audio has even started) — the actual point of this being its
             // own event instead of bundled into "done" like visual is.
             if (isDisplayContent(data)) setDisplay(data);
+          } else if (event === "hologram") {
+            // Tier 2's proactive scanner result — fired after "done" (see
+            // app/api/v1/voice/respond/route.ts), so this always lands
+            // after finalMeta is already set above.
+            if (isHologramVisual(data)) setHologram(data);
           }
         }
       } finally {
@@ -795,7 +828,7 @@ export function VoiceSessionProvider({ children }: { children: ReactNode }) {
 
       return finalMeta;
     },
-    [startBargeInMonitor, stopBargeInMonitor, updateStatus]
+    [startBargeInMonitor, stopBargeInMonitor, updateStatus, setVisual, setHologram]
   );
 
   const handleTranscript = useCallback(
@@ -813,7 +846,7 @@ export function VoiceSessionProvider({ children }: { children: ReactNode }) {
           // its routing below, not sentence-by-sentence audio — askNorth
           // drains the same SSE stream askNorthAndSpeakStream plays
           // progressively, it just discards the "audio" events.
-          const result = await askNorth(text, sessionIdRef.current, setDisplay);
+          const result = await askNorth(text, sessionIdRef.current, setDisplay, setHologram);
           setResponseText(result.responseText);
           setToolsUsed(result.toolsUsed);
           if (result.visual) setVisual(result.visual); // only ever set, never cleared by a non-map turn — see hud-map close button / goDormant for the ways it goes away
@@ -1256,10 +1289,12 @@ export function VoiceSessionProvider({ children }: { children: ReactNode }) {
     transcript,
     responseText,
     toolsUsed,
-    visual,
+    visual: visualState,
     setVisual,
     display,
     setDisplay,
+    hologram: hologramState,
+    setHologram,
     handleMicTap,
   };
 

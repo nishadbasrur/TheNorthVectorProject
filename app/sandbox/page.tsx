@@ -4,6 +4,7 @@ import { AppShell } from "@/components/layout/app-shell";
 import { useVoiceSession } from "./voice-session-context";
 import { HudMap } from "./hud-map";
 import { DisplayPanel } from "./display-panel";
+import { HologramPanel } from "./hologram-panel";
 
 // Tick marks around the HUD ring, generated rather than hand-authored 24
 // <line> elements — kept subtle (see globals.css) since the reference
@@ -87,13 +88,18 @@ export default function SandboxPage() {
     setVisual,
     display,
     setDisplay,
+    hologram,
+    setHologram,
     handleMicTap,
   } = useVoiceSession();
 
+  const takeoverClass = visual ? "hud-page-map-active" : hologram ? "hud-page-hologram-active" : "";
+
   return (
     <AppShell>
-      <div className={`hud-page ${visual ? "hud-page-map-active" : ""}`}>
+      <div className={`hud-page ${takeoverClass}`}>
         {visual && <HudMap visual={visual} onClose={() => setVisual(null)} />}
+        {hologram && <HologramPanel hologram={hologram} onClose={() => setHologram(null)} />}
 
         <div className="hud-ruler">
           {Array.from({ length: 48 }, (_, i) => (

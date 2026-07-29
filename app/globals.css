@@ -983,6 +983,94 @@ html, body {
   background: rgba(58, 214, 255, 0.15);
 }
 
+/* Tier 2 hologram takeover — structurally parallel to the .hud-page-map-active
+   / .hud-map-* block above, deliberately not shared/renamed (each takeover
+   surface gets its own prefixed classes, matching this file's existing
+   convention). Mutual exclusion between the map and hologram takeovers is
+   handled in state (voice-session-context.tsx), not CSS. */
+.hud-page-hologram-active .hud-ruler {
+  display: none;
+}
+
+.hud-page-hologram-active .hud-stage {
+  position: fixed;
+  bottom: 20px;
+  right: 20px;
+  z-index: 40;
+  padding: 0;
+  transform: scale(0.4);
+  transform-origin: bottom right;
+}
+
+.hud-page-hologram-active .hud-panel {
+  display: none;
+}
+
+.hud-hologram-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 20;
+  background: #04070f;
+  overflow: hidden;
+}
+
+.hud-hologram-canvas {
+  position: absolute;
+  inset: 0;
+}
+
+.hud-hologram-canvas canvas {
+  display: block;
+  width: 100% !important;
+  height: 100% !important;
+}
+
+/* Vignette toward the edges — sells the "hologram projected in a dark room"
+   look and hides the WebGL canvas's hard rectangular edge, same purpose as
+   .hud-map-fade above. */
+.hud-hologram-fade {
+  position: absolute;
+  inset: 0;
+  z-index: 1;
+  background: radial-gradient(circle at 50% 50%, rgba(4, 7, 15, 0) 45%, rgba(4, 7, 15, 0.75) 100%);
+  pointer-events: none;
+}
+
+.hud-hologram-label {
+  position: absolute;
+  top: 20px;
+  left: 20px;
+  z-index: 21;
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 12px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--hud-cyan);
+  background: rgba(4, 7, 15, 0.7);
+  padding: 6px 12px;
+  border: 1px solid rgba(58, 214, 255, 0.3);
+  border-radius: 4px;
+}
+
+.hud-hologram-close {
+  position: absolute;
+  top: 16px;
+  right: 16px;
+  z-index: 21;
+  width: 32px;
+  height: 32px;
+  border-radius: 50%;
+  border: 1px solid rgba(58, 214, 255, 0.3);
+  background: rgba(4, 7, 15, 0.7);
+  color: var(--hud-cyan);
+  font-size: 14px;
+  cursor: pointer;
+}
+
+.hud-hologram-close:hover {
+  background: rgba(58, 214, 255, 0.15);
+}
+
 .hud-ring-wrap {
   position: relative;
   width: 260px;

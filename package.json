@@ -40,6 +40,7 @@
     "react-plaid-link": "^4.1.1",
     "remark-gfm": "^4.0.1",
     "server-only": "^0.0.1",
+    "three": "^0.185.1",
     "voyageai": "^0.4.0",
     "zod": "latest"
   },
@@ -50,6 +51,7 @@
     "@types/node": "latest",
     "@types/react": "latest",
     "@types/react-dom": "latest",
+    "@types/three": "^0.185.1",
     "autoprefixer": "latest",
     "eslint": "latest",
     "eslint-config-next": "latest",

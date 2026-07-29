@@ -95,6 +95,8 @@ env:
     secret: GOOGLE_CALENDAR_REFRESH_TOKEN
   - variable: NOTION_API_TOKEN
     secret: NOTION_API_TOKEN
+  - variable: WOLFRAM_APP_ID
+    secret: WOLFRAM_APP_ID
   - variable: GMAIL_REFRESH_TOKEN
     secret: GMAIL_REFRESH_TOKEN
   - variable: GITHUB_MERGE_TOKEN
