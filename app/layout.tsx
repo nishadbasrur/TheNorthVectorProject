@@ -1,6 +1,7 @@
 import type { Metadata } from "next";
 import "./globals.css";
 import { AuthGate } from "@/components/auth/auth-gate";
+import { VoiceSessionProvider } from "@/app/sandbox/voice-session-context";
 
 export const metadata: Metadata = {
   title: "North Vector",
@@ -23,7 +24,14 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
         <link rel="preconnect" href="https://fonts.gstatic.com" crossOrigin="anonymous" />
       </head>
       <body>
-        <AuthGate>{children}</AuthGate>
+        {/* Mounted once here, not inside app/sandbox/page.tsx, so the voice
+            session (mic capture, STT socket, TTS playback, wake-word
+            listening) survives navigating to any other page instead of
+            being torn down and restarted every time /sandbox unmounts —
+            see voice-session-context.tsx's module comment. */}
+        <AuthGate>
+          <VoiceSessionProvider>{children}</VoiceSessionProvider>
+        </AuthGate>
       </body>
     </html>
   );

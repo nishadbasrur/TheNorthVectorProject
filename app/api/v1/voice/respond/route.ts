@@ -438,13 +438,22 @@ export async function POST(request: Request) {
               systemPrompt,
               messages,
               tools: TOOL_DEFINITIONS,
-              maxTokens: 300, // was 150, was 400 originally — 150 turned out tight
-                               // enough to truncate mid-tool-call on some turns
-                               // (stop_reason "max_tokens" instead of "tool_use",
-                               // no completed text block, finalText came back
-                               // null). 300 keeps a real backstop against the model
-                               // ignoring the 60-word/no-markdown rule while giving
-                               // tool-calling turns enough room to actually finish.
+              maxTokens: 2000, // was 300, was 150, was 400 originally — 150 turned out
+                               // tight enough to truncate mid-tool-call on some turns
+                               // (stop_reason "max_tokens" instead of "tool_use", no
+                               // completed text block, finalText came back null). 300
+                               // fixed that for every tool's short JSON args, but
+                               // push_to_screen's `content` can run to a whole
+                               // markdown table or several paragraphs — the Anthropic
+                               // SDK falls back to input: {} when a tool call's JSON
+                               // gets cut off mid-stream (see
+                               // node_modules/@anthropic-ai/sdk/lib/middleware.js's
+                               // safeJSON(partial_json) ?? block.input), which made
+                               // handlePushToScreen see no `content` at all and skip
+                               // sending a "display" event — same class of bug as the
+                               // 150->300 fix, just for a tool with a much bigger
+                               // payload. 2000 gives real headroom for that while
+                               // still being a hard backstop, not unbounded.
             })) {
               if (event.type === "text_delta") {
                 sentenceBuffer += event.text;
