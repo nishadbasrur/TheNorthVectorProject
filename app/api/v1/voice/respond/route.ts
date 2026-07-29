@@ -21,8 +21,6 @@ import { recordOccurrence } from "@/lib/recurring-signal-store";
 import { detectEngagement } from "@/lib/engagement-detector";
 import { detectRushSignal } from "@/lib/rush-detector";
 import { createTranscript } from "@/lib/transcript-store";
-import { detectWolframQuery, detectHologramSubject } from "@/lib/visual-scanner";
-import { fetchWolframImage } from "@/lib/wolfram-client";
 
 // #96 — read-only "check"/"search" tools stand in for question categories:
 // Claude already picked the tool, so the category is free and deterministic,
@@ -602,50 +600,6 @@ export async function POST(request: Request) {
           console.log(`[voice-respond] Total request time: ${Math.round(performance.now() - requestStart)}ms`);
 
           controller.enqueue(sseEvent(encoder, "done", { responseText, toolsUsed, visual }));
-
-          // Three-tier proactive visual scanner (Tier 1 Wolfram / Tier 2
-          // hologram) — deterministic regex/keyword only, zero extra Claude
-          // calls (see lib/visual-scanner.ts). Runs after "done" is already
-          // enqueued, not before: the client's SSE consumer keeps reading
-          // until the stream closes, not just until "done", so this never
-          // delays the primary spoken response landing. Own try/catch so a
-          // Wolfram network failure can't surface as a stream "error" and
-          // override an already-successful turn.
-          //
-          // Wolfram deliberately does NOT skip when push_to_screen already
-          // fired this turn — a Wolfram result is strictly better than a
-          // markdown panel for math/science/data content, so it overrides
-          // push_to_screen's "display" event with its own later one (the
-          // client's setDisplay just takes whichever "display" event
-          // arrives last, see voice-session-context.tsx). It still skips
-          // when a map (`visual`) is up — that's a full-screen takeover,
-          // not a small panel, and overriding it silently would be a much
-          // bigger visual surprise than replacing a markdown panel.
-          //
-          // Hologram (Tier 2) keeps the original "don't override anything
-          // Claude already put on screen" guard — it's the lowest-priority
-          // tier and has no equivalent "strictly better" argument over
-          // either the map or push_to_screen.
-          if (finalText && !visual) {
-            try {
-              const wolframQuery = detectWolframQuery(finalText);
-              if (wolframQuery) {
-                const imageDataUrl = await fetchWolframImage(wolframQuery);
-                if (imageDataUrl) {
-                  controller.enqueue(
-                    sseEvent(encoder, "display", { type: "image", content: imageDataUrl, title: "Wolfram Alpha" })
-                  );
-                }
-              } else if (!toolsUsed.includes("push_to_screen")) {
-                const hologramSignal = detectHologramSubject(finalText);
-                if (hologramSignal) {
-                  controller.enqueue(sseEvent(encoder, "hologram", hologramSignal));
-                }
-              }
-            } catch (error) {
-              console.error("[voice-respond] Visual scanner failed:", error);
-            }
-          }
         } catch (error) {
           console.error("[voice-respond] Streaming turn failed:", error);
           controller.enqueue(

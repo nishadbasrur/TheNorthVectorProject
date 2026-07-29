@@ -27,6 +27,8 @@ import { logTechnicalError } from "./error-log-store";
 import { askClaudeWithWebSearch } from "./anthropic-client";
 import { getRecentTextMessages, searchTextMessages } from "./text-message-store";
 import { requiresConfirmation } from "./tool-tiers";
+import { detectWolframQuery } from "./visual-scanner";
+import { fetchWolframImage } from "./wolfram-client";
 
 // Single source of truth for what North can do via voice — read directly by
 // Claude as tool schemas, not maintained separately as prose (that
@@ -865,6 +867,32 @@ async function handlePushToScreen(input: {
     }
 
     const type: DisplayContentType = isDisplayContentType(input.type) ? input.type : "markdown";
+
+    // Wolfram upgrade — checked at the one real call site where
+    // push_to_screen's content is actually known, rather than scanning the
+    // whole response after the fact (the previous approach, in
+    // app/api/v1/voice/respond/route.ts, ran after the stream's "done"
+    // event — always too late, since push_to_screen's own "display" event
+    // fires the instant its tool call resolves, well before "done"). A
+    // math/science/data push_to_screen call (molecules, equations, unit
+    // conversions, nutrition, stats, chemical formulas — see
+    // detectWolframQuery) gets a real Wolfram Alpha image instead of a
+    // markdown panel, since that's a strictly better answer for this
+    // content. Falls straight back to the original content on any
+    // Wolfram miss (no interpretation, network failure, missing key) — a
+    // false-positive match or a Wolfram outage should never make
+    // push_to_screen fail outright.
+    const wolframQuery = detectWolframQuery(input.content);
+    if (wolframQuery) {
+      const imageDataUrl = await fetchWolframImage(wolframQuery);
+      if (imageDataUrl) {
+        return {
+          text: "Pushed to the screen.",
+          display: { type: "image", content: imageDataUrl, title: "Wolfram Alpha" },
+        };
+      }
+    }
+
     const display: DisplayContent = {
       type,
       content: input.content,
