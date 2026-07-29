@@ -728,9 +728,25 @@ export default function SandboxPage() {
 
       let bargedIn = false;
       let currentAudioElement: HTMLAudioElement | null = null;
+      // Settles whichever chunk's playback Promise is currently pending, if
+      // any — set/cleared around each chunk's own Promise below. Without
+      // this, pausing currentAudioElement alone doesn't unblock the loop:
+      // .pause() fires neither onended nor onerror, so the `await new
+      // Promise` for the chunk that was playing at the moment of barge-in
+      // never resolves, the for-await loop never reaches its next
+      // `if (bargedIn) break`, and the whole turn hangs at "speaking"
+      // forever — confirmed live (audio genuinely stops, but the state
+      // machine never moves on). speak() avoids this same trap by setting
+      // up barge-in from *inside* its own single Promise executor, with
+      // direct access to that call's own finish(); this function calls
+      // startBargeInMonitor once for the whole streamed response instead
+      // (see the comment below), so it needs an explicit hook into
+      // whichever chunk is active right now.
+      let finishCurrentChunk: (() => void) | null = null;
       startBargeInMonitor(() => {
         bargedIn = true;
         currentAudioElement?.pause();
+        finishCurrentChunk?.();
       });
 
       let finalMeta: VoiceRespondResult | null = null;
@@ -758,6 +774,7 @@ export default function SandboxPage() {
                 settled = true;
                 resolve();
               };
+              finishCurrentChunk = finish;
               audioElement.onended = finish;
               audioElement.onerror = () => {
                 console.warn("[Sandbox] Audio chunk playback failed, skipping.");
@@ -765,6 +782,7 @@ export default function SandboxPage() {
               };
               audioElement.play().catch(() => finish());
             });
+            finishCurrentChunk = null;
 
             URL.revokeObjectURL(url);
           } else if (event === "done") {
