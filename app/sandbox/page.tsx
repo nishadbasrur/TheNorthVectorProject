@@ -212,6 +212,13 @@ export default function SandboxPage() {
 
           {display && <DisplayPanel display={display} onClose={() => setDisplay(null)} />}
         </div>
+
+        {/* Baked in at build time via next.config.mjs's env block, not read
+            from apphosting.yaml directly — that file's env vars only take a
+            static literal or a Secret Manager reference, neither of which
+            can track "whatever commit is currently deployed" as it changes
+            with every push. */}
+        <div className="hud-version">{process.env.NEXT_PUBLIC_COMMIT_SHA || "dev"}</div>
       </div>
     </AppShell>
   );

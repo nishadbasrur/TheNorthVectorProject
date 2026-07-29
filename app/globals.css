@@ -1071,6 +1071,24 @@ html, body {
   background: rgba(58, 214, 255, 0.15);
 }
 
+/* Build/commit indicator — bottom-right corner of the canvas. position:
+   fixed (not absolute) so it stays anchored to the viewport corner
+   regardless of .hud-page's own layout, and a low z-index so it sits
+   behind the map/hologram takeover overlays (z-index 20+) rather than
+   floating on top of them once one is active. */
+.hud-version {
+  position: fixed;
+  bottom: 8px;
+  right: 12px;
+  z-index: 3;
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 10px;
+  letter-spacing: 0.05em;
+  color: rgba(58, 214, 255, 0.4);
+  pointer-events: none;
+  user-select: none;
+}
+
 .hud-ring-wrap {
   position: relative;
   width: 260px;
