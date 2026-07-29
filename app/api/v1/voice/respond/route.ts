@@ -608,14 +608,25 @@ export async function POST(request: Request) {
           // calls (see lib/visual-scanner.ts). Runs after "done" is already
           // enqueued, not before: the client's SSE consumer keeps reading
           // until the stream closes, not just until "done", so this never
-          // delays the primary spoken response landing. Skipped entirely if
-          // the screen is already claimed this turn — either a real
-          // show_map (visual truthy) or push_to_screen (toolsUsed) call —
-          // so the deterministic scanner never overrides something Claude
-          // itself deliberately put on screen. Own try/catch so a Wolfram
-          // network failure can't surface as a stream "error" and override
-          // an already-successful turn.
-          if (finalText && !visual && !toolsUsed.includes("push_to_screen")) {
+          // delays the primary spoken response landing. Own try/catch so a
+          // Wolfram network failure can't surface as a stream "error" and
+          // override an already-successful turn.
+          //
+          // Wolfram deliberately does NOT skip when push_to_screen already
+          // fired this turn — a Wolfram result is strictly better than a
+          // markdown panel for math/science/data content, so it overrides
+          // push_to_screen's "display" event with its own later one (the
+          // client's setDisplay just takes whichever "display" event
+          // arrives last, see voice-session-context.tsx). It still skips
+          // when a map (`visual`) is up — that's a full-screen takeover,
+          // not a small panel, and overriding it silently would be a much
+          // bigger visual surprise than replacing a markdown panel.
+          //
+          // Hologram (Tier 2) keeps the original "don't override anything
+          // Claude already put on screen" guard — it's the lowest-priority
+          // tier and has no equivalent "strictly better" argument over
+          // either the map or push_to_screen.
+          if (finalText && !visual) {
             try {
               const wolframQuery = detectWolframQuery(finalText);
               if (wolframQuery) {
@@ -625,7 +636,7 @@ export async function POST(request: Request) {
                     sseEvent(encoder, "display", { type: "image", content: imageDataUrl, title: "Wolfram Alpha" })
                   );
                 }
-              } else {
+              } else if (!toolsUsed.includes("push_to_screen")) {
                 const hologramSignal = detectHologramSubject(finalText);
                 if (hologramSignal) {
                   controller.enqueue(sseEvent(encoder, "hologram", hologramSignal));

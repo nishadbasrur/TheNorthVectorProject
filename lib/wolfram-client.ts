@@ -20,6 +20,11 @@ const WOLFRAM_SIMPLE_API_URL = "https://api.wolframalpha.com/v2/simple";
 // outcome, not a bug, and must never break the voice response around it.
 export async function fetchWolframImage(query: string): Promise<string | null> {
   const appId = process.env.WOLFRAM_APP_ID;
+  // Presence/length only, never the value itself — confirms the secret
+  // actually made it into this request's environment (e.g. after a
+  // Secret Manager access grant or an apphosting.yaml change) without
+  // logging anything that could leak it.
+  console.log(`[wolfram-client] WOLFRAM_APP_ID present: ${!!appId}${appId ? ` (length ${appId.length})` : ""}`);
   if (!appId) {
     console.error("[wolfram-client] WOLFRAM_APP_ID not configured.");
     return null;
