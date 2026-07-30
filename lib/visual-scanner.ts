@@ -104,15 +104,35 @@ export type HologramSignal = {
 // in the spec first, then a broader (but still bounded, still zero-AI)
 // catch-all list mapped to the "abstract" wireframe renderer for anything
 // else that's plausibly a physical/visual subject.
+// Every alternative below is deliberately checked as a whole word (\b...\b)
+// against the RAW form actually likely to appear in prose — plural ("card"
+// vs "cards") and, for molecule specifically, a word-stem variant
+// ("molecule" vs "molecular") both silently fail a literal \bmolecule\b
+// match even though they're obviously the same category to a person. Bit
+// by this exactly once already (see the "Potassium ferrocyanide ... -
+// molecular structure" miss this pattern list is being fixed for) — every
+// entry below is now checked for the same trap, not just molecule.
 const HOLOGRAM_SIGNAL_PATTERNS: { type: HologramObjectType; pattern: RegExp }[] = [
-  { type: "card", pattern: /\b(credit card|debit card|visa|mastercard|amex|american express|gift card)\b/i },
-  { type: "molecule", pattern: /\b(molecule|compound|chemical structure|dna (strand|helix)|protein structure|atoms?)\b/i },
-  { type: "building", pattern: /\b(building|skyscraper|architecture|cathedral|tower|bridge|stadium)\b/i },
-  { type: "product", pattern: /\b(phone|smartphone|laptop|tablet|device|gadget|camera|headphones?|watch)\b/i },
+  {
+    type: "card",
+    pattern: /\b(credit cards?|debit cards?|visa|mastercard|amex|american express|gift cards?)\b/i,
+  },
+  {
+    type: "molecule",
+    pattern: /\b(molecules?|molecular|compound|chemical structures?|dna (strands?|helix|helices)|protein structures?|atoms?)\b/i,
+  },
+  {
+    type: "building",
+    pattern: /\b(buildings?|skyscrapers?|architecture|cathedrals?|towers?|bridges?|stadiums?)\b/i,
+  },
+  {
+    type: "product",
+    pattern: /\b(phones?|smartphones?|laptops?|tablets?|devices?|gadgets?|cameras?|headphones?|watch(es)?)\b/i,
+  },
   {
     type: "abstract",
     pattern:
-      /\b(car|airplane|plane|rocket|planet|star|tree|instrument|furniture|engine|circuit|computer|robot|spacecraft|satellite)\b/i,
+      /\b(cars?|airplanes?|planes?|rockets?|planets?|stars?|trees?|instruments?|furniture|engines?|circuits?|computers?|robots?|spacecraft|satellites?)\b/i,
   },
 ];
 

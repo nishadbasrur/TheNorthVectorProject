@@ -977,8 +977,32 @@ async function handlePushToScreen(input: {
       );
     }
 
+    // Defensive fallback guard — reached whenever both the hologram and
+    // Wolfram upgrades above miss on this content but Claude still asked
+    // for type: "image". DisplayPanel renders "image" as a literal
+    // `<img src={content}>`, so if `content` is plain descriptive text
+    // (not an actual URL — the normal case reaching here, per this tool's
+    // own schema instructing Claude to never pass a raw URL), the browser
+    // tries to GET the description text itself as a path and gets a 404.
+    // Confirmed live: "Potassium ferrocyanide ... - molecular structure
+    // and chemical properties" with type: "image" produced exactly that —
+    // a broken image request for the url-encoded description. Both
+    // upgrade misses that got content here are separately worth fixing
+    // (see detectHologramSubject's word-stem/plural gaps above), but this
+    // guard is the actual backstop: ANY content that reaches this
+    // fallback with type "image" and isn't a real URL/data URL renders
+    // broken, regardless of why the upgrades missed it, so it's forced to
+    // markdown instead — readable text beats a guaranteed-broken image.
+    const looksLikeUrl = /^(https?:|data:)/i.test(input.content.trim());
+    const resolvedType: DisplayContentType = type === "image" && !looksLikeUrl ? "markdown" : type;
+    if (type === "image" && !looksLikeUrl) {
+      console.log(
+        `[push_to_screen] type "image" requested but content isn't a URL — forcing to markdown. Content: ${input.content.slice(0, 200)}`
+      );
+    }
+
     const display: DisplayContent = {
-      type,
+      type: resolvedType,
       content: input.content,
       ...(input.title ? { title: input.title } : {}),
     };
