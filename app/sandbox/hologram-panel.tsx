@@ -2,7 +2,7 @@
 
 import { useEffect, useRef } from "react";
 import * as THREE from "three";
-import type { HologramObjectType } from "@/lib/visual-scanner";
+import type { HologramObjectType, HologramStructure } from "@/lib/visual-scanner";
 
 // Tier 2 of the Sandbox's three-tier visual system — full-screen takeover
 // for physical/visual subjects, same structural pattern as hud-map.tsx's
@@ -11,14 +11,19 @@ import type { HologramObjectType } from "@/lib/visual-scanner";
 // exclusion between the two takeover states is handled in
 // voice-session-context.tsx, not here).
 //
-// Deliberately decoupled from lib/visual-scanner.ts's server-side
-// HologramSignal type (re-declared below) — this file is a client
-// component and shouldn't import from a route/server-adjacent module even
-// for a type-only import, same reasoning as hud-map.tsx's MapVisual vs
-// lib/voice-session-store.ts's VisualState.
+// The HologramSignal *shape* below is re-declared, not imported, per this
+// codebase's usual client/server type decoupling (same reasoning as
+// hud-map.tsx's MapVisual vs lib/voice-session-store.ts's VisualState) —
+// but the type-only imports above ARE the established exception already
+// in this exact file before this change: lib/visual-scanner.ts has no
+// "server-only" guard (it's a pure regex/parsing module, safe anywhere),
+// so HologramObjectType was already imported directly rather than
+// re-declared, and HologramStructure follows the same precedent rather
+// than introducing a second, inconsistent pattern.
 export type HologramVisual = {
   objectType: HologramObjectType;
   label: string;
+  structure?: HologramStructure;
 };
 
 const HOLOGRAM_OBJECT_TYPES: readonly HologramObjectType[] = ["card", "molecule", "building", "product", "abstract"];
@@ -34,11 +39,130 @@ export function isHologramVisual(value: unknown): value is HologramVisual {
 
 const HUD_CYAN = 0x3ad6ff;
 
-// A rough sphere-and-stick arrangement — 5 outer atoms spaced around the
-// central one, not a real molecular geometry (that would need an actual
-// per-compound lookup, well beyond "regex/keyword, zero AI calls"). The
-// goal per the spec is "visually interesting and on-theme," not accurate.
-function buildMolecule(): THREE.Group {
+// Standard CPK (Corey-Pauling-Koltun) element colors, the same convention
+// most molecular viewers use — carbon gray, oxygen red, nitrogen blue,
+// hydrogen white, etc. Covers the elements likely to show up in anything
+// push_to_screen would plausibly ask for (organic compounds plus common
+// biologically/commercially relevant inorganics); an element outside this
+// list falls back to HUD_CYAN, keeping it visually on-theme rather than
+// the pink/magenta some viewers use for "unknown."
+const CPK_ELEMENT_COLORS: Record<string, number> = {
+  H: 0xffffff,
+  C: 0x909090,
+  N: 0x3050f8,
+  O: 0xff0d0d,
+  F: 0x90e050,
+  CL: 0x1ff01f,
+  BR: 0xa62929,
+  I: 0x940094,
+  P: 0xff8000,
+  S: 0xffff30,
+  B: 0xffb5b5,
+  SI: 0xf0c8a0,
+  NA: 0xab5cf2,
+  K: 0x8f40d4,
+  CA: 0x3dff00,
+  MG: 0x8aff00,
+  FE: 0xe06633,
+  ZN: 0x7d80b0,
+};
+
+function elementColor(element: string): number {
+  return CPK_ELEMENT_COLORS[element.toUpperCase()] ?? HUD_CYAN;
+}
+
+// Hydrogen atoms render smaller than everything else — standard ball-and-
+// stick convention, and it also keeps a structure's many H atoms (e.g.
+// glucose's 12 of 24 atoms) from visually crowding out the heavier atoms
+// that actually define its shape.
+function atomRadius(element: string): number {
+  return element.toUpperCase() === "H" ? 0.09 : 0.16;
+}
+
+// Builds a real per-atom/per-bond molecule from PubChem-sourced geometry
+// (lib/pubchem-client.ts via handlePushToScreen) — spheres colored by
+// element (CPK convention, see elementColor above), cylinder bonds only
+// between pairs PubChem actually reports as bonded, at their real relative
+// positions. Coordinates are recentered on the structure's own centroid
+// and uniformly rescaled so the molecule's furthest atom sits at the same
+// distance from center that the old fixed placeholder used (radius 1.1) —
+// this keeps every molecule, regardless of how many atoms it has or how
+// PubChem's own coordinate units happen to land, framed consistently in
+// the camera regardless of actual size.
+function buildMoleculeFromStructure(structure: HologramStructure): THREE.Group | null {
+  const { atoms, bonds } = structure;
+  if (!Array.isArray(atoms) || atoms.length === 0) return null;
+
+  const group = new THREE.Group();
+
+  const centroid = atoms.reduce(
+    (acc, atom) => ({ x: acc.x + atom.x, y: acc.y + atom.y, z: acc.z + atom.z }),
+    { x: 0, y: 0, z: 0 }
+  );
+  centroid.x /= atoms.length;
+  centroid.y /= atoms.length;
+  centroid.z /= atoms.length;
+
+  const recentered = atoms.map((atom) => ({
+    element: atom.element,
+    x: atom.x - centroid.x,
+    y: atom.y - centroid.y,
+    z: atom.z - centroid.z,
+  }));
+
+  const maxDistance = recentered.reduce((max, atom) => {
+    const distance = Math.sqrt(atom.x ** 2 + atom.y ** 2 + atom.z ** 2);
+    return Math.max(max, distance);
+  }, 0);
+  const TARGET_MAX_DISTANCE = 1.3; // matches the placeholder molecule's own scale (outer atom radius 1.1, plus their own bulk)
+  const scale = maxDistance > 0 ? TARGET_MAX_DISTANCE / maxDistance : 1;
+
+  const positions = recentered.map((atom) => ({
+    element: atom.element,
+    x: atom.x * scale,
+    y: atom.y * scale,
+    z: atom.z * scale,
+  }));
+
+  for (const atom of positions) {
+    const material = new THREE.MeshBasicMaterial({ color: elementColor(atom.element), wireframe: true });
+    const sphere = new THREE.Mesh(new THREE.IcosahedronGeometry(atomRadius(atom.element), 1), material);
+    sphere.position.set(atom.x, atom.y, atom.z);
+    group.add(sphere);
+  }
+
+  const bondMaterial = new THREE.MeshBasicMaterial({ color: HUD_CYAN, wireframe: true });
+  if (Array.isArray(bonds)) {
+    for (const bond of bonds) {
+      const from = positions[bond.a];
+      const to = positions[bond.b];
+      if (!from || !to) continue; // malformed/out-of-range bond index — skip rather than crash the whole render
+
+      const dx = to.x - from.x;
+      const dy = to.y - from.y;
+      const dz = to.z - from.z;
+      const distance = Math.sqrt(dx ** 2 + dy ** 2 + dz ** 2);
+      if (distance === 0) continue;
+
+      // Cylinders are built along Y by default, so orient via
+      // setFromUnitVectors — same technique the placeholder molecule
+      // below already used for its center-to-outer sticks.
+      const stick = new THREE.Mesh(new THREE.CylinderGeometry(0.03, 0.03, distance, 6), bondMaterial);
+      stick.position.set(from.x + dx / 2, from.y + dy / 2, from.z + dz / 2);
+      stick.quaternion.setFromUnitVectors(new THREE.Vector3(0, 1, 0), new THREE.Vector3(dx, dy, dz).normalize());
+      group.add(stick);
+    }
+  }
+
+  return group;
+}
+
+// Generic placeholder — a rough sphere-and-stick arrangement (1 center + 5
+// outer atoms), not a real molecular geometry. Used whenever real PubChem
+// geometry isn't available (no `subject` was supplied, PubChem couldn't
+// resolve it, or the SDF failed to parse — see buildMoleculeFromStructure
+// and handlePushToScreen) so a hologram never has nothing to show.
+function buildGenericMolecule(): THREE.Group {
   const group = new THREE.Group();
   const material = new THREE.MeshBasicMaterial({ color: HUD_CYAN, wireframe: true });
 
@@ -69,6 +193,14 @@ function buildMolecule(): THREE.Group {
   }
 
   return group;
+}
+
+function buildMolecule(structure: HologramStructure | undefined): THREE.Group {
+  if (structure) {
+    const real = buildMoleculeFromStructure(structure);
+    if (real) return real;
+  }
+  return buildGenericMolecule();
 }
 
 // Credit/debit card — flat rectangle at the real ISO/IEC 7810 ID-1 aspect
@@ -139,12 +271,12 @@ function buildAbstract(): THREE.Group {
   return group;
 }
 
-function buildObject(objectType: HologramObjectType): THREE.Group {
+function buildObject(objectType: HologramObjectType, structure: HologramStructure | undefined): THREE.Group {
   switch (objectType) {
     case "card":
       return buildCard();
     case "molecule":
-      return buildMolecule();
+      return buildMolecule(structure);
     case "building":
       return buildBuilding();
     case "product":
@@ -176,7 +308,7 @@ export function HologramPanel({ hologram, onClose }: { hologram: HologramVisual;
     renderer.setSize(container.clientWidth, container.clientHeight);
     container.appendChild(renderer.domElement);
 
-    const object = buildObject(hologram.objectType);
+    const object = buildObject(hologram.objectType, hologram.structure);
     scene.add(object);
 
     let animationActive = true;
@@ -217,12 +349,12 @@ export function HologramPanel({ hologram, onClose }: { hologram: HologramVisual;
       renderer.dispose();
       container.removeChild(renderer.domElement);
     };
-    // Rebuilds the whole scene on a new hologram (objectType/label change)
-    // rather than swapping geometry in place — these takeovers are
-    // infrequent (once per proactively-triggered voice response), so the
-    // simplicity of a full remount outweighs any benefit from a more
-    // surgical update.
-  }, [hologram.objectType, hologram.label]);
+    // Rebuilds the whole scene on a new hologram (objectType/label/
+    // structure change) rather than swapping geometry in place — these
+    // takeovers are infrequent (once per proactively-triggered voice
+    // response), so the simplicity of a full remount outweighs any
+    // benefit from a more surgical update.
+  }, [hologram.objectType, hologram.label, hologram.structure]);
 
   return (
     <div className="hud-hologram-overlay">

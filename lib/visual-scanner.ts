@@ -82,9 +82,22 @@ export function detectWolframQuery(responseText: string): string | null {
 
 export type HologramObjectType = "card" | "molecule" | "building" | "product" | "abstract";
 
+// structure carries real per-atom geometry for the "molecule" case — see
+// lib/pubchem-client.ts (whose PubChemStructure this shape mirrors) and
+// lib/tool-dispatcher.ts's handlePushToScreen, the only place this gets
+// populated. Left undefined for every other objectType, and for a
+// molecule when no `subject` was supplied or PubChem couldn't resolve
+// one — app/sandbox/hologram-panel.tsx falls back to its generic
+// placeholder shape whenever this is absent, so an unresolved subject
+// never breaks the hologram outright.
+export type HologramAtom = { element: string; x: number; y: number; z: number };
+export type HologramBond = { a: number; b: number; order: number };
+export type HologramStructure = { atoms: HologramAtom[]; bonds: HologramBond[] };
+
 export type HologramSignal = {
   objectType: HologramObjectType;
   label: string;
+  structure?: HologramStructure;
 };
 
 // Checked in order — first match wins. The four specific renderers listed

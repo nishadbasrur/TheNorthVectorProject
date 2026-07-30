@@ -29,6 +29,7 @@ import { getRecentTextMessages, searchTextMessages } from "./text-message-store"
 import { requiresConfirmation } from "./tool-tiers";
 import { detectWolframQuery, detectHologramSubject, type HologramSignal } from "./visual-scanner";
 import { fetchWolframImage } from "./wolfram-client";
+import { fetchPubChemStructure } from "./pubchem-client";
 
 // Single source of truth for what North can do via voice — read directly by
 // Claude as tool schemas, not maintained separately as prose (that
@@ -290,7 +291,13 @@ export const TOOL_DEFINITIONS: Anthropic.Tool[] = [
       "your voice response, not instead of it. Always pass descriptive text describing what to " +
       "show — never a raw image URL or file path, even for the \"image\" type. For example, pass " +
       "\"Caffeine molecule (C8H10N4O2) - molecular structure and properties\", not an image URL. " +
-      "The system finds and renders the appropriate visual from that description itself.",
+      "The system finds and renders the appropriate visual from that description itself. Whenever " +
+      "what you're showing has a precise real-world name or identity — a specific molecule, a " +
+      "specific card product, a specific building, a specific device — always also pass `subject` " +
+      "with that exact name (e.g. \"caffeine\", \"Chase Freedom Rise Visa Signature\", \"Eiffel " +
+      "Tower\"). This is what lets the system render the real thing (an actual molecular structure, " +
+      "etc.) instead of a generic placeholder — omitting it when a real name is available " +
+      "noticeably degrades what gets shown.",
     input_schema: {
       type: "object",
       properties: {
@@ -309,6 +316,15 @@ export const TOOL_DEFINITIONS: Anthropic.Tool[] = [
             "readable structure), html (sanitized, rendered inline), or image. \"image\" still means " +
             "descriptive text in `content` (e.g. a subject to look up), not a URL — the system " +
             "resolves it to an actual image itself. Defaults to markdown if omitted.",
+        },
+        subject: {
+          type: "string",
+          description:
+            "The precise real-world name/formula of what's being shown, when it has one — e.g. " +
+            "\"caffeine\", \"C8H10N4O2\", \"Chase Freedom Rise Visa Signature\". Always provide this " +
+            "when showing a specific molecule, card product, building, or device by name, so the " +
+            "system can render the real thing rather than a generic placeholder shape. Omit only " +
+            "when what's being shown genuinely has no specific real-world identity.",
         },
         title: { type: "string", description: "Optional title shown at the top of the display panel." },
       },
@@ -870,6 +886,7 @@ async function handlePushToScreen(input: {
   content?: string;
   type?: string;
   title?: string;
+  subject?: string;
 }): Promise<{ text: string; display?: DisplayContent; hologram?: HologramSignal }> {
   try {
     if (!input.content || input.content.trim().length === 0) {
@@ -879,20 +896,49 @@ async function handlePushToScreen(input: {
     const type: DisplayContentType = isDisplayContentType(input.type) ? input.type : "markdown";
 
     console.log(`[push_to_screen] Content received (${input.content.length} chars): ${input.content.slice(0, 200)}`);
+    if (input.subject) console.log(`[push_to_screen] Subject: ${input.subject}`);
 
-    // Tier 2 upgrade, checked before Wolfram — a physical/visual subject
-    // (molecule, product, building, card) is strictly better served by the
-    // Three.js hologram takeover than by a flat Wolfram image or a markdown
-    // panel, so this must win the race for any content that matches both
-    // detectHologramSubject and detectWolframQuery (e.g. "molecule" also
-    // satisfies the chemical-formula/atomic-weight Wolfram signals below).
-    // Wolfram is left in place only for genuinely numeric/data content
-    // (equations, unit conversions, nutrition, stats) that has no physical
-    // form to render.
+    // Hologram upgrade — checked BEFORE the Wolfram check below, and takes
+    // priority over it. A push_to_screen call about a physical thing (a
+    // card, molecule, building, device — see detectHologramSubject) gets
+    // Tier 2's full-screen 3D takeover, which is a richer answer than
+    // either a markdown panel or a flat Wolfram lookup image for content
+    // that's fundamentally about a shape/object, not just data. This
+    // matters concretely for molecules: a formula like "C8H10N4O2" also
+    // matches detectWolframQuery's chemical-formula signal, so without
+    // this running first, Wolfram would win and this task's whole point
+    // (a real, PubChem-sourced 3D structure instead of a generic
+    // placeholder) would never fire.
     const hologramSignal = detectHologramSubject(input.content);
-    console.log(`[push_to_screen] detectHologramSubject: ${hologramSignal ? `hit (${hologramSignal.objectType})` : "miss"}`);
+    console.log(`[push_to_screen] detectHologramSubject: ${hologramSignal ? hologramSignal.objectType : "miss"}`);
     if (hologramSignal) {
-      return { text: "Pushed to the screen.", hologram: hologramSignal };
+      // Prefer the tool's own `subject` over the matched trigger keyword
+      // (e.g. "molecule") as the hologram's label — `subject` is the
+      // precise real-world name Claude was asked to supply (see this
+      // tool's schema description), and it's also the only thing PubChem
+      // can actually look up below.
+      const label = input.subject?.trim() || hologramSignal.label;
+      let structure: HologramSignal["structure"];
+
+      if (hologramSignal.objectType === "molecule" && input.subject?.trim()) {
+        console.log(`[push_to_screen] Fetching PubChem structure for "${input.subject.trim()}"`);
+        const pubchemStructure = await fetchPubChemStructure(input.subject.trim());
+        if (pubchemStructure) {
+          console.log(
+            `[push_to_screen] PubChem structure resolved — ${pubchemStructure.atoms.length} atoms, ${pubchemStructure.bonds.length} bonds`
+          );
+          structure = pubchemStructure;
+        } else {
+          console.log(
+            "[push_to_screen] PubChem structure lookup returned null — hologram falls back to the generic molecule placeholder. See [pubchem-client] logs above for the reason."
+          );
+        }
+      }
+
+      return {
+        text: "Pushed to the screen.",
+        hologram: { objectType: hologramSignal.objectType, label, ...(structure ? { structure } : {}) },
+      };
     }
 
     // Wolfram upgrade — checked at the one real call site where
@@ -901,14 +947,13 @@ async function handlePushToScreen(input: {
     // app/api/v1/voice/respond/route.ts, ran after the stream's "done"
     // event — always too late, since push_to_screen's own "display" event
     // fires the instant its tool call resolves, well before "done"). A
-    // math/science/data push_to_screen call (equations, unit
-    // conversions, nutrition, stats, chemical formulas — see
-    // detectWolframQuery) gets a real Wolfram Alpha image instead of a
-    // markdown panel, since that's a strictly better answer for this
-    // content. Falls straight back to the original content on any
-    // Wolfram miss (no interpretation, network failure, missing key) — a
-    // false-positive match or a Wolfram outage should never make
-    // push_to_screen fail outright.
+    // math/science/data push_to_screen call (equations, unit conversions,
+    // nutrition, stats, chemical formulas — see detectWolframQuery) gets a
+    // real Wolfram Alpha image instead of a markdown panel, since that's a
+    // strictly better answer for this content. Falls straight back to the
+    // original content on any Wolfram miss (no interpretation, network
+    // failure, missing key) — a false-positive match or a Wolfram outage
+    // should never make push_to_screen fail outright.
     const wolframQuery = detectWolframQuery(input.content);
     console.log(`[push_to_screen] detectWolframQuery: ${wolframQuery ? "hit" : "miss"}`);
     if (wolframQuery) {
@@ -1271,12 +1316,13 @@ async function handleRunAgentTask(input: { task: string; targetRepo?: string; co
 // Returns { text, visual, display, hologram } uniformly — text is what goes
 // back to Claude as the tool_result content, visual is only ever set by
 // show_map/highlight_building, and display/hologram are only ever set by
-// push_to_screen (mutually exclusive — see handlePushToScreen); all are
-// lifted by app/api/v1/voice/respond/route.ts into what the frontend
-// actually renders (visual via the final "done" event, display/hologram via
-// their own SSE event fired the moment the tool call resolves — see that
-// route for why these use different delivery timing than visual). sessionId
-// is unused by every handler except show_map/highlight_building (the only
+// push_to_screen (mutually exclusive — see handlePushToScreen, which
+// returns at most one of the two). All are lifted by
+// app/api/v1/voice/respond/route.ts into what the frontend actually
+// renders (visual via the final "done" event, display/hologram via their
+// own SSE events fired the moment the tool call resolves — see that route
+// for why these use different delivery timing than visual). sessionId is
+// unused by every handler except show_map/highlight_building (the only
 // ones with "current visual" state to read/write), but threading it
 // through executeTool uniformly is simpler than a special case per caller.
 export async function executeTool(
@@ -1328,7 +1374,7 @@ export async function executeTool(
     case "highlight_building":
       return handleHighlightBuilding(sessionId);
     case "push_to_screen":
-      return handlePushToScreen(input as { content?: string; type?: string; title?: string });
+      return handlePushToScreen(input as { content?: string; type?: string; title?: string; subject?: string });
     case "note_capability_gap":
       return { text: await handleNoteCapabilityGap(input as { request: string; capability: string }) };
     case "check_bug_status":
