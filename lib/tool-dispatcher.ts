@@ -27,7 +27,7 @@ import { logTechnicalError } from "./error-log-store";
 import { askClaudeWithWebSearch } from "./anthropic-client";
 import { getRecentTextMessages, searchTextMessages } from "./text-message-store";
 import { requiresConfirmation } from "./tool-tiers";
-import { detectWolframQuery } from "./visual-scanner";
+import { detectWolframQuery, detectHologramSubject, type HologramSignal } from "./visual-scanner";
 import { fetchWolframImage } from "./wolfram-client";
 
 // Single source of truth for what North can do via voice — read directly by
@@ -870,7 +870,7 @@ async function handlePushToScreen(input: {
   content?: string;
   type?: string;
   title?: string;
-}): Promise<{ text: string; display?: DisplayContent }> {
+}): Promise<{ text: string; display?: DisplayContent; hologram?: HologramSignal }> {
   try {
     if (!input.content || input.content.trim().length === 0) {
       return { text: "No content given to display — nothing was pushed to the screen." };
@@ -878,13 +878,30 @@ async function handlePushToScreen(input: {
 
     const type: DisplayContentType = isDisplayContentType(input.type) ? input.type : "markdown";
 
+    console.log(`[push_to_screen] Content received (${input.content.length} chars): ${input.content.slice(0, 200)}`);
+
+    // Tier 2 upgrade, checked before Wolfram — a physical/visual subject
+    // (molecule, product, building, card) is strictly better served by the
+    // Three.js hologram takeover than by a flat Wolfram image or a markdown
+    // panel, so this must win the race for any content that matches both
+    // detectHologramSubject and detectWolframQuery (e.g. "molecule" also
+    // satisfies the chemical-formula/atomic-weight Wolfram signals below).
+    // Wolfram is left in place only for genuinely numeric/data content
+    // (equations, unit conversions, nutrition, stats) that has no physical
+    // form to render.
+    const hologramSignal = detectHologramSubject(input.content);
+    console.log(`[push_to_screen] detectHologramSubject: ${hologramSignal ? `hit (${hologramSignal.objectType})` : "miss"}`);
+    if (hologramSignal) {
+      return { text: "Pushed to the screen.", hologram: hologramSignal };
+    }
+
     // Wolfram upgrade — checked at the one real call site where
     // push_to_screen's content is actually known, rather than scanning the
     // whole response after the fact (the previous approach, in
     // app/api/v1/voice/respond/route.ts, ran after the stream's "done"
     // event — always too late, since push_to_screen's own "display" event
     // fires the instant its tool call resolves, well before "done"). A
-    // math/science/data push_to_screen call (molecules, equations, unit
+    // math/science/data push_to_screen call (equations, unit
     // conversions, nutrition, stats, chemical formulas — see
     // detectWolframQuery) gets a real Wolfram Alpha image instead of a
     // markdown panel, since that's a strictly better answer for this
@@ -892,8 +909,6 @@ async function handlePushToScreen(input: {
     // Wolfram miss (no interpretation, network failure, missing key) — a
     // false-positive match or a Wolfram outage should never make
     // push_to_screen fail outright.
-    console.log(`[push_to_screen] Content received (${input.content.length} chars): ${input.content.slice(0, 200)}`);
-
     const wolframQuery = detectWolframQuery(input.content);
     console.log(`[push_to_screen] detectWolframQuery: ${wolframQuery ? "hit" : "miss"}`);
     if (wolframQuery) {
@@ -1253,21 +1268,22 @@ async function handleRunAgentTask(input: { task: string; targetRepo?: string; co
   }
 }
 
-// Returns { text, visual, display } uniformly — text is what goes back to
-// Claude as the tool_result content, visual is only ever set by show_map/
-// highlight_building and display only ever set by push_to_screen; both are
+// Returns { text, visual, display, hologram } uniformly — text is what goes
+// back to Claude as the tool_result content, visual is only ever set by
+// show_map/highlight_building, and display/hologram are only ever set by
+// push_to_screen (mutually exclusive — see handlePushToScreen); all are
 // lifted by app/api/v1/voice/respond/route.ts into what the frontend
-// actually renders (visual via the final "done" event, display via its own
-// "display" SSE event fired the moment the tool call resolves — see that
-// route for why the two use different delivery timing). sessionId is
-// unused by every handler except show_map/highlight_building (the only
+// actually renders (visual via the final "done" event, display/hologram via
+// their own SSE event fired the moment the tool call resolves — see that
+// route for why these use different delivery timing than visual). sessionId
+// is unused by every handler except show_map/highlight_building (the only
 // ones with "current visual" state to read/write), but threading it
 // through executeTool uniformly is simpler than a special case per caller.
 export async function executeTool(
   name: string,
   input: unknown,
   sessionId: string
-): Promise<{ text: string; visual?: VisualState; display?: DisplayContent }> {
+): Promise<{ text: string; visual?: VisualState; display?: DisplayContent; hologram?: HologramSignal }> {
   switch (name) {
     case "create_task":
       return { text: await handleCreateTask(input as { title: string }) };

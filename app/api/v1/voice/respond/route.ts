@@ -533,6 +533,16 @@ export async function POST(request: Request) {
                 if (result.display) {
                   controller.enqueue(sseEvent(encoder, "display", result.display));
                 }
+                // Tier 2 counterpart to the "display" event above — same
+                // timing rationale (fires the instant the tool call
+                // resolves, not bundled into "done"). Mutually exclusive
+                // with result.display: handlePushToScreen only ever sets
+                // one of the two per call. See app/sandbox/
+                // voice-session-context.tsx for the client-side listener
+                // and app/sandbox/hologram-panel.tsx for the renderer.
+                if (result.hologram) {
+                  controller.enqueue(sseEvent(encoder, "hologram", result.hologram));
+                }
                 // Choke-point action logging (see lib/action-log-store.ts) — this is
                 // the single call site every tool execution passes through, so
                 // wrapping it here captures the full #65 activity log without
