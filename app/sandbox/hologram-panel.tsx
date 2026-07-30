@@ -4,6 +4,7 @@ import { useEffect, useRef, useState } from "react";
 import * as THREE from "three";
 import { CSS2DRenderer, CSS2DObject } from "three/addons/renderers/CSS2DRenderer.js";
 import type { HologramObjectType, HologramStructure } from "@/lib/visual-scanner";
+import { lookupElement, neutronCount } from "@/lib/periodic-table-data";
 
 // Tier 2 of the Sandbox's three-tier visual system — full-screen takeover
 // for physical/visual subjects, same structural pattern as hud-map.tsx's
@@ -78,6 +79,128 @@ function elementColor(element: string): number {
 // that actually define its shape.
 function atomRadius(element: string): number {
   return element.toUpperCase() === "H" ? 0.09 : 0.16;
+}
+
+// --- Subatomic reveal (Phase 2a) and electron shells (Phase 2b) ---------
+//
+// Stylized, not a real nuclear/quantum simulation — protons/neutrons
+// jitter in place near the nucleus center, electrons continuously orbit a
+// random tilted axis at a roughly fixed radius ("buzzing"), and shell
+// mode just uses different fixed radii per shell instead of one shared
+// radius. Counts come from lib/periodic-table-data.ts (real atomic
+// number / standard atomic mass / Bohr-model shell configuration), so
+// the counts are chemically real even though the motion isn't physics.
+
+const PROTON_COLOR = 0xff4d6a;
+const NEUTRON_COLOR = 0x7d93c9;
+const ELECTRON_CLOUD_COLOR = 0x3ad6ff;
+// Valence (outermost, chemically-relevant) shell renders bright white —
+// visually distinct from the dimmer cyan core shells, since the valence
+// shell is usually the actual point of interest for a given problem.
+const VALENCE_SHELL_COLOR = 0xffffff;
+const CORE_SHELL_COLOR = 0x2a6f8a;
+
+const NUCLEUS_PACK_RADIUS = 0.05; // small tight cluster, not a "loose" shell
+const NUCLEON_RADIUS = 0.018;
+const ELECTRON_POINT_RADIUS = 0.012;
+const ELECTRON_CLOUD_RADIUS = 0.24; // single loose shell, undifferentiated (2a)
+const ELECTRON_SHELL_RADII = [0.12, 0.18, 0.24, 0.3]; // K, L, M, N — matches the deepest shell count anything H-Kr needs
+
+type Nucleon = { mesh: THREE.Mesh; baseOffset: THREE.Vector3; phase: number };
+type Electron = { mesh: THREE.Mesh; vector: THREE.Vector3; axis: THREE.Vector3; speed: number };
+
+function randomPointInSphere(radius: number): THREE.Vector3 {
+  const costheta = Math.random() * 2 - 1;
+  const theta = Math.acos(costheta);
+  const phi = Math.random() * Math.PI * 2;
+  const r = radius * Math.cbrt(Math.random());
+  return new THREE.Vector3(
+    r * Math.sin(theta) * Math.cos(phi),
+    r * Math.sin(theta) * Math.sin(phi),
+    r * Math.cos(theta)
+  );
+}
+
+function buildNucleus(protons: number, neutrons: number): { group: THREE.Group; nucleons: Nucleon[] } {
+  const group = new THREE.Group();
+  const nucleons: Nucleon[] = [];
+  const total = protons + neutrons;
+
+  for (let i = 0; i < total; i++) {
+    const color = i < protons ? PROTON_COLOR : NEUTRON_COLOR;
+    const material = new THREE.MeshBasicMaterial({ color, wireframe: true });
+    const mesh = new THREE.Mesh(new THREE.IcosahedronGeometry(NUCLEON_RADIUS, 0), material);
+    const baseOffset = randomPointInSphere(NUCLEUS_PACK_RADIUS);
+    mesh.position.copy(baseOffset);
+    group.add(mesh);
+    nucleons.push({ mesh, baseOffset, phase: Math.random() * Math.PI * 2 });
+  }
+
+  return { group, nucleons };
+}
+
+function makeElectron(radius: number, color: number, opacity: number): Electron {
+  const material = new THREE.MeshBasicMaterial({ color, transparent: true, opacity });
+  const mesh = new THREE.Mesh(new THREE.SphereGeometry(ELECTRON_POINT_RADIUS, 6, 6), material);
+  const vector = randomPointInSphere(radius).setLength(radius); // start ON the shell, not somewhere inside it
+  const axis = new THREE.Vector3(Math.random() - 0.5, Math.random() - 0.5, Math.random() - 0.5).normalize();
+  const speed = 0.03 + Math.random() * 0.05; // radians/frame — deliberately varied per electron so they don't all stay in visual lockstep
+  mesh.position.copy(vector);
+  return { mesh, vector, axis, speed };
+}
+
+function buildElectronCloud(count: number): { group: THREE.Group; electrons: Electron[] } {
+  const group = new THREE.Group();
+  const electrons: Electron[] = [];
+  for (let i = 0; i < count; i++) {
+    const electron = makeElectron(ELECTRON_CLOUD_RADIUS, ELECTRON_CLOUD_COLOR, 0.9);
+    group.add(electron.mesh);
+    electrons.push(electron);
+  }
+  return { group, electrons };
+}
+
+// One thin wireframe sphere per shell as a faint boundary marker, purely
+// so "these electrons are grouped into a shell" reads visually rather
+// than just as a denser or sparser point cloud at some radius.
+function buildShellBoundary(radius: number, color: number): THREE.Mesh {
+  const material = new THREE.MeshBasicMaterial({ color, wireframe: true, transparent: true, opacity: 0.12 });
+  return new THREE.Mesh(new THREE.SphereGeometry(radius, 10, 8), material);
+}
+
+function buildElectronShells(shells: number[]): { group: THREE.Group; electrons: Electron[] } {
+  const group = new THREE.Group();
+  const electrons: Electron[] = [];
+  const valenceIndex = shells.length - 1;
+
+  shells.forEach((count, shellIndex) => {
+    const radius = ELECTRON_SHELL_RADII[Math.min(shellIndex, ELECTRON_SHELL_RADII.length - 1)];
+    const isValence = shellIndex === valenceIndex;
+    const color = isValence ? VALENCE_SHELL_COLOR : CORE_SHELL_COLOR;
+
+    group.add(buildShellBoundary(radius, color));
+
+    for (let i = 0; i < count; i++) {
+      const electron = makeElectron(radius, color, isValence ? 1 : 0.6);
+      group.add(electron.mesh);
+      electrons.push(electron);
+    }
+  });
+
+  return { group, electrons };
+}
+
+function disposeObject3D(object: THREE.Object3D) {
+  object.traverse((child) => {
+    if (child instanceof THREE.Mesh) {
+      child.geometry.dispose();
+      if (Array.isArray(child.material)) {
+        child.material.forEach((m) => m.dispose());
+      } else {
+        child.material.dispose();
+      }
+    }
+  });
 }
 
 // Builds a real per-atom/per-bond molecule from PubChem-sourced geometry
@@ -399,6 +522,26 @@ export function HologramPanel({ hologram, onClose }: { hologram: HologramVisual;
   const selectionMenuRef = useRef<CSS2DObject | null>(null);
   const [isIsolated, setIsIsolated] = useState(false);
 
+  // --- Subatomic reveal / electron shells (Phase 2) ---
+  // Keyed by the original atom sphere mesh — one entry per currently-
+  // revealed atom, holding the nucleus/electron THREE objects the
+  // animate() loop needs to update every frame (jitter/orbit) and the
+  // objects reveal/unreveal need to add/remove from the scene.
+  const revealedAtomsRef = useRef<
+    Map<
+      THREE.Mesh,
+      {
+        mode: "cloud" | "shells";
+        nucleusGroup: THREE.Group;
+        electronGroup: THREE.Group;
+        nucleons: Nucleon[];
+        electrons: Electron[];
+        priorOpacity: number;
+      }
+    >
+  >(new Map());
+  const animationFrameCountRef = useRef(0); // drives nucleon jitter phase — see animate() below
+
   // Only meaningful when there's real per-atom element data to label —
   // the generic placeholder molecule (see buildGenericMolecule) has no
   // CSS2DObject children at all, and non-molecule holograms never did
@@ -439,6 +582,58 @@ export function HologramPanel({ hologram, onClose }: { hologram: HologramVisual;
     setIsIsolated(false);
   }
 
+  // Replaces an atom sphere with a nucleus + electron cloud/shells.
+  // Doesn't remove the sphere from the scene (a removed mesh can't be
+  // re-clicked to bring the menu back and toggle reveal off) — instead
+  // it's faded to opacity 0 but stays raycast-hittable, since three.js
+  // raycasting is purely geometric and doesn't consider material opacity
+  // or transparency at all.
+  function revealAtom(sphere: THREE.Mesh, mode: "cloud" | "shells") {
+    const existing = revealedAtomsRef.current.get(sphere);
+    if (existing?.mode === mode) return; // already showing exactly this
+    if (existing) teardownReveal(sphere, existing);
+
+    const userData = sphere.userData as SceneUserData;
+    const element = userData.element ? lookupElement(userData.element) : null;
+    if (!element) return; // outside H-Kr (see lib/periodic-table-data.ts) — no data to reveal accurately, leave the plain sphere as-is
+
+    const parent = sphere.parent;
+    if (!parent) return;
+
+    const { group: nucleusGroup, nucleons } = buildNucleus(element.atomicNumber, neutronCount(element));
+    nucleusGroup.position.copy(sphere.position);
+    parent.add(nucleusGroup);
+
+    const { group: electronGroup, electrons } =
+      mode === "shells" ? buildElectronShells(element.shells) : buildElectronCloud(element.atomicNumber);
+    electronGroup.position.copy(sphere.position);
+    parent.add(electronGroup);
+
+    const material = sphere.material as THREE.MeshBasicMaterial;
+    const priorOpacity = material.opacity;
+    material.opacity = 0;
+
+    revealedAtomsRef.current.set(sphere, { mode, nucleusGroup, electronGroup, nucleons, electrons, priorOpacity });
+  }
+
+  function teardownReveal(
+    sphere: THREE.Mesh,
+    entry: NonNullable<ReturnType<(typeof revealedAtomsRef)["current"]["get"]>>
+  ) {
+    entry.nucleusGroup.parent?.remove(entry.nucleusGroup);
+    entry.electronGroup.parent?.remove(entry.electronGroup);
+    disposeObject3D(entry.nucleusGroup);
+    disposeObject3D(entry.electronGroup);
+    (sphere.material as THREE.MeshBasicMaterial).opacity = entry.priorOpacity;
+  }
+
+  function unrevealAtom(sphere: THREE.Mesh) {
+    const entry = revealedAtomsRef.current.get(sphere);
+    if (!entry) return;
+    teardownReveal(sphere, entry);
+    revealedAtomsRef.current.delete(sphere);
+  }
+
   useEffect(() => {
     const container = containerRef.current;
     if (!container) return;
@@ -451,6 +646,8 @@ export function HologramPanel({ hologram, onClose }: { hologram: HologramVisual;
     selectedMeshRef.current = null;
     selectionMenuRef.current = null;
     setIsIsolated(false);
+    revealedAtomsRef.current = new Map(); // the meshes these referenced belong to the previous scene, about to be disposed below
+    animationFrameCountRef.current = 0;
 
     const scene = new THREE.Scene();
     const camera = new THREE.PerspectiveCamera(45, container.clientWidth / container.clientHeight, 0.1, 100);
@@ -531,10 +728,39 @@ export function HologramPanel({ hologram, onClose }: { hologram: HologramVisual;
       };
       div.appendChild(isolateBtn);
 
-      // Phase 2 (subatomic reveal / electron shells) adds Reveal/Shells
-      // buttons here, for atom-kind meshes only — deliberately left as a
-      // marker rather than built now, per the fix note's own phased
-      // rollout (get orbit + isolate solid first).
+      // Reveal/Shells are independent of each other and of Isolate (not
+      // nested under one another) — atom-kind meshes only, since bonds
+      // don't have a nucleus/electrons to reveal. Label reflects current
+      // state at the moment the menu is built (rebuilt fresh on every
+      // selection, so it's never stale): "Reveal"/"Hide subatomic" and
+      // "Shells"/"Hide shells" toggle that specific mode off if it's
+      // already active, or switch to it otherwise (revealAtom tears down
+      // and rebuilds if the other mode was active — see its own comment).
+      if ((mesh.userData as SceneUserData).kind === "atom") {
+        const current = revealedAtomsRef.current.get(mesh);
+
+        const revealBtn = document.createElement("button");
+        revealBtn.type = "button";
+        revealBtn.textContent = current?.mode === "cloud" ? "Hide subatomic" : "Reveal";
+        revealBtn.onclick = (ev) => {
+          ev.stopPropagation();
+          if (current?.mode === "cloud") unrevealAtom(mesh);
+          else revealAtom(mesh, "cloud");
+          clearSelectionMenu();
+        };
+        div.appendChild(revealBtn);
+
+        const shellsBtn = document.createElement("button");
+        shellsBtn.type = "button";
+        shellsBtn.textContent = current?.mode === "shells" ? "Hide shells" : "Shells";
+        shellsBtn.onclick = (ev) => {
+          ev.stopPropagation();
+          if (current?.mode === "shells") unrevealAtom(mesh);
+          else revealAtom(mesh, "shells");
+          clearSelectionMenu();
+        };
+        div.appendChild(shellsBtn);
+      }
 
       return div;
     }
@@ -645,6 +871,28 @@ export function HologramPanel({ hologram, onClose }: { hologram: HologramVisual;
         object.rotation.y += angularVelocityRef.current.y;
         object.rotation.x += angularVelocityRef.current.x;
       }
+
+      // Subatomic reveal animation — nucleons jitter around their base
+      // offset, electrons continuously rotate around their own random
+      // axis ("buzzing"). Runs regardless of drag/pause state, same as
+      // the label projection below — this is per-atom internal motion,
+      // independent of whether the whole molecule itself is spinning.
+      animationFrameCountRef.current += 1;
+      const t = animationFrameCountRef.current;
+      for (const entry of revealedAtomsRef.current.values()) {
+        for (const nucleon of entry.nucleons) {
+          nucleon.mesh.position.set(
+            nucleon.baseOffset.x + 0.008 * Math.sin(t * 0.15 + nucleon.phase),
+            nucleon.baseOffset.y + 0.008 * Math.sin(t * 0.13 + nucleon.phase * 1.3),
+            nucleon.baseOffset.z + 0.008 * Math.sin(t * 0.17 + nucleon.phase * 0.7)
+          );
+        }
+        for (const electron of entry.electrons) {
+          electron.vector.applyAxisAngle(electron.axis, electron.speed);
+          electron.mesh.position.copy(electron.vector);
+        }
+      }
+
       renderer.render(scene, camera);
       labelRenderer.render(scene, camera);
       frameRef.current = requestAnimationFrame(animate);
