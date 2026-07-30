@@ -520,6 +520,13 @@ export function HologramPanel({ hologram, onClose }: { hologram: HologramVisual;
   const interactiveMeshesRef = useRef<THREE.Mesh[]>([]); // just the "atom"/"bond" tagged meshes — what isolate/show-all act on
   const selectedMeshRef = useRef<THREE.Mesh | null>(null);
   const selectionMenuRef = useRef<CSS2DObject | null>(null);
+  // Non-null exactly when isolated — the click raycast (see handleClick
+  // in the scene effect) reads this synchronously to restrict its hit
+  // targets to just this mesh while isolated, since a ref (unlike
+  // isIsolated state) is guaranteed current inside an imperative event
+  // handler closure. isIsolated itself stays purely for the "Show all"
+  // button's conditional render.
+  const isolatedMeshRef = useRef<THREE.Mesh | null>(null);
   const [isIsolated, setIsIsolated] = useState(false);
 
   // --- Subatomic reveal / electron shells (Phase 2) ---
@@ -571,6 +578,7 @@ export function HologramPanel({ hologram, onClose }: { hologram: HologramVisual;
     for (const m of interactiveMeshesRef.current) {
       (m.material as THREE.MeshBasicMaterial).opacity = m === mesh ? 1 : ISOLATE_FADE_OPACITY;
     }
+    isolatedMeshRef.current = mesh;
     setIsIsolated(true);
     clearSelectionMenu();
   }
@@ -579,6 +587,7 @@ export function HologramPanel({ hologram, onClose }: { hologram: HologramVisual;
     for (const m of interactiveMeshesRef.current) {
       (m.material as THREE.MeshBasicMaterial).opacity = 1;
     }
+    isolatedMeshRef.current = null;
     setIsIsolated(false);
   }
 
@@ -645,6 +654,7 @@ export function HologramPanel({ hologram, onClose }: { hologram: HologramVisual;
     isDraggingRef.current = false;
     selectedMeshRef.current = null;
     selectionMenuRef.current = null;
+    isolatedMeshRef.current = null;
     setIsIsolated(false);
     revealedAtomsRef.current = new Map(); // the meshes these referenced belong to the previous scene, about to be disposed below
     animationFrameCountRef.current = 0;
@@ -785,7 +795,17 @@ export function HologramPanel({ hologram, onClose }: { hologram: HologramVisual;
 
     function handleClick(e: PointerEvent) {
       raycaster.setFromCamera(ndcFromEvent(e), camera);
-      const hits = raycaster.intersectObjects(allInteractiveMeshes, false);
+      // While isolated, every other atom/bond is faded to near-zero
+      // opacity but was otherwise still a full raycast target — a click
+      // could geometrically hit one of those invisible meshes first
+      // (whichever is nearest the camera along that ray) and silently
+      // select the wrong, invisible atom instead of the one actually
+      // visible on screen. Restricting the hit-test to just the isolated
+      // mesh means anything else — faded geometry included — behaves
+      // like it looks: not there, so a click "through" it correctly
+      // falls through to a background click instead.
+      const raycastTargets = isolatedMeshRef.current ? [isolatedMeshRef.current] : allInteractiveMeshes;
+      const hits = raycaster.intersectObjects(raycastTargets, false);
 
       if (hits.length === 0) {
         handleBackgroundClick();
