@@ -143,7 +143,11 @@ function buildSystemPrompt(
     "show_map or highlight_building runs, the visual itself is the answer — keep your spoken " +
     "response to a short acknowledgment (\"Here's Boston, sir\"), don't also describe the place in " +
     "words. Same when push_to_screen runs — call it alongside a short spoken response, never " +
-    "instead of one, and don't read the pushed content aloud verbatim. If get_decision_recommendation comes back with " +
+    "instead of one, and don't read the pushed content aloud verbatim. When calling push_to_screen, " +
+    "always pass descriptive text content describing what to show — never raw image URLs or file " +
+    "paths. For example, pass \"Caffeine molecule (C8H10N4O2) - molecular structure and properties\" " +
+    "not an image URL. The system will find and render the appropriate visual. If " +
+    "get_decision_recommendation comes back with " +
     "\"specific\": false, give a real, honest opinion yourself rather than deflecting — this is " +
     "advisory only, you never move money or take financial action without explicit confirmation " +
     "(that boundary is the one exception to acting autonomously). Only call note_capability_gap " +

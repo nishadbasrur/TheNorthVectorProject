@@ -287,18 +287,28 @@ export const TOOL_DEFINITIONS: Anthropic.Tool[] = [
       "includes anything worth seeing rather than just hearing — comparisons, structured data, " +
       "schematics, step-by-step breakdowns, reference material, visualizations, code, tables, or " +
       "anything the user might want to read or refer back to while listening. Call this alongside " +
-      "your voice response, not instead of it.",
+      "your voice response, not instead of it. Always pass descriptive text describing what to " +
+      "show — never a raw image URL or file path, even for the \"image\" type. For example, pass " +
+      "\"Caffeine molecule (C8H10N4O2) - molecular structure and properties\", not an image URL. " +
+      "The system finds and renders the appropriate visual from that description itself.",
     input_schema: {
       type: "object",
       properties: {
-        content: { type: "string", description: "The content to display." },
+        content: {
+          type: "string",
+          description:
+            "Descriptive text of what to display — never a raw image URL or file path. The system " +
+            "resolves the actual visual (including fetching a real image where appropriate) from " +
+            "this description.",
+        },
         type: {
           type: "string",
           enum: ["markdown", "json", "html", "image"],
           description:
             "How to render the content — markdown (text, tables, lists, headers), json (formatted " +
-            "readable structure), html (sanitized, rendered inline), or image (from a URL). Defaults " +
-            "to markdown if omitted.",
+            "readable structure), html (sanitized, rendered inline), or image. \"image\" still means " +
+            "descriptive text in `content` (e.g. a subject to look up), not a URL — the system " +
+            "resolves it to an actual image itself. Defaults to markdown if omitted.",
         },
         title: { type: "string", description: "Optional title shown at the top of the display panel." },
       },
