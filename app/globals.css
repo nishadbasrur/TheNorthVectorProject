@@ -1117,6 +1117,64 @@ html, body {
   transform: translate(10px, -10px); /* offset up-right of the atom center, out of the sphere itself */
 }
 
+/* Floating per-object menu (Isolate / Reveal / Shells) — a CSS2DObject
+   anchored to whatever atom/bond was just clicked (see hologram-panel.tsx's
+   selectMesh). pointer-events: auto overrides the label-renderer layer's
+   own pointer-events: none, which is what actually lets these buttons be
+   clickable at all despite living in that otherwise click-through layer. */
+.hud-hologram-floating-menu {
+  display: flex;
+  gap: 4px;
+  pointer-events: auto;
+  transform: translate(12px, -12px);
+}
+
+.hud-hologram-floating-menu button {
+  pointer-events: auto;
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 10px;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--hud-cyan);
+  background: rgba(4, 7, 15, 0.85);
+  border: 1px solid rgba(58, 214, 255, 0.4);
+  border-radius: 3px;
+  padding: 3px 7px;
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.hud-hologram-floating-menu button:hover {
+  background: rgba(58, 214, 255, 0.2);
+}
+
+/* Persistent "Show all" corner button — only rendered while something is
+   isolated (see hologram-panel.tsx). Positioned below the label pill
+   (top-left, same column) rather than circular like close/labels-toggle:
+   "Show all" doesn't fit a 32px circle, so this borrows the label pill's
+   own rounded-rect treatment instead while keeping the same border/
+   background/color language as every other hologram overlay control. */
+.hud-hologram-show-all {
+  position: absolute;
+  top: 60px;
+  left: 20px;
+  z-index: 21;
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 11px;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--hud-cyan);
+  background: rgba(4, 7, 15, 0.7);
+  border: 1px solid rgba(58, 214, 255, 0.3);
+  border-radius: 4px;
+  padding: 6px 12px;
+  cursor: pointer;
+}
+
+.hud-hologram-show-all:hover {
+  background: rgba(58, 214, 255, 0.15);
+}
+
 /* Build/commit indicator — bottom-right corner of the canvas. position:
    fixed (not absolute) so it stays anchored to the viewport corner
    regardless of .hud-page's own layout, and a low z-index so it sits

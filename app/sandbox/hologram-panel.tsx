@@ -125,10 +125,23 @@ function buildMoleculeFromStructure(structure: HologramStructure): THREE.Group |
     z: atom.z * scale,
   }));
 
-  for (const atom of positions) {
-    const material = new THREE.MeshBasicMaterial({ color: elementColor(atom.element), wireframe: true });
+  positions.forEach((atom, index) => {
+    // transparent: true is set up front (opacity still 1) rather than
+    // only when isolate first fires — toggling `transparent` on an
+    // existing material after first render can require a shader
+    // recompile in some three.js versions; setting it once at creation
+    // avoids that entirely.
+    const material = new THREE.MeshBasicMaterial({
+      color: elementColor(atom.element),
+      wireframe: true,
+      transparent: true,
+    });
     const sphere = new THREE.Mesh(new THREE.IcosahedronGeometry(atomRadius(atom.element), 1), material);
     sphere.position.set(atom.x, atom.y, atom.z);
+    // kind/element/index drive click-to-isolate and subatomic reveal (see
+    // HologramPanel below) — index is this atom's position in the
+    // structure's own atoms[] array, used to key per-atom reveal state.
+    sphere.userData = { kind: "atom", element: atom.element, index };
     group.add(sphere);
 
     // Element-symbol label — a CSS2DObject rather than a sprite/texture,
@@ -149,9 +162,8 @@ function buildMoleculeFromStructure(structure: HologramStructure): THREE.Group |
     const label = new CSS2DObject(labelDiv);
     label.visible = false;
     sphere.add(label);
-  }
+  });
 
-  const bondMaterial = new THREE.MeshBasicMaterial({ color: HUD_CYAN, wireframe: true });
   if (Array.isArray(bonds)) {
     for (const bond of bonds) {
       const from = positions[bond.a];
@@ -164,12 +176,18 @@ function buildMoleculeFromStructure(structure: HologramStructure): THREE.Group |
       const distance = Math.sqrt(dx ** 2 + dy ** 2 + dz ** 2);
       if (distance === 0) continue;
 
+      // Own material instance per bond (not a single shared one) — click-
+      // to-isolate fades individual bonds independently, which needs each
+      // one's opacity controllable on its own.
+      const bondMaterial = new THREE.MeshBasicMaterial({ color: HUD_CYAN, wireframe: true, transparent: true });
+
       // Cylinders are built along Y by default, so orient via
       // setFromUnitVectors — same technique the placeholder molecule
       // below already used for its center-to-outer sticks.
       const stick = new THREE.Mesh(new THREE.CylinderGeometry(0.03, 0.03, distance, 6), bondMaterial);
       stick.position.set(from.x + dx / 2, from.y + dy / 2, from.z + dz / 2);
       stick.quaternion.setFromUnitVectors(new THREE.Vector3(0, 1, 0), new THREE.Vector3(dx, dy, dz).normalize());
+      stick.userData = { kind: "bond" };
       group.add(stick);
     }
   }
@@ -292,20 +310,65 @@ function buildAbstract(): THREE.Group {
 }
 
 function buildObject(objectType: HologramObjectType, structure: HologramStructure | undefined): THREE.Group {
-  switch (objectType) {
-    case "card":
-      return buildCard();
-    case "molecule":
-      return buildMolecule(structure);
-    case "building":
-      return buildBuilding();
-    case "product":
-      return buildProduct();
-    case "abstract":
-    default:
-      return buildAbstract();
-  }
+  const group = (() => {
+    switch (objectType) {
+      case "card":
+        return buildCard();
+      case "molecule":
+        return buildMolecule(structure);
+      case "building":
+        return buildBuilding();
+      case "product":
+        return buildProduct();
+      case "abstract":
+      default:
+        return buildAbstract();
+    }
+  })();
+
+  // Only buildMoleculeFromStructure tags its own meshes ("atom"/"bond") —
+  // click-to-isolate/reveal is specific to real per-atom molecule
+  // geometry. Everything else (card/building/product/abstract/the generic
+  // placeholder molecule) gets a generic "model" tag here instead of at
+  // each individual mesh creation site, purely so raycasting can still
+  // tell "the click landed on the model" apart from "the click landed on
+  // empty background" (which drives the pause toggle) — a plain click on
+  // one of these doesn't get an isolate/reveal menu, just doesn't count
+  // as a background click either.
+  group.traverse((child) => {
+    if (child instanceof THREE.Mesh && !child.userData.kind) {
+      child.userData.kind = "model";
+    }
+  });
+
+  return group;
 }
+
+// Angular velocity the object idles at whenever nothing has taken manual
+// control of it — the original fixed auto-rotation rate, now also the
+// value a drag-release replaces (Phase 1a) and the value pause-resume
+// restores (Phase 1b), rather than a value only ever used once at mount.
+const DEFAULT_IDLE_VELOCITY = { x: 0.0015, y: 0.004 };
+// Radians of rotation per pixel of drag movement — hand-tuned starting
+// point, same "expect real-world tuning" treatment as every other
+// interaction constant in this codebase (see voice-session-context.tsx's
+// own thresholds).
+const DRAG_SENSITIVITY = 0.008;
+// Below this total pointer movement (px), a pointerdown/pointerup pair
+// counts as a click, not a drag — matches the fix note's own suggested
+// value.
+const CLICK_MOVE_THRESHOLD = 5;
+// How many of the most recent pointermove deltas feed the release-
+// momentum average — smooths out one jittery last-frame sample without
+// lagging so far behind that a deliberate flick-and-release feels muted.
+const VELOCITY_SAMPLE_COUNT = 5;
+// Isolate fades everything else to near-zero rather than fully to 0 —
+// keeps a faint silhouette of the rest of the structure for spatial
+// context instead of the isolated piece looking like it's floating in a
+// void with no reference for where it sits in the whole molecule.
+const ISOLATE_FADE_OPACITY = 0.06;
+
+type SceneUserData = { kind?: "atom" | "bond" | "model"; element?: string; index?: number };
 
 export function HologramPanel({ hologram, onClose }: { hologram: HologramVisual; onClose: () => void }) {
   const containerRef = useRef<HTMLDivElement | null>(null);
@@ -316,6 +379,26 @@ export function HologramPanel({ hologram, onClose }: { hologram: HologramVisual;
   const labelObjectsRef = useRef<CSS2DObject[]>([]);
   const [showLabels, setShowLabels] = useState(false);
 
+  // --- Orbit/pause (Phase 1a/1b) ---
+  // spinPaused lives in a ref, not state: the animate() loop is a plain
+  // rAF callback, not a React render, so it needs to read the CURRENT
+  // value synchronously every frame rather than close over whatever
+  // spinPaused was at the moment animate() was defined. There's no
+  // required visual "paused" indicator in the spec beyond the behavior
+  // itself, so no matching useState is needed either.
+  const spinPausedRef = useRef(false);
+  const angularVelocityRef = useRef({ ...DEFAULT_IDLE_VELOCITY });
+  const isDraggingRef = useRef(false);
+  const pointerDownPosRef = useRef<{ x: number; y: number } | null>(null);
+  const lastPointerRef = useRef<{ x: number; y: number } | null>(null);
+  const velocitySamplesRef = useRef<{ x: number; y: number }[]>([]);
+
+  // --- Click-to-isolate (Phase 1c) ---
+  const interactiveMeshesRef = useRef<THREE.Mesh[]>([]); // just the "atom"/"bond" tagged meshes — what isolate/show-all act on
+  const selectedMeshRef = useRef<THREE.Mesh | null>(null);
+  const selectionMenuRef = useRef<CSS2DObject | null>(null);
+  const [isIsolated, setIsIsolated] = useState(false);
+
   // Only meaningful when there's real per-atom element data to label —
   // the generic placeholder molecule (see buildGenericMolecule) has no
   // CSS2DObject children at all, and non-molecule holograms never did
@@ -323,9 +406,51 @@ export function HologramPanel({ hologram, onClose }: { hologram: HologramVisual;
   // something.
   const hasLabels = hologram.objectType === "molecule" && !!hologram.structure;
 
+  // Detaches the floating per-object menu from whatever mesh it's
+  // currently attached to (if any) — safe to call even when nothing is
+  // selected. Does NOT touch isolation state; deselecting and clearing an
+  // isolation are independent (you can dismiss the menu after clicking
+  // Isolate and the isolation itself stays in effect).
+  function clearSelectionMenu() {
+    if (selectionMenuRef.current) {
+      selectionMenuRef.current.parent?.remove(selectionMenuRef.current);
+      selectionMenuRef.current = null;
+    }
+    selectedMeshRef.current = null;
+  }
+
+  // Fades every interactive mesh except `mesh` to ISOLATE_FADE_OPACITY.
+  // Kept as a plain function (not useCallback) — called from DOM
+  // onclick handlers attached imperatively inside the scene effect, not
+  // passed as a prop or effect dependency anywhere, so memoization buys
+  // nothing here.
+  function isolateMesh(mesh: THREE.Mesh) {
+    for (const m of interactiveMeshesRef.current) {
+      (m.material as THREE.MeshBasicMaterial).opacity = m === mesh ? 1 : ISOLATE_FADE_OPACITY;
+    }
+    setIsIsolated(true);
+    clearSelectionMenu();
+  }
+
+  function showAll() {
+    for (const m of interactiveMeshesRef.current) {
+      (m.material as THREE.MeshBasicMaterial).opacity = 1;
+    }
+    setIsIsolated(false);
+  }
+
   useEffect(() => {
     const container = containerRef.current;
     if (!container) return;
+
+    // A fresh hologram is a fresh scene — any interaction state from the
+    // previous one refers to meshes that are about to be disposed.
+    spinPausedRef.current = false;
+    angularVelocityRef.current = { ...DEFAULT_IDLE_VELOCITY };
+    isDraggingRef.current = false;
+    selectedMeshRef.current = null;
+    selectionMenuRef.current = null;
+    setIsIsolated(false);
 
     const scene = new THREE.Scene();
     const camera = new THREE.PerspectiveCamera(45, container.clientWidth / container.clientHeight, 0.1, 100);
@@ -338,14 +463,18 @@ export function HologramPanel({ hologram, onClose }: { hologram: HologramVisual;
     const renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
     renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
     renderer.setSize(container.clientWidth, container.clientHeight);
+    renderer.domElement.style.touchAction = "none"; // otherwise mobile browsers try to scroll/zoom the page during a drag
+    renderer.domElement.style.cursor = "grab";
     container.appendChild(renderer.domElement);
 
     // Overlaid on top of the WebGL canvas, absolutely positioned to fill
     // the same box — CSS2DRenderer projects each CSS2DObject's 3D
     // position to the matching 2D screen coordinate every frame, so atom
-    // labels stay pinned to their atoms through rotation automatically.
-    // pointer-events: none so it never blocks the close button or
-    // anything else layered above the canvas.
+    // labels (and the floating isolate menu below) stay pinned to their
+    // anchor through rotation automatically. pointer-events: none at the
+    // layer level so it never blocks drag/click on the canvas beneath it
+    // or the close button above it — individual floating-menu buttons
+    // re-enable pointer-events on themselves (see globals.css).
     const labelRenderer = new CSS2DRenderer();
     labelRenderer.setSize(container.clientWidth, container.clientHeight);
     labelRenderer.domElement.style.position = "absolute";
@@ -358,20 +487,164 @@ export function HologramPanel({ hologram, onClose }: { hologram: HologramVisual;
     scene.add(object);
 
     labelObjectsRef.current = [];
+    interactiveMeshesRef.current = [];
+    const allInteractiveMeshes: THREE.Mesh[] = [];
     object.traverse((child) => {
       if (child instanceof CSS2DObject) {
         child.visible = showLabels;
         labelObjectsRef.current.push(child);
+        return;
+      }
+      if (child instanceof THREE.Mesh) {
+        const kind = (child.userData as SceneUserData).kind;
+        if (kind) allInteractiveMeshes.push(child); // "atom" | "bond" | "model" — anything real enough to count as "hit the object"
+        if (kind === "atom" || kind === "bond") interactiveMeshesRef.current.push(child);
       }
     });
+
+    // --- Pointer interaction: drag-to-orbit (1a), pause-and-freeze via
+    // background click (1b), click-to-isolate (1c). All three share one
+    // pointerdown/move/up cycle, since "was this a drag or a click, and
+    // did it land on the model or the background" has to be decided from
+    // the same gesture.
+    const raycaster = new THREE.Raycaster();
+    const pointerNdc = new THREE.Vector2();
+
+    function ndcFromEvent(e: PointerEvent): THREE.Vector2 {
+      const rect = renderer.domElement.getBoundingClientRect();
+      return pointerNdc.set(
+        ((e.clientX - rect.left) / rect.width) * 2 - 1,
+        -((e.clientY - rect.top) / rect.height) * 2 + 1
+      );
+    }
+
+    function buildSelectionMenuDiv(mesh: THREE.Mesh): HTMLDivElement {
+      const div = document.createElement("div");
+      div.className = "hud-hologram-floating-menu";
+
+      const isolateBtn = document.createElement("button");
+      isolateBtn.type = "button";
+      isolateBtn.textContent = "Isolate";
+      isolateBtn.onclick = (ev) => {
+        ev.stopPropagation();
+        isolateMesh(mesh);
+      };
+      div.appendChild(isolateBtn);
+
+      // Phase 2 (subatomic reveal / electron shells) adds Reveal/Shells
+      // buttons here, for atom-kind meshes only — deliberately left as a
+      // marker rather than built now, per the fix note's own phased
+      // rollout (get orbit + isolate solid first).
+
+      return div;
+    }
+
+    function selectMesh(mesh: THREE.Mesh) {
+      clearSelectionMenu();
+      selectedMeshRef.current = mesh;
+      const menu = new CSS2DObject(buildSelectionMenuDiv(mesh));
+      mesh.add(menu);
+      selectionMenuRef.current = menu;
+    }
+
+    function handleBackgroundClick() {
+      if (spinPausedRef.current) {
+        spinPausedRef.current = false;
+        angularVelocityRef.current = { ...DEFAULT_IDLE_VELOCITY }; // resume means idle auto-rotation, not whatever custom momentum existed pre-pause
+      } else {
+        spinPausedRef.current = true; // freezes exactly where it is — animate() just stops applying angularVelocity below
+      }
+      clearSelectionMenu();
+    }
+
+    function handleClick(e: PointerEvent) {
+      raycaster.setFromCamera(ndcFromEvent(e), camera);
+      const hits = raycaster.intersectObjects(allInteractiveMeshes, false);
+
+      if (hits.length === 0) {
+        handleBackgroundClick();
+        return;
+      }
+
+      const hit = hits[0].object as THREE.Mesh;
+      const kind = (hit.userData as SceneUserData).kind;
+      if (kind === "atom" || kind === "bond") {
+        selectMesh(hit);
+      }
+      // kind === "model" — a real hit, but not something isolate/reveal
+      // applies to (card/building/product/abstract/placeholder-molecule
+      // geometry). Absorbed as a no-op: not a background click (so it
+      // doesn't toggle pause), but nothing to select either.
+    }
+
+    function handlePointerDown(e: PointerEvent) {
+      isDraggingRef.current = true;
+      pointerDownPosRef.current = { x: e.clientX, y: e.clientY };
+      lastPointerRef.current = { x: e.clientX, y: e.clientY };
+      velocitySamplesRef.current = [];
+      renderer.domElement.setPointerCapture(e.pointerId);
+      renderer.domElement.style.cursor = "grabbing";
+    }
+
+    function handlePointerMove(e: PointerEvent) {
+      if (!isDraggingRef.current || !lastPointerRef.current) return;
+      const dx = e.clientX - lastPointerRef.current.x;
+      const dy = e.clientY - lastPointerRef.current.y;
+      lastPointerRef.current = { x: e.clientX, y: e.clientY };
+
+      // Live rotation while dragging — happens identically whether
+      // spinPaused is true or not (per 1b: "while paused, dragging still
+      // rotates the object in real time").
+      const rotY = dx * DRAG_SENSITIVITY;
+      const rotX = dy * DRAG_SENSITIVITY;
+      object.rotation.y += rotY;
+      object.rotation.x += rotX;
+
+      velocitySamplesRef.current.push({ x: rotX, y: rotY });
+      if (velocitySamplesRef.current.length > VELOCITY_SAMPLE_COUNT) velocitySamplesRef.current.shift();
+    }
+
+    function handlePointerUp(e: PointerEvent) {
+      if (!isDraggingRef.current) return;
+      isDraggingRef.current = false;
+      renderer.domElement.releasePointerCapture(e.pointerId);
+      renderer.domElement.style.cursor = "grab";
+
+      const start = pointerDownPosRef.current;
+      const moved = start ? Math.hypot(e.clientX - start.x, e.clientY - start.y) : Infinity;
+
+      if (moved < CLICK_MOVE_THRESHOLD) {
+        handleClick(e);
+        return;
+      }
+
+      // A real drag release. Momentum only gets imparted when NOT
+      // paused — while paused, per 1b, "on release, no momentum is
+      // imparted — it just stops exactly where you left it," which is
+      // already true by construction as long as we skip updating
+      // angularVelocityRef here (animate() never applies it while
+      // spinPausedRef is true regardless of what it's set to).
+      if (!spinPausedRef.current) {
+        const samples = velocitySamplesRef.current;
+        if (samples.length > 0) {
+          const avg = samples.reduce((acc, s) => ({ x: acc.x + s.x, y: acc.y + s.y }), { x: 0, y: 0 });
+          angularVelocityRef.current = { x: avg.x / samples.length, y: avg.y / samples.length };
+        }
+      }
+    }
+
+    renderer.domElement.addEventListener("pointerdown", handlePointerDown);
+    renderer.domElement.addEventListener("pointermove", handlePointerMove);
+    renderer.domElement.addEventListener("pointerup", handlePointerUp);
 
     let animationActive = true;
 
     function animate() {
       if (!animationActive) return;
-      // Slow, gentle tumble — matches the ticket's "rotating slowly."
-      object.rotation.y += 0.004;
-      object.rotation.x += 0.0015;
+      if (!isDraggingRef.current && !spinPausedRef.current) {
+        object.rotation.y += angularVelocityRef.current.y;
+        object.rotation.x += angularVelocityRef.current.x;
+      }
       renderer.render(scene, camera);
       labelRenderer.render(scene, camera);
       frameRef.current = requestAnimationFrame(animate);
@@ -391,7 +664,11 @@ export function HologramPanel({ hologram, onClose }: { hologram: HologramVisual;
       animationActive = false;
       if (frameRef.current !== null) cancelAnimationFrame(frameRef.current);
       window.removeEventListener("resize", handleResize);
+      renderer.domElement.removeEventListener("pointerdown", handlePointerDown);
+      renderer.domElement.removeEventListener("pointermove", handlePointerMove);
+      renderer.domElement.removeEventListener("pointerup", handlePointerUp);
       labelObjectsRef.current = [];
+      interactiveMeshesRef.current = [];
 
       object.traverse((child) => {
         if (child instanceof THREE.Mesh) {
@@ -432,6 +709,11 @@ export function HologramPanel({ hologram, onClose }: { hologram: HologramVisual;
       <div ref={containerRef} className="hud-hologram-canvas" />
       <div className="hud-hologram-fade" />
       <div className="hud-hologram-label">{hologram.label}</div>
+      {isIsolated && (
+        <button type="button" className="hud-hologram-show-all" onClick={showAll}>
+          Show all
+        </button>
+      )}
       {hasLabels && (
         <button
           type="button"
