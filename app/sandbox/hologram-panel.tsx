@@ -1,7 +1,8 @@
 "use client";
 
-import { useEffect, useRef } from "react";
+import { useEffect, useRef, useState } from "react";
 import * as THREE from "three";
+import { CSS2DRenderer, CSS2DObject } from "three/addons/renderers/CSS2DRenderer.js";
 import type { HologramObjectType, HologramStructure } from "@/lib/visual-scanner";
 
 // Tier 2 of the Sandbox's three-tier visual system — full-screen takeover
@@ -129,6 +130,25 @@ function buildMoleculeFromStructure(structure: HologramStructure): THREE.Group |
     const sphere = new THREE.Mesh(new THREE.IcosahedronGeometry(atomRadius(atom.element), 1), material);
     sphere.position.set(atom.x, atom.y, atom.z);
     group.add(sphere);
+
+    // Element-symbol label — a CSS2DObject rather than a sprite/texture,
+    // so it's real crisp text at every zoom level with zero texture-atlas
+    // work, and it auto-projects to the correct screen position every
+    // frame as the object rotates/orbits (see labelRenderer.render in the
+    // component below) purely from being part of the THREE scene graph —
+    // no manual screen-space math needed here. Added as a child of the
+    // sphere (not the top-level group) so its position is simply (0,0,0)
+    // in the sphere's own local space, riding along with it automatically
+    // through both the auto-rotation and any future orbit interaction.
+    // Hidden by default (see HologramPanel's showLabels toggle) — this
+    // object always exists, only .visible changes, so toggling never
+    // needs to rebuild the scene.
+    const labelDiv = document.createElement("div");
+    labelDiv.className = "hud-hologram-atom-label";
+    labelDiv.textContent = atom.element;
+    const label = new CSS2DObject(labelDiv);
+    label.visible = false;
+    sphere.add(label);
   }
 
   const bondMaterial = new THREE.MeshBasicMaterial({ color: HUD_CYAN, wireframe: true });
@@ -290,6 +310,18 @@ function buildObject(objectType: HologramObjectType, structure: HologramStructur
 export function HologramPanel({ hologram, onClose }: { hologram: HologramVisual; onClose: () => void }) {
   const containerRef = useRef<HTMLDivElement | null>(null);
   const frameRef = useRef<number | null>(null);
+  // Populated by the scene-building effect below, read by the visibility-
+  // sync effect further down — kept in a ref (not state) since these are
+  // live THREE objects, not something a re-render should ever recreate.
+  const labelObjectsRef = useRef<CSS2DObject[]>([]);
+  const [showLabels, setShowLabels] = useState(false);
+
+  // Only meaningful when there's real per-atom element data to label —
+  // the generic placeholder molecule (see buildGenericMolecule) has no
+  // CSS2DObject children at all, and non-molecule holograms never did
+  // either, so the toggle button only renders when it would actually do
+  // something.
+  const hasLabels = hologram.objectType === "molecule" && !!hologram.structure;
 
   useEffect(() => {
     const container = containerRef.current;
@@ -308,8 +340,30 @@ export function HologramPanel({ hologram, onClose }: { hologram: HologramVisual;
     renderer.setSize(container.clientWidth, container.clientHeight);
     container.appendChild(renderer.domElement);
 
+    // Overlaid on top of the WebGL canvas, absolutely positioned to fill
+    // the same box — CSS2DRenderer projects each CSS2DObject's 3D
+    // position to the matching 2D screen coordinate every frame, so atom
+    // labels stay pinned to their atoms through rotation automatically.
+    // pointer-events: none so it never blocks the close button or
+    // anything else layered above the canvas.
+    const labelRenderer = new CSS2DRenderer();
+    labelRenderer.setSize(container.clientWidth, container.clientHeight);
+    labelRenderer.domElement.style.position = "absolute";
+    labelRenderer.domElement.style.top = "0px";
+    labelRenderer.domElement.style.left = "0px";
+    labelRenderer.domElement.style.pointerEvents = "none";
+    container.appendChild(labelRenderer.domElement);
+
     const object = buildObject(hologram.objectType, hologram.structure);
     scene.add(object);
+
+    labelObjectsRef.current = [];
+    object.traverse((child) => {
+      if (child instanceof CSS2DObject) {
+        child.visible = showLabels;
+        labelObjectsRef.current.push(child);
+      }
+    });
 
     let animationActive = true;
 
@@ -319,6 +373,7 @@ export function HologramPanel({ hologram, onClose }: { hologram: HologramVisual;
       object.rotation.y += 0.004;
       object.rotation.x += 0.0015;
       renderer.render(scene, camera);
+      labelRenderer.render(scene, camera);
       frameRef.current = requestAnimationFrame(animate);
     }
     animate();
@@ -328,6 +383,7 @@ export function HologramPanel({ hologram, onClose }: { hologram: HologramVisual;
       camera.aspect = container.clientWidth / container.clientHeight;
       camera.updateProjectionMatrix();
       renderer.setSize(container.clientWidth, container.clientHeight);
+      labelRenderer.setSize(container.clientWidth, container.clientHeight);
     }
     window.addEventListener("resize", handleResize);
 
@@ -335,6 +391,7 @@ export function HologramPanel({ hologram, onClose }: { hologram: HologramVisual;
       animationActive = false;
       if (frameRef.current !== null) cancelAnimationFrame(frameRef.current);
       window.removeEventListener("resize", handleResize);
+      labelObjectsRef.current = [];
 
       object.traverse((child) => {
         if (child instanceof THREE.Mesh) {
@@ -348,19 +405,44 @@ export function HologramPanel({ hologram, onClose }: { hologram: HologramVisual;
       });
       renderer.dispose();
       container.removeChild(renderer.domElement);
+      container.removeChild(labelRenderer.domElement);
     };
     // Rebuilds the whole scene on a new hologram (objectType/label/
     // structure change) rather than swapping geometry in place — these
     // takeovers are infrequent (once per proactively-triggered voice
     // response), so the simplicity of a full remount outweighs any
-    // benefit from a more surgical update.
+    // benefit from a more surgical update. showLabels is deliberately
+    // NOT a dependency here — toggling it is handled by the separate
+    // effect below, which flips .visible on the already-built label
+    // objects rather than rebuilding the whole scene for a pure
+    // visibility change.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [hologram.objectType, hologram.label, hologram.structure]);
+
+  // Syncs label visibility whenever the toggle changes, without touching
+  // the scene/geometry at all — see the ref populated in the effect above.
+  useEffect(() => {
+    for (const label of labelObjectsRef.current) {
+      label.visible = showLabels;
+    }
+  }, [showLabels]);
 
   return (
     <div className="hud-hologram-overlay">
       <div ref={containerRef} className="hud-hologram-canvas" />
       <div className="hud-hologram-fade" />
       <div className="hud-hologram-label">{hologram.label}</div>
+      {hasLabels && (
+        <button
+          type="button"
+          className={`hud-hologram-labels-toggle${showLabels ? " hud-hologram-labels-toggle-active" : ""}`}
+          onClick={() => setShowLabels((v) => !v)}
+          aria-label={showLabels ? "Hide atom labels" : "Show atom labels"}
+          aria-pressed={showLabels}
+        >
+          Aa
+        </button>
+      )}
       <button type="button" className="hud-hologram-close" onClick={onClose} aria-label="Close hologram">
         ✕
       </button>
