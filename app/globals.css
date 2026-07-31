@@ -1052,6 +1052,25 @@ html, body {
   border-radius: 4px;
 }
 
+/* Reaction-conditions readout for the vessel/beaker scenario — same
+   badge treatment as .hud-hologram-label, stacked just below it rather
+   than sharing space in one line, since the label can already run long
+   for a reaction ("hydrogen + chlorine -> hydrogen chloride"). */
+.hud-hologram-vessel-conditions {
+  position: absolute;
+  top: 58px;
+  left: 20px;
+  z-index: 21;
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 11px;
+  letter-spacing: 0.06em;
+  color: var(--hud-cyan);
+  background: rgba(4, 7, 15, 0.7);
+  padding: 5px 12px;
+  border: 1px solid rgba(58, 214, 255, 0.2);
+  border-radius: 4px;
+}
+
 .hud-hologram-close {
   position: absolute;
   top: 16px;

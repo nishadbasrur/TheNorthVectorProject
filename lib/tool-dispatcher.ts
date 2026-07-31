@@ -33,6 +33,7 @@ import {
   type HologramSignal,
   type HologramStructure,
   type ReactionSpecies,
+  type ReactionVessel,
 } from "./visual-scanner";
 import { fetchWolframImage } from "./wolfram-client";
 import { fetchPubChemStructure } from "./pubchem-client";
@@ -313,7 +314,15 @@ export const TOOL_DEFINITIONS: Anthropic.Tool[] = [
       "just don't rely on it to convey the actual chemistry. Only use `reaction` for exactly this " +
       "shape (1-2 reactants, exactly 1 product) — for anything more complex (multi-step, more " +
       "reactants/products, equilibria), just describe it normally in `content` instead, since the " +
-      "reaction visualization doesn't support that yet.",
+      "reaction visualization doesn't support that yet. When the reaction is described as a WORD " +
+      "PROBLEM SCENARIO rather than just the bare chemistry — dissolved in a solvent, in a beaker/" +
+      "flask, heated, under a catalyst, etc. (e.g. \"sodium chloride dissolved in water and heated " +
+      "to reflux\") — also pass `reaction.vessel` with whatever of `solvent`/`conditions` the " +
+      "problem actually specifies. This shows a beaker with the reactants dropping in and going " +
+      "into solution before the reaction plays, instead of the reactants just floating free — a " +
+      "more literal answer to a scenario described this way. Omit `vessel` entirely for a reaction " +
+      "described as pure chemistry with no physical setup (\"what happens when you burn hydrogen " +
+      "in chlorine gas\") — don't invent a vessel/solvent/conditions the problem didn't mention.",
     input_schema: {
       type: "object",
       properties: {
@@ -384,6 +393,25 @@ export const TOOL_DEFINITIONS: Anthropic.Tool[] = [
                   },
                 },
                 required: ["subject"],
+              },
+            },
+            vessel: {
+              type: "object",
+              description:
+                "Only for a reaction described as a word-problem scenario with a physical setup — " +
+                "see this tool's main description. Omit entirely for a bare-chemistry reaction " +
+                "(free-floating reactants, no beaker).",
+              properties: {
+                solvent: {
+                  type: "string",
+                  description: "The solvent the reactants are dissolved/suspended in, if the problem names one, e.g. \"water\".",
+                },
+                conditions: {
+                  type: "string",
+                  description:
+                    "Short reaction-conditions readout as it would appear over a reaction arrow, e.g. " +
+                    "\"Δ, 350°C\", \"catalyst: Pt\", \"reflux\". Free text, shown as-is near the vessel.",
+                },
               },
             },
           },
@@ -952,7 +980,11 @@ async function handlePushToScreen(input: {
   type?: string;
   title?: string;
   subject?: string;
-  reaction?: { reactants?: ReactionSpeciesInput[]; products?: ReactionSpeciesInput[] };
+  reaction?: {
+    reactants?: ReactionSpeciesInput[];
+    products?: ReactionSpeciesInput[];
+    vessel?: ReactionVessel;
+  };
 }): Promise<{ text: string; display?: DisplayContent; hologram?: HologramSignal }> {
   try {
     if (!input.content || input.content.trim().length === 0) {
@@ -1008,9 +1040,21 @@ async function handlePushToScreen(input: {
 
       const label = `${reactants.map((r) => r.label).join(" + ")} → ${products.map((p) => p.label).join(" + ")}`;
 
+      // Only carried through when at least one field is actually present —
+      // an empty {} vessel would still switch hologram-panel.tsx into the
+      // beaker scenario (see hasVessel there), which should only happen
+      // when the word problem actually described a physical setup, not
+      // whenever Claude happens to pass an empty `reaction.vessel` object.
+      const vesselInput = input.reaction?.vessel;
+      const solvent = vesselInput?.solvent?.trim();
+      const conditions = vesselInput?.conditions?.trim();
+      const vessel: ReactionVessel | undefined =
+        solvent || conditions ? { ...(solvent ? { solvent } : {}), ...(conditions ? { conditions } : {}) } : undefined;
+      console.log(`[push_to_screen] vessel: ${vessel ? JSON.stringify(vessel) : "absent"}`);
+
       return {
         text: "Pushed to the screen.",
-        hologram: { objectType: "reaction", label, reactants, products },
+        hologram: { objectType: "reaction", label, reactants, products, ...(vessel ? { vessel } : {}) },
       };
     }
 
@@ -1520,7 +1564,11 @@ export async function executeTool(
           type?: string;
           title?: string;
           subject?: string;
-          reaction?: { reactants?: ReactionSpeciesInput[]; products?: ReactionSpeciesInput[] };
+          reaction?: {
+            reactants?: ReactionSpeciesInput[];
+            products?: ReactionSpeciesInput[];
+            vessel?: ReactionVessel;
+          };
         }
       );
     case "note_capability_gap":

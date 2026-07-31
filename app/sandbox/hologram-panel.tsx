@@ -29,9 +29,24 @@ import { lookupElement, neutronCount } from "@/lib/periodic-table-data";
 // every other object type.
 export type ReactionSpecies = { label: string; structure?: HologramStructure };
 
+// Optional word-problem context — see lib/visual-scanner.ts's ReactionVessel
+// (re-declared here rather than imported, same client/server decoupling
+// reasoning as the rest of this file's types) for what solvent/conditions
+// mean and where they come from. Presence of this field is what switches a
+// reaction hologram from the original free-floating molecule layout into
+// the vessel/beaker scenario (see buildVessel and applyVesselSetupState
+// below) — absence keeps the exact behavior already built and tested.
+export type ReactionVessel = { solvent?: string; conditions?: string };
+
 export type HologramVisual =
   | { objectType: Exclude<HologramObjectType, "reaction">; label: string; structure?: HologramStructure }
-  | { objectType: "reaction"; label: string; reactants: ReactionSpecies[]; products: ReactionSpecies[] };
+  | {
+      objectType: "reaction";
+      label: string;
+      reactants: ReactionSpecies[];
+      products: ReactionSpecies[];
+      vessel?: ReactionVessel;
+    };
 
 const HOLOGRAM_OBJECT_TYPES: readonly HologramObjectType[] = [
   "card",
@@ -464,8 +479,21 @@ type ReactionSpeciesRuntime = { group: THREE.Group; baseX: number };
 
 // Returned alongside the built THREE.Group so the caller (the scene
 // effect below) can drive the crossfade every frame — the group itself
-// is just geometry, it has no opinion about time.
-type ReactionRuntime = { group: THREE.Group; reactants: ReactionSpeciesRuntime[]; products: THREE.Group[] };
+// is just geometry, it has no opinion about time. reactantBaseScale/
+// productBaseScale default to REACTION_SPECIES_SCALE/1 (see
+// buildReactionContainer) — the exact multipliers the already-tested
+// free-floating layout always used — and only shrink further when a
+// vessel scenario needs the species to actually fit inside a beaker (see
+// the vessel section below); applyReactionState itself doesn't know or
+// care which case it's in.
+type ReactionRuntime = {
+  group: THREE.Group;
+  reactants: ReactionSpeciesRuntime[];
+  products: THREE.Group[];
+  reactantBaseScale: number;
+  productBaseScale: number;
+  vessel?: VesselRuntime;
+};
 
 // Sets opacity uniformly across every mesh in a group, forcing
 // `transparent = true` along the way — buildGenericMolecule's placeholder
@@ -529,30 +557,45 @@ function applyReactionState(runtime: ReactionRuntime, progress: number) {
   const state = computeReactionVisualState(progress);
   for (const { group, baseX } of runtime.reactants) {
     setGroupOpacity(group, state.reactantOpacity);
-    group.scale.setScalar(REACTION_SPECIES_SCALE * state.reactantScaleFactor);
+    group.scale.setScalar(runtime.reactantBaseScale * state.reactantScaleFactor);
     group.position.x = baseX * state.reactantPositionFactor;
   }
   for (const group of runtime.products) {
     setGroupOpacity(group, state.productOpacity);
-    group.scale.setScalar(state.productScale);
+    group.scale.setScalar(state.productScale * runtime.productBaseScale);
   }
 }
 
-function buildReactionContainer(reactants: ReactionSpecies[], products: ReactionSpecies[]): ReactionRuntime {
+// `vessel` is only ever present for a word-problem-style reaction ("A
+// dissolved in B, heated to..." — see ReactionVessel) — when it's there,
+// reactants spawn above the beaker's rim (for applyVesselSetupState's
+// drop tween to bring down) and everything renders at the smaller
+// VESSEL_SPECIES_SCALE so it actually fits inside the vessel body;
+// otherwise this is byte-for-byte the original free-floating layout.
+function buildReactionContainer(
+  reactants: ReactionSpecies[],
+  products: ReactionSpecies[],
+  vessel?: ReactionVessel
+): ReactionRuntime {
   const group = new THREE.Group();
   const reactantRuntimes: ReactionSpeciesRuntime[] = [];
   const productGroups: THREE.Group[] = [];
+  const reactantSpacing = vessel ? VESSEL_REACTANT_SPACING : REACTION_REACTANT_SPACING;
+  const restY = vessel ? VESSEL_LIQUID_REST_Y : 0;
 
   // Geometry/position only here — opacity, scale, and drift are all a
   // pure function of progress (see computeReactionVisualState above), so
   // the caller applies the actual initial visual state via
   // applyReactionState(runtime, 0) immediately after building this,
   // rather than this function guessing at "progress 0" values itself and
-  // risking the two falling out of sync.
+  // risking the two falling out of sync. Same reasoning applies to Y
+  // position in vessel mode: applyVesselSetupState(runtime, 0) paints the
+  // real starting drop position right after this returns.
   reactants.forEach((species, i) => {
     const sub = buildMolecule(species.structure);
-    const baseX = reactants.length > 1 ? (i - (reactants.length - 1) / 2) * REACTION_REACTANT_SPACING : 0;
+    const baseX = reactants.length > 1 ? (i - (reactants.length - 1) / 2) * reactantSpacing : 0;
     sub.position.x = baseX;
+    sub.position.y = vessel ? VESSEL_DROP_START_Y : 0;
     group.add(sub);
     reactantRuntimes.push({ group: sub, baseX });
   });
@@ -560,6 +603,7 @@ function buildReactionContainer(reactants: ReactionSpecies[], products: Reaction
   products.forEach((species) => {
     const sub = buildMolecule(species.structure);
     sub.position.x = 0;
+    sub.position.y = restY;
     group.add(sub);
     productGroups.push(sub);
   });
@@ -570,14 +614,150 @@ function buildReactionContainer(reactants: ReactionSpecies[], products: Reaction
   // runs for these groups otherwise. Every reactant/product here is
   // actually a molecule (real or generic-placeholder), so in practice
   // this only ever catches the generic placeholder's own meshes (real
-  // per-atom molecules already tag themselves "atom"/"bond").
+  // per-atom molecules already tag themselves "atom"/"bond"). Runs
+  // before the vessel/solvent are added below, since those tag
+  // themselves directly (see buildVessel/buildSolventFill) rather than
+  // relying on this generic sweep.
   group.traverse((child) => {
     if (child instanceof THREE.Mesh && !child.userData.kind) {
       child.userData.kind = "model";
     }
   });
 
-  return { group, reactants: reactantRuntimes, products: productGroups };
+  let vesselRuntime: VesselRuntime | undefined;
+  if (vessel) {
+    const vesselGroup = buildVessel();
+    const solvent = buildSolventFill();
+    vesselGroup.add(solvent);
+    group.add(vesselGroup);
+    vesselRuntime = { group: vesselGroup, solvent };
+  }
+
+  return {
+    group,
+    reactants: reactantRuntimes,
+    products: productGroups,
+    reactantBaseScale: vessel ? VESSEL_SPECIES_SCALE : REACTION_SPECIES_SCALE,
+    productBaseScale: vessel ? VESSEL_SPECIES_SCALE : 1,
+    vessel: vesselRuntime,
+  };
+}
+
+// --- Vessel/beaker scenario (Phase A follow-up) ---
+// Word-problem reactions ("X dissolved in Y in a beaker...") get a
+// physical setup around the same reactant/product molecules and the same
+// crossfade transformation built above — a beaker vessel, a staggered
+// "dropping in" animation for each reactant, and a translucent solvent
+// fill standing in for "now it's in solution." This setup plays once,
+// automatically, and is deliberately NOT part of the scrubbable
+// reactionProgressRef timeline (see the animate() loop in HologramPanel)
+// — reactionProgressRef only starts advancing once the setup is done, so
+// the existing playback controls always mean exactly what they already
+// meant: scrubbing/pausing/speed only ever apply to the crossfade, never
+// to the vessel setup. Letting the setup itself be scrubbable would mean
+// every already-verified progress-to-visual-state mapping now depends on
+// whether a vessel is present — exactly the kind of coupling the
+// progress-based crossfade refactor was designed to avoid.
+
+const VESSEL_BOTTOM_Y = -1.05;
+const VESSEL_BODY_RADIUS = 0.78;
+const VESSEL_BODY_TOP_Y = 0.65;
+const VESSEL_LIP_RADIUS = 0.94;
+const VESSEL_RIM_Y = 0.85;
+const VESSEL_FILL_TOP_Y = 0.1; // solvent surface height — left below the rim for headroom
+const VESSEL_LIQUID_REST_Y = -0.3; // where dropped-in reactants (and the eventual product) come to rest
+const VESSEL_DROP_START_Y = VESSEL_RIM_Y + 1.4; // reactants start above the rim, out of frame at first
+const VESSEL_SPECIES_SCALE = 0.42; // smaller than REACTION_SPECIES_SCALE — has to actually fit inside the vessel body
+const VESSEL_REACTANT_SPACING = 0.55;
+const VESSEL_SOLVENT_MAX_OPACITY = 0.16;
+const VESSEL_DROP_STAGGER_MS = 500; // the next reactant starts dropping this long after the previous one
+const VESSEL_DROP_DURATION_MS = 700; // how long a single reactant's drop tween takes
+const VESSEL_SOLVENT_FADE_MS = 600; // solvent fill fades in after the last reactant lands
+
+function vesselSetupTotalMs(reactantCount: number): number {
+  return (reactantCount - 1) * VESSEL_DROP_STAGGER_MS + VESSEL_DROP_DURATION_MS + VESSEL_SOLVENT_FADE_MS;
+}
+
+type VesselRuntime = { group: THREE.Group; solvent: THREE.Mesh };
+
+// Simple cylindrical beaker body with a slight taper and a flared pour
+// lip, revolved from a 2D radius/height profile via LatheGeometry — the
+// same "outline over faint fill" holographic treatment as every other
+// solid in this file (see buildHolographicSolid), just built from a lathe
+// profile instead of an extruded 2D shape the way the card is. A real
+// beaker's pour spout is a break in the rim's radial symmetry, which a
+// lathe revolve can't produce at all without a separate non-axisymmetric
+// patch — not worth the extra geometry for what only needs to read as "a
+// beaker" at a glance, so the lip is a plain flared rim with no spout
+// notch.
+function buildVessel(): THREE.Group {
+  const profile = [
+    new THREE.Vector2(0, VESSEL_BOTTOM_Y),
+    new THREE.Vector2(VESSEL_BODY_RADIUS * 0.9, VESSEL_BOTTOM_Y),
+    new THREE.Vector2(VESSEL_BODY_RADIUS, VESSEL_BOTTOM_Y + 0.08),
+    new THREE.Vector2(VESSEL_BODY_RADIUS, VESSEL_BODY_TOP_Y),
+    new THREE.Vector2(VESSEL_BODY_RADIUS * 0.96, VESSEL_BODY_TOP_Y + 0.06),
+    new THREE.Vector2(VESSEL_LIP_RADIUS, VESSEL_RIM_Y),
+    new THREE.Vector2(VESSEL_LIP_RADIUS * 0.88, VESSEL_RIM_Y + 0.015),
+  ];
+  const geometry = new THREE.LatheGeometry(profile, 48);
+  return buildHolographicSolid(geometry, HUD_CYAN);
+}
+
+// Translucent fill cylinder standing in for "now it's in solution" — see
+// this phase's fix note for why this (a plain colored volume) rather than
+// rendering individual solvent molecules: it's honest about not being a
+// real solvation simulation and doesn't require solving how to render
+// thousands of water molecules sensibly. Starts fully transparent;
+// applyVesselSetupState fades it in once the reactants have landed.
+function buildSolventFill(): THREE.Mesh {
+  const height = VESSEL_FILL_TOP_Y - (VESSEL_BOTTOM_Y + 0.08);
+  const geometry = new THREE.CylinderGeometry(VESSEL_BODY_RADIUS * 0.92, VESSEL_BODY_RADIUS * 0.92, height, 32);
+  const material = new THREE.MeshBasicMaterial({ color: HUD_CYAN, transparent: true, opacity: 0 });
+  const mesh = new THREE.Mesh(geometry, material);
+  mesh.position.y = VESSEL_BOTTOM_Y + 0.08 + height / 2;
+  mesh.userData = { kind: "model" };
+  return mesh;
+}
+
+// Pure function of setup progress (0-1, spanning the whole drop+fill
+// sequence — see vesselSetupTotalMs), same "no clock, just a function of
+// progress" shape as computeReactionVisualState above and for the same
+// reason: it's what lets the setup be driven deterministically from
+// accumulated deltaMs regardless of frame timing.
+type VesselSetupState = {
+  reactantDropProgress: number[]; // one per reactant, in order — 0 at the rim, 1 landed
+  solventOpacity: number; // 0-1, multiplies VESSEL_SOLVENT_MAX_OPACITY
+};
+
+function computeVesselSetupState(progress: number, reactantCount: number): VesselSetupState {
+  const totalMs = vesselSetupTotalMs(reactantCount);
+  const progressMs = Math.min(1, Math.max(0, progress)) * totalMs;
+
+  let lastLandMs = 0;
+  const reactantDropProgress: number[] = [];
+  for (let i = 0; i < reactantCount; i++) {
+    const startMs = i * VESSEL_DROP_STAGGER_MS;
+    const endMs = startMs + VESSEL_DROP_DURATION_MS;
+    lastLandMs = Math.max(lastLandMs, endMs);
+    const local = Math.min(1, Math.max(0, (progressMs - startMs) / VESSEL_DROP_DURATION_MS));
+    reactantDropProgress.push(1 - (1 - local) ** 2); // ease-out — decelerates into the landing rather than stopping abruptly
+  }
+
+  const solventOpacity = Math.min(1, Math.max(0, (progressMs - lastLandMs) / VESSEL_SOLVENT_FADE_MS));
+
+  return { reactantDropProgress, solventOpacity };
+}
+
+function applyVesselSetupState(runtime: ReactionRuntime, progress: number) {
+  const vessel = runtime.vessel;
+  if (!vessel) return;
+  const state = computeVesselSetupState(progress, runtime.reactants.length);
+  runtime.reactants.forEach(({ group }, i) => {
+    const t = state.reactantDropProgress[i] ?? 1;
+    group.position.y = VESSEL_DROP_START_Y + (VESSEL_LIQUID_REST_Y - VESSEL_DROP_START_Y) * t;
+  });
+  (vessel.solvent.material as THREE.MeshBasicMaterial).opacity = state.solventOpacity * VESSEL_SOLVENT_MAX_OPACITY;
 }
 
 // Stylized network/issuer color differentiation — explicitly NOT an
@@ -959,6 +1139,16 @@ export function HologramPanel({ hologram, onClose }: { hologram: HologramVisual;
   const [isReactionPlaying, setIsReactionPlaying] = useState(true);
   const [reactionSpeed, setReactionSpeed] = useState<number>(1);
   const isReactionHologram = hologram.objectType === "reaction";
+  const reactionVessel = hologram.objectType === "reaction" ? hologram.vessel : undefined;
+  const hasVessel = !!reactionVessel;
+
+  // --- Vessel/beaker scenario setup (see buildVessel/applyVesselSetupState
+  // above) — a separate 0-1 progress ref from reactionProgressRef, since
+  // the setup (vessel + drop-in + solvent fill) is a fixed intro that
+  // plays once automatically and is never itself scrubbable; see the
+  // vessel section's own comment for why. In a ref for the same reason
+  // as every other value the animate() rAF loop reads every frame.
+  const vesselSetupProgressRef = useRef(0);
 
   // Only meaningful when there's real per-atom element data to label —
   // the generic placeholder molecule (see buildGenericMolecule) has no
@@ -1129,6 +1319,7 @@ export function HologramPanel({ hologram, onClose }: { hologram: HologramVisual;
     reactionLastFrameTimeRef.current = null;
     setIsReactionPlaying(true);
     setReactionSpeed(1);
+    vesselSetupProgressRef.current = 0;
 
     const scene = new THREE.Scene();
     const camera = new THREE.PerspectiveCamera(45, container.clientWidth / container.clientHeight, 0.1, 100);
@@ -1164,9 +1355,10 @@ export function HologramPanel({ hologram, onClose }: { hologram: HologramVisual;
     const object =
       hologram.objectType === "reaction"
         ? (() => {
-            const runtime = buildReactionContainer(hologram.reactants, hologram.products);
+            const runtime = buildReactionContainer(hologram.reactants, hologram.products, hologram.vessel);
             reactionRuntimeRef.current = runtime;
             applyReactionState(runtime, reactionProgressRef.current); // paints the actual progress=0 starting state — see buildReactionContainer's own comment on why it doesn't set this itself
+            applyVesselSetupState(runtime, vesselSetupProgressRef.current); // no-op when there's no vessel — paints the drop-start/solvent-invisible starting state otherwise
             return runtime.group;
           })()
         : buildObject(hologram.objectType, hologram.structure, hologram.label);
@@ -1402,12 +1594,31 @@ export function HologramPanel({ hologram, onClose }: { hologram: HologramVisual;
       // scene happens every frame either way, since a paused (or
       // just-scrubbed) reaction still needs to render at wherever it is.
       if (reactionRuntimeRef.current) {
+        const runtime = reactionRuntimeRef.current;
         const now = performance.now();
         const last = reactionLastFrameTimeRef.current ?? now;
         const deltaMs = now - last;
         reactionLastFrameTimeRef.current = now;
 
-        if (reactionPlayingRef.current) {
+        // Vessel setup (drop-in + solvent fill) advances on its own real-
+        // time clock, same "runs every frame regardless of play/pause"
+        // reasoning as the crossfade below — it isn't gated on
+        // reactionPlayingRef at all, since it isn't user-controllable in
+        // the first place (see the vessel section's own comment on why).
+        // Once it reaches 1 this becomes a cheap no-op every frame after.
+        const vesselDone = !runtime.vessel || vesselSetupProgressRef.current >= 1;
+        if (runtime.vessel && !vesselDone) {
+          const totalMs = vesselSetupTotalMs(runtime.reactants.length);
+          vesselSetupProgressRef.current = Math.min(1, vesselSetupProgressRef.current + deltaMs / totalMs);
+          applyVesselSetupState(runtime, vesselSetupProgressRef.current);
+        }
+
+        // The crossfade itself only starts advancing once the vessel
+        // setup (if any) has finished landing every reactant and fading
+        // in the solvent — handing off cleanly into the already-built,
+        // already-tested playback system described above, rather than
+        // racing the two animations against each other.
+        if (reactionPlayingRef.current && vesselDone) {
           reactionProgressRef.current = Math.min(
             1,
             reactionProgressRef.current + (deltaMs * reactionSpeedRef.current) / REACTION_TOTAL_MS
@@ -1420,7 +1631,7 @@ export function HologramPanel({ hologram, onClose }: { hologram: HologramVisual;
           }
         }
 
-        applyReactionState(reactionRuntimeRef.current, reactionProgressRef.current);
+        applyReactionState(runtime, reactionProgressRef.current);
 
         // Keeps the scrub bar's thumb position in sync during normal
         // playback without a React re-render every frame — see this
@@ -1498,6 +1709,9 @@ export function HologramPanel({ hologram, onClose }: { hologram: HologramVisual;
       <div ref={containerRef} className="hud-hologram-canvas" />
       <div className="hud-hologram-fade" />
       <div className="hud-hologram-label">{hologram.label}</div>
+      {hasVessel && reactionVessel?.conditions && (
+        <div className="hud-hologram-vessel-conditions">{reactionVessel.conditions}</div>
+      )}
       {isIsolated && (
         <button type="button" className="hud-hologram-show-all" onClick={showAll}>
           Show all

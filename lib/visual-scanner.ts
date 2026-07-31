@@ -105,6 +105,16 @@ export type HologramStructure = { atoms: HologramAtom[]; bonds: HologramBond[] }
 // just nested under reactants/products instead of being the whole payload.
 export type ReactionSpecies = { label: string; structure?: HologramStructure };
 
+// Optional word-problem context for a reaction — "compound A dissolved in
+// compound B, heated to 350°C" carries a solvent and a set of reaction
+// conditions that aren't part of the reactant/product chemistry itself,
+// but change how the scene sets up (vessel + solvent fill) before the
+// already-built crossfade takes over. Both fields are free text, passed
+// straight through from whatever Claude extracted from the word problem —
+// no parsing/validation attempted here, same as `label` elsewhere in this
+// file.
+export type ReactionVessel = { solvent?: string; conditions?: string };
+
 // A discriminated union rather than one flat type with everything
 // optional — a "reaction" hologram has fundamentally different shape
 // (multiple species, no single `structure`) from every other object
@@ -112,7 +122,13 @@ export type ReactionSpecies = { label: string; structure?: HologramStructure };
 // runtime "well it depends which fields happen to be set" one.
 export type HologramSignal =
   | { objectType: DetectableHologramObjectType; label: string; structure?: HologramStructure }
-  | { objectType: "reaction"; label: string; reactants: ReactionSpecies[]; products: ReactionSpecies[] };
+  | {
+      objectType: "reaction";
+      label: string;
+      reactants: ReactionSpecies[];
+      products: ReactionSpecies[];
+      vessel?: ReactionVessel;
+    };
 
 // Checked in order — first match wins. The four specific renderers listed
 // in the spec first, then a broader (but still bounded, still zero-AI)
