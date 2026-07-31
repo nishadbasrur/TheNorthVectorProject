@@ -203,6 +203,43 @@ function disposeObject3D(object: THREE.Object3D) {
   });
 }
 
+const BOND_RADIUS_SINGLE = 0.03;
+// Thinner than a single bond's cylinder — two/three full-thickness
+// parallel strands would visually read as one fat bar rather than a
+// distinguishable double/triple bond.
+const BOND_RADIUS_MULTI = 0.02;
+const MULTI_BOND_STRAND_OFFSET = 0.045;
+
+// Any vector not parallel to `dir` works as a reference to cross with to
+// get a perpendicular — falls back to a different reference when `dir`
+// itself is nearly parallel to the usual one, so the cross product never
+// degenerates near-zero.
+function perpendicularOffset(dir: THREE.Vector3): THREE.Vector3 {
+  const reference = Math.abs(dir.y) > 0.9 ? new THREE.Vector3(1, 0, 0) : new THREE.Vector3(0, 1, 0);
+  return new THREE.Vector3().crossVectors(dir, reference).normalize();
+}
+
+// One bond cylinder, centered at `mid`, oriented along `direction`
+// (already normalized). Own material instance per strand (not shared) —
+// click-to-isolate fades individual bonds independently, which needs
+// each one's opacity controllable on its own.
+function buildBondStrand(
+  mid: { x: number; y: number; z: number },
+  direction: THREE.Vector3,
+  length: number,
+  radius: number
+): THREE.Mesh {
+  const material = new THREE.MeshBasicMaterial({ color: HUD_CYAN, wireframe: true, transparent: true });
+  // Cylinders are built along Y by default, so orient via
+  // setFromUnitVectors — same technique the placeholder molecule below
+  // already used for its center-to-outer sticks.
+  const stick = new THREE.Mesh(new THREE.CylinderGeometry(radius, radius, length, 6), material);
+  stick.position.set(mid.x, mid.y, mid.z);
+  stick.quaternion.setFromUnitVectors(new THREE.Vector3(0, 1, 0), direction);
+  stick.userData = { kind: "bond" };
+  return stick;
+}
+
 // Builds a real per-atom/per-bond molecule from PubChem-sourced geometry
 // (lib/pubchem-client.ts via handlePushToScreen) — spheres colored by
 // element (CPK convention, see elementColor above), cylinder bonds only
@@ -299,19 +336,34 @@ function buildMoleculeFromStructure(structure: HologramStructure): THREE.Group |
       const distance = Math.sqrt(dx ** 2 + dy ** 2 + dz ** 2);
       if (distance === 0) continue;
 
-      // Own material instance per bond (not a single shared one) — click-
-      // to-isolate fades individual bonds independently, which needs each
-      // one's opacity controllable on its own.
-      const bondMaterial = new THREE.MeshBasicMaterial({ color: HUD_CYAN, wireframe: true, transparent: true });
+      const direction = new THREE.Vector3(dx, dy, dz).normalize();
 
-      // Cylinders are built along Y by default, so orient via
-      // setFromUnitVectors — same technique the placeholder molecule
-      // below already used for its center-to-outer sticks.
-      const stick = new THREE.Mesh(new THREE.CylinderGeometry(0.03, 0.03, distance, 6), bondMaterial);
-      stick.position.set(from.x + dx / 2, from.y + dy / 2, from.z + dz / 2);
-      stick.quaternion.setFromUnitVectors(new THREE.Vector3(0, 1, 0), new THREE.Vector3(dx, dy, dz).normalize());
-      stick.userData = { kind: "bond" };
-      group.add(stick);
+      // Real PubChem SDF data always Kekulizes aromatic rings into clean
+      // alternating integer bond orders — confirmed live against benzene
+      // (CID 241): 1/2 alternating around the ring, no fractional value
+      // or separate aromatic flag to handle. 1/2/3 covers every case
+      // actually observed; anything else (0, >3, non-integer — which
+      // shouldn't happen but isn't worth crashing over) falls back to a
+      // single strand rather than guessing at an unrecognized order.
+      const order = Number.isInteger(bond.order) && bond.order >= 1 && bond.order <= 3 ? bond.order : 1;
+
+      const mid = { x: (from.x + to.x) / 2, y: (from.y + to.y) / 2, z: (from.z + to.z) / 2 };
+
+      if (order === 1) {
+        group.add(buildBondStrand(mid, direction, distance, BOND_RADIUS_SINGLE));
+      } else {
+        // Parallel strands offset perpendicular to the bond axis — order
+        // 2 gets two strands straddling the true bond line, order 3 adds
+        // a third strand on the line itself. Standard double/triple-bond
+        // drawing convention, not a claim about real bonding-electron
+        // geometry.
+        const perp = perpendicularOffset(direction).multiplyScalar(MULTI_BOND_STRAND_OFFSET);
+        const strandOffsets = order === 2 ? [-1, 1] : [-1, 0, 1];
+        for (const k of strandOffsets) {
+          const strandMid = { x: mid.x + perp.x * k, y: mid.y + perp.y * k, z: mid.z + perp.z * k };
+          group.add(buildBondStrand(strandMid, direction, distance, BOND_RADIUS_MULTI));
+        }
+      }
     }
   }
 
