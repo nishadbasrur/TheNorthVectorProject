@@ -22,13 +22,25 @@ import { lookupElement, neutronCount } from "@/lib/periodic-table-data";
 // so HologramObjectType was already imported directly rather than
 // re-declared, and HologramStructure follows the same precedent rather
 // than introducing a second, inconsistent pattern.
-export type HologramVisual = {
-  objectType: HologramObjectType;
-  label: string;
-  structure?: HologramStructure;
-};
+//
+// A discriminated union, mirroring lib/visual-scanner.ts's own
+// HologramSignal split — a "reaction" hologram has a fundamentally
+// different shape (multiple species, no single top-level structure) from
+// every other object type.
+export type ReactionSpecies = { label: string; structure?: HologramStructure };
 
-const HOLOGRAM_OBJECT_TYPES: readonly HologramObjectType[] = ["card", "molecule", "building", "product", "abstract"];
+export type HologramVisual =
+  | { objectType: Exclude<HologramObjectType, "reaction">; label: string; structure?: HologramStructure }
+  | { objectType: "reaction"; label: string; reactants: ReactionSpecies[]; products: ReactionSpecies[] };
+
+const HOLOGRAM_OBJECT_TYPES: readonly HologramObjectType[] = [
+  "card",
+  "molecule",
+  "building",
+  "product",
+  "abstract",
+  "reaction",
+];
 
 function isHologramObjectType(value: unknown): value is HologramObjectType {
   return typeof value === "string" && (HOLOGRAM_OBJECT_TYPES as readonly string[]).includes(value);
@@ -36,7 +48,11 @@ function isHologramObjectType(value: unknown): value is HologramObjectType {
 
 export function isHologramVisual(value: unknown): value is HologramVisual {
   const v = value as Record<string, unknown> | null | undefined;
-  return !!v && isHologramObjectType(v.objectType) && typeof v.label === "string";
+  if (!v || typeof v.label !== "string" || !isHologramObjectType(v.objectType)) return false;
+  if (v.objectType === "reaction") {
+    return Array.isArray(v.reactants) && Array.isArray(v.products);
+  }
+  return true;
 }
 
 const HUD_CYAN = 0x3ad6ff;
@@ -416,6 +432,93 @@ function buildMolecule(structure: HologramStructure | undefined): THREE.Group {
   return buildGenericMolecule();
 }
 
+// --- Reaction choreography (Phase A: 1-2 reactants -> 1 product) --------
+//
+// Reuses buildMolecule for every species (same bond-order rendering, CPK
+// coloring, click-to-isolate/reveal/shells as any standalone molecule
+// hologram — a reactant or product is nothing more than a molecule
+// positioned and animated differently). The transformation itself is
+// deliberately NOT a mechanistic simulation — no bond-breaking/forming,
+// no atom-by-atom morph — just reactants fading/shrinking/drifting toward
+// center while the product fades/grows in at the same spot. Visually
+// clear "A + B became C," not chemically rigorous.
+
+const REACTION_SPECIES_SCALE = 0.55; // reactants render smaller than a standalone molecule so 1-2 of them plus the eventual product fit the frame without overlapping
+const REACTION_REACTANT_SPACING = 1.7; // x-distance between reactant centers when there are 2
+const REACTION_HOLD_MS = 1800; // how long reactants sit still before the transformation starts
+const REACTION_CROSSFADE_MS = 1200;
+// Not literally 0 — a zero-scale Object3D can misbehave in matrix math in
+// some three.js code paths, and a near-zero (rather than exactly zero)
+// scale is also what keeps a technically-still-there mesh effectively
+// unclickable (see the raycast note on ReactionRuntime below).
+const REACTION_MIN_SCALE = 0.001;
+
+type ReactionSpeciesRuntime = { group: THREE.Group; baseX: number };
+
+// Returned alongside the built THREE.Group so the caller (the scene
+// effect below) can drive the crossfade every frame — the group itself
+// is just geometry, it has no opinion about time.
+type ReactionRuntime = { group: THREE.Group; reactants: ReactionSpeciesRuntime[]; products: THREE.Group[] };
+
+// Sets opacity uniformly across every mesh in a group, forcing
+// `transparent = true` along the way — buildGenericMolecule's placeholder
+// material doesn't set that up front the way buildMoleculeFromStructure's
+// real-structure materials do (see that function's own comment on why),
+// so a reactant/product that fell back to the placeholder still needs it
+// set here before opacity animation has any visible effect.
+function setGroupOpacity(group: THREE.Group, opacity: number) {
+  group.traverse((child) => {
+    if (child instanceof THREE.Mesh) {
+      const material = child.material as THREE.MeshBasicMaterial;
+      material.transparent = true;
+      material.opacity = opacity;
+    }
+  });
+}
+
+function buildReactionContainer(reactants: ReactionSpecies[], products: ReactionSpecies[]): ReactionRuntime {
+  const group = new THREE.Group();
+  const reactantRuntimes: ReactionSpeciesRuntime[] = [];
+  const productGroups: THREE.Group[] = [];
+
+  reactants.forEach((species, i) => {
+    const sub = buildMolecule(species.structure);
+    sub.scale.setScalar(REACTION_SPECIES_SCALE);
+    const baseX = reactants.length > 1 ? (i - (reactants.length - 1) / 2) * REACTION_REACTANT_SPACING : 0;
+    sub.position.x = baseX;
+    group.add(sub);
+    reactantRuntimes.push({ group: sub, baseX });
+  });
+
+  products.forEach((species) => {
+    const sub = buildMolecule(species.structure);
+    // Starts effectively invisible/unclickable at the exact center where
+    // it'll end up full-size — the crossfade animates opacity and scale
+    // up together, so it reads as the product "forming" there rather
+    // than popping in from nothing partway through.
+    sub.scale.setScalar(REACTION_MIN_SCALE);
+    sub.position.x = 0;
+    setGroupOpacity(sub, 0);
+    group.add(sub);
+    productGroups.push(sub);
+  });
+
+  // Same generic "model" tag buildObject applies for every non-molecule
+  // hologram type — needed here too since reaction mode never calls
+  // buildObject at all (see the scene effect below), so that pass never
+  // runs for these groups otherwise. Every reactant/product here is
+  // actually a molecule (real or generic-placeholder), so in practice
+  // this only ever catches the generic placeholder's own meshes (real
+  // per-atom molecules already tag themselves "atom"/"bond").
+  group.traverse((child) => {
+    if (child instanceof THREE.Mesh && !child.userData.kind) {
+      child.userData.kind = "model";
+    }
+  });
+
+  return { group, reactants: reactantRuntimes, products: productGroups };
+}
+
 // Stylized network/issuer color differentiation — explicitly NOT an
 // attempt at real card artwork or logos (exact branded designs are a
 // trademark question, not an engineering one). Just a body/chip color
@@ -652,7 +755,11 @@ function buildAbstract(): THREE.Group {
   return group;
 }
 
-function buildObject(objectType: HologramObjectType, structure: HologramStructure | undefined, label: string): THREE.Group {
+function buildObject(
+  objectType: Exclude<HologramObjectType, "reaction">,
+  structure: HologramStructure | undefined,
+  label: string
+): THREE.Group {
   const group = (() => {
     switch (objectType) {
       case "card":
@@ -769,12 +876,30 @@ export function HologramPanel({ hologram, onClose }: { hologram: HologramVisual;
   >(new Map());
   const animationFrameCountRef = useRef(0); // drives nucleon jitter phase — see animate() below
 
+  // --- Reaction choreography (Phase A) ---
+  // Non-null only while a reaction hologram's crossfade is still running
+  // (or hasn't started, during the hold phase) — the animate() loop reads
+  // this every frame to drive the transition, then leaves it in place
+  // (reactionDoneRef flips to stop recomputing) once the product is at
+  // full opacity/scale. real-time (performance.now()), not a frame
+  // counter like the nucleon jitter above — a crossfade's duration is
+  // user-perceptible UX, worth being accurate about regardless of frame
+  // rate, unlike a subtle idle jitter.
+  const reactionRuntimeRef = useRef<ReactionRuntime | null>(null);
+  const reactionStartRef = useRef<number | null>(null);
+  const reactionDoneRef = useRef(false);
+
   // Only meaningful when there's real per-atom element data to label —
   // the generic placeholder molecule (see buildGenericMolecule) has no
   // CSS2DObject children at all, and non-molecule holograms never did
   // either, so the toggle button only renders when it would actually do
-  // something.
-  const hasLabels = hologram.objectType === "molecule" && !!hologram.structure;
+  // something. For a reaction, true if ANY reactant/product resolved a
+  // real structure (any one of them could still have fallen back to the
+  // placeholder and would just have no labels of its own).
+  const hasLabels =
+    (hologram.objectType === "molecule" && !!hologram.structure) ||
+    (hologram.objectType === "reaction" &&
+      [...hologram.reactants, ...hologram.products].some((species) => !!species.structure));
 
   // Detaches the floating per-object menu from whatever mesh it's
   // currently attached to (if any) — safe to call even when nothing is
@@ -878,6 +1003,9 @@ export function HologramPanel({ hologram, onClose }: { hologram: HologramVisual;
     setIsIsolated(false);
     revealedAtomsRef.current = new Map(); // the meshes these referenced belong to the previous scene, about to be disposed below
     animationFrameCountRef.current = 0;
+    reactionRuntimeRef.current = null;
+    reactionStartRef.current = null;
+    reactionDoneRef.current = false;
 
     const scene = new THREE.Scene();
     const camera = new THREE.PerspectiveCamera(45, container.clientWidth / container.clientHeight, 0.1, 100);
@@ -910,7 +1038,15 @@ export function HologramPanel({ hologram, onClose }: { hologram: HologramVisual;
     labelRenderer.domElement.style.pointerEvents = "none";
     container.appendChild(labelRenderer.domElement);
 
-    const object = buildObject(hologram.objectType, hologram.structure, hologram.label);
+    const object =
+      hologram.objectType === "reaction"
+        ? (() => {
+            const runtime = buildReactionContainer(hologram.reactants, hologram.products);
+            reactionRuntimeRef.current = runtime;
+            reactionStartRef.current = performance.now();
+            return runtime.group;
+          })()
+        : buildObject(hologram.objectType, hologram.structure, hologram.label);
     scene.add(object);
 
     labelObjectsRef.current = [];
@@ -1133,6 +1269,42 @@ export function HologramPanel({ hologram, onClose }: { hologram: HologramVisual;
         }
       }
 
+      // Reaction crossfade — hold, then reactants fade/shrink/drift toward
+      // center while the product fades/grows in at that same spot. Skips
+      // entirely once reactionDoneRef is set (final state already applied
+      // on the last transitioning frame — no reason to keep writing the
+      // same material properties every frame forever).
+      if (reactionRuntimeRef.current && reactionStartRef.current !== null && !reactionDoneRef.current) {
+        const elapsed = performance.now() - reactionStartRef.current;
+        const runtime = reactionRuntimeRef.current;
+
+        if (elapsed >= REACTION_HOLD_MS + REACTION_CROSSFADE_MS) {
+          for (const { group: g } of runtime.reactants) {
+            setGroupOpacity(g, 0);
+            g.scale.setScalar(REACTION_MIN_SCALE);
+          }
+          for (const g of runtime.products) {
+            setGroupOpacity(g, 1);
+            g.scale.setScalar(1);
+          }
+          reactionDoneRef.current = true;
+        } else if (elapsed >= REACTION_HOLD_MS) {
+          const progress = (elapsed - REACTION_HOLD_MS) / REACTION_CROSSFADE_MS; // 0..1
+          for (const { group: g, baseX } of runtime.reactants) {
+            setGroupOpacity(g, 1 - progress);
+            g.scale.setScalar(REACTION_SPECIES_SCALE * (1 - 0.4 * progress));
+            g.position.x = baseX * (1 - progress); // drift toward center — the "merge" cue
+          }
+          for (const g of runtime.products) {
+            setGroupOpacity(g, progress);
+            g.scale.setScalar(REACTION_MIN_SCALE + (1 - REACTION_MIN_SCALE) * progress);
+          }
+        }
+        // elapsed < REACTION_HOLD_MS: still in the hold phase, nothing to
+        // update — reactants/product are already at their built-time
+        // initial state.
+      }
+
       renderer.render(scene, camera);
       labelRenderer.render(scene, camera);
       frameRef.current = requestAnimationFrame(animate);
@@ -1172,17 +1344,21 @@ export function HologramPanel({ hologram, onClose }: { hologram: HologramVisual;
       container.removeChild(renderer.domElement);
       container.removeChild(labelRenderer.domElement);
     };
-    // Rebuilds the whole scene on a new hologram (objectType/label/
-    // structure change) rather than swapping geometry in place — these
-    // takeovers are infrequent (once per proactively-triggered voice
-    // response), so the simplicity of a full remount outweighs any
-    // benefit from a more surgical update. showLabels is deliberately
-    // NOT a dependency here — toggling it is handled by the separate
-    // effect below, which flips .visible on the already-built label
-    // objects rather than rebuilding the whole scene for a pure
+    // Rebuilds the whole scene on a new hologram rather than swapping
+    // geometry in place — these takeovers are infrequent (once per
+    // proactively-triggered voice response), so the simplicity of a full
+    // remount outweighs any benefit from a more surgical update. Depends
+    // on the whole `hologram` object (every SSE event constructs a fresh
+    // one, so reference inequality alone is enough to detect a real
+    // change) rather than picking out individual fields, now that its
+    // shape varies by objectType (a "reaction" hologram has no single
+    // `structure` field the way every other type does). showLabels is
+    // deliberately NOT a dependency here — toggling it is handled by the
+    // separate effect below, which flips .visible on the already-built
+    // label objects rather than rebuilding the whole scene for a pure
     // visibility change.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [hologram.objectType, hologram.label, hologram.structure]);
+  }, [hologram]);
 
   // Syncs label visibility whenever the toggle changes, without touching
   // the scene/geometry at all — see the ref populated in the effect above.

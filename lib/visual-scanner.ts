@@ -80,7 +80,13 @@ export function detectWolframQuery(responseText: string): string | null {
   return stripped.slice(0, WOLFRAM_QUERY_MAX_LENGTH);
 }
 
-export type HologramObjectType = "card" | "molecule" | "building" | "product" | "abstract";
+// "reaction" is deliberately excluded from what detectHologramSubject
+// (regex scan over free text) can ever produce — a reaction hologram only
+// ever comes from push_to_screen's explicit `reaction` schema field
+// (structured reactant/product subjects Claude supplies directly), never
+// from pattern-matching prose. See DetectableHologramObjectType below.
+export type HologramObjectType = "card" | "molecule" | "building" | "product" | "abstract" | "reaction";
+type DetectableHologramObjectType = Exclude<HologramObjectType, "reaction">;
 
 // structure carries real per-atom geometry for the "molecule" case — see
 // lib/pubchem-client.ts (whose PubChemStructure this shape mirrors) and
@@ -94,11 +100,19 @@ export type HologramAtom = { element: string; x: number; y: number; z: number };
 export type HologramBond = { a: number; b: number; order: number };
 export type HologramStructure = { atoms: HologramAtom[]; bonds: HologramBond[] };
 
-export type HologramSignal = {
-  objectType: HologramObjectType;
-  label: string;
-  structure?: HologramStructure;
-};
+// One reactant or product species in a reaction hologram — same
+// label/structure shape a single-molecule HologramSignal carries,
+// just nested under reactants/products instead of being the whole payload.
+export type ReactionSpecies = { label: string; structure?: HologramStructure };
+
+// A discriminated union rather than one flat type with everything
+// optional — a "reaction" hologram has fundamentally different shape
+// (multiple species, no single `structure`) from every other object
+// type, and this makes that a compile-time distinction instead of a
+// runtime "well it depends which fields happen to be set" one.
+export type HologramSignal =
+  | { objectType: DetectableHologramObjectType; label: string; structure?: HologramStructure }
+  | { objectType: "reaction"; label: string; reactants: ReactionSpecies[]; products: ReactionSpecies[] };
 
 // Checked in order — first match wins. The four specific renderers listed
 // in the spec first, then a broader (but still bounded, still zero-AI)
@@ -112,7 +126,7 @@ export type HologramSignal = {
 // by this exactly once already (see the "Potassium ferrocyanide ... -
 // molecular structure" miss this pattern list is being fixed for) — every
 // entry below is now checked for the same trap, not just molecule.
-const HOLOGRAM_SIGNAL_PATTERNS: { type: HologramObjectType; pattern: RegExp }[] = [
+const HOLOGRAM_SIGNAL_PATTERNS: { type: DetectableHologramObjectType; pattern: RegExp }[] = [
   {
     type: "card",
     pattern: /\b(credit cards?|debit cards?|visa|mastercard|amex|american express|gift cards?)\b/i,
@@ -136,7 +150,7 @@ const HOLOGRAM_SIGNAL_PATTERNS: { type: HologramObjectType; pattern: RegExp }[] 
   },
 ];
 
-export function detectHologramSubject(responseText: string): HologramSignal | null {
+export function detectHologramSubject(responseText: string): Extract<HologramSignal, { structure?: HologramStructure }> | null {
   for (const { type, pattern } of HOLOGRAM_SIGNAL_PATTERNS) {
     const match = responseText.match(pattern);
     if (match) {

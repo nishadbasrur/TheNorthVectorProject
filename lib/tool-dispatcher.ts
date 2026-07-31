@@ -27,7 +27,13 @@ import { logTechnicalError } from "./error-log-store";
 import { askClaudeWithWebSearch } from "./anthropic-client";
 import { getRecentTextMessages, searchTextMessages } from "./text-message-store";
 import { requiresConfirmation } from "./tool-tiers";
-import { detectWolframQuery, detectHologramSubject, type HologramSignal } from "./visual-scanner";
+import {
+  detectWolframQuery,
+  detectHologramSubject,
+  type HologramSignal,
+  type HologramStructure,
+  type ReactionSpecies,
+} from "./visual-scanner";
 import { fetchWolframImage } from "./wolfram-client";
 import { fetchPubChemStructure } from "./pubchem-client";
 
@@ -297,7 +303,17 @@ export const TOOL_DEFINITIONS: Anthropic.Tool[] = [
       "with that exact name (e.g. \"caffeine\", \"Chase Freedom Rise Visa Signature\", \"Eiffel " +
       "Tower\"). This is what lets the system render the real thing (an actual molecular structure, " +
       "etc.) instead of a generic placeholder — omitting it when a real name is available " +
-      "noticeably degrades what gets shown.",
+      "noticeably degrades what gets shown. When describing a CHEMICAL REACTION specifically " +
+      "(one or two reactants forming a single product — e.g. \"what happens when you burn " +
+      "hydrogen in chlorine gas\"), don't describe it in prose in `content` — instead also pass " +
+      "`reaction` with clean, individually-lookupable compound names/formulas for each reactant " +
+      "and the product (e.g. reactants \"hydrogen\", \"chlorine\"; product \"hydrogen chloride\"). " +
+      "The system resolves and animates each species' real structure and the reactants-becoming-" +
+      "product transformation itself — still keep `content` as a short spoken-alongside summary, " +
+      "just don't rely on it to convey the actual chemistry. Only use `reaction` for exactly this " +
+      "shape (1-2 reactants, exactly 1 product) — for anything more complex (multi-step, more " +
+      "reactants/products, equilibria), just describe it normally in `content` instead, since the " +
+      "reaction visualization doesn't support that yet.",
     input_schema: {
       type: "object",
       properties: {
@@ -325,6 +341,53 @@ export const TOOL_DEFINITIONS: Anthropic.Tool[] = [
             "when showing a specific molecule, card product, building, or device by name, so the " +
             "system can render the real thing rather than a generic placeholder shape. Omit only " +
             "when what's being shown genuinely has no specific real-world identity.",
+        },
+        reaction: {
+          type: "object",
+          description:
+            "For a chemical reaction with 1-2 reactants forming exactly 1 product — see this " +
+            "tool's main description. Omit entirely for anything else.",
+          properties: {
+            reactants: {
+              type: "array",
+              minItems: 1,
+              maxItems: 2,
+              items: {
+                type: "object",
+                properties: {
+                  subject: {
+                    type: "string",
+                    description: "Clean, PubChem-lookupable compound name or formula, e.g. \"hydrogen\" or \"H2\".",
+                  },
+                  coefficient: {
+                    type: "number",
+                    description: "Stoichiometric coefficient, if relevant. Not yet used for rendering — reserved for a future phase.",
+                  },
+                },
+                required: ["subject"],
+              },
+            },
+            products: {
+              type: "array",
+              minItems: 1,
+              maxItems: 1,
+              items: {
+                type: "object",
+                properties: {
+                  subject: {
+                    type: "string",
+                    description: "Clean, PubChem-lookupable compound name or formula for the product.",
+                  },
+                  coefficient: {
+                    type: "number",
+                    description: "Stoichiometric coefficient, if relevant. Not yet used for rendering — reserved for a future phase.",
+                  },
+                },
+                required: ["subject"],
+              },
+            },
+          },
+          required: ["reactants", "products"],
         },
         title: { type: "string", description: "Optional title shown at the top of the display panel." },
       },
@@ -882,11 +945,14 @@ function isDisplayContentType(value: unknown): value is DisplayContentType {
   return (DISPLAY_TYPES as readonly string[]).includes(value as string);
 }
 
+type ReactionSpeciesInput = { subject?: string; coefficient?: number };
+
 async function handlePushToScreen(input: {
   content?: string;
   type?: string;
   title?: string;
   subject?: string;
+  reaction?: { reactants?: ReactionSpeciesInput[]; products?: ReactionSpeciesInput[] };
 }): Promise<{ text: string; display?: DisplayContent; hologram?: HologramSignal }> {
   try {
     if (!input.content || input.content.trim().length === 0) {
@@ -897,6 +963,56 @@ async function handlePushToScreen(input: {
 
     console.log(`[push_to_screen] Content received (${input.content.length} chars): ${input.content.slice(0, 200)}`);
     if (input.subject) console.log(`[push_to_screen] Subject: ${input.subject}`);
+
+    // Reaction hologram — checked first, ahead of even the single-molecule
+    // hologram upgrade below, since it's the most specific/richest match
+    // when it applies at all. Phase A only: exactly 1-2 reactants and
+    // exactly 1 product (see this tool's schema description) — anything
+    // outside that shape is left alone here and falls through to the
+    // normal content-based detection below, on the theory that Claude
+    // either didn't mean to invoke reaction mode or asked for something
+    // (multi-step, more species) this phase doesn't support yet.
+    const reactantInputs = input.reaction?.reactants ?? [];
+    const productInputs = input.reaction?.products ?? [];
+    const reactionShapeValid =
+      reactantInputs.length >= 1 &&
+      reactantInputs.length <= 2 &&
+      productInputs.length === 1 &&
+      reactantInputs.every((r) => !!r.subject?.trim()) &&
+      productInputs.every((p) => !!p.subject?.trim());
+
+    console.log(
+      `[push_to_screen] reaction field: ${input.reaction ? (reactionShapeValid ? "valid shape" : "present but unsupported shape — falling through") : "absent"}`
+    );
+
+    if (reactionShapeValid) {
+      const resolveSpecies = async (species: ReactionSpeciesInput): Promise<ReactionSpecies> => {
+        const subject = species.subject!.trim();
+        console.log(`[push_to_screen] Fetching PubChem structure for reaction species "${subject}"`);
+        const structure = await fetchPubChemStructure(subject);
+        if (structure) {
+          console.log(`[push_to_screen] "${subject}" resolved — ${structure.atoms.length} atoms, ${structure.bonds.length} bonds`);
+        } else {
+          console.log(`[push_to_screen] "${subject}" did not resolve — that species falls back to the generic placeholder shape.`);
+        }
+        return { label: subject, ...(structure ? { structure } : {}) };
+      };
+
+      // Resolved in parallel — these are independent lookups, no reason to
+      // make one species wait on another the way handlePushToScreen's
+      // caller already waits on this whole call.
+      const [reactants, products] = await Promise.all([
+        Promise.all(reactantInputs.map(resolveSpecies)),
+        Promise.all(productInputs.map(resolveSpecies)),
+      ]);
+
+      const label = `${reactants.map((r) => r.label).join(" + ")} → ${products.map((p) => p.label).join(" + ")}`;
+
+      return {
+        text: "Pushed to the screen.",
+        hologram: { objectType: "reaction", label, reactants, products },
+      };
+    }
 
     // Hologram upgrade — checked BEFORE the Wolfram check below, and takes
     // priority over it. A push_to_screen call about a physical thing (a
@@ -918,7 +1034,7 @@ async function handlePushToScreen(input: {
       // tool's schema description), and it's also the only thing PubChem
       // can actually look up below.
       const label = input.subject?.trim() || hologramSignal.label;
-      let structure: HologramSignal["structure"];
+      let structure: HologramStructure | undefined;
 
       if (hologramSignal.objectType === "molecule" && input.subject?.trim()) {
         console.log(`[push_to_screen] Fetching PubChem structure for "${input.subject.trim()}"`);
@@ -1398,7 +1514,15 @@ export async function executeTool(
     case "highlight_building":
       return handleHighlightBuilding(sessionId);
     case "push_to_screen":
-      return handlePushToScreen(input as { content?: string; type?: string; title?: string; subject?: string });
+      return handlePushToScreen(
+        input as {
+          content?: string;
+          type?: string;
+          title?: string;
+          subject?: string;
+          reaction?: { reactants?: ReactionSpeciesInput[]; products?: ReactionSpeciesInput[] };
+        }
+      );
     case "note_capability_gap":
       return { text: await handleNoteCapabilityGap(input as { request: string; capability: string }) };
     case "check_bug_status":
