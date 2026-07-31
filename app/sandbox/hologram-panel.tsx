@@ -437,21 +437,167 @@ function detectCardNetworkColor(label: string): number {
   return match ? match.color : HUD_CYAN;
 }
 
-// Credit/debit card — flat rectangle at the real ISO/IEC 7810 ID-1 aspect
-// ratio (85.6mm x 53.98mm), plus a smaller embossed rectangle standing in
-// for the chip. Not literal photorealism, per the spec's own "visually
-// interesting and on-theme" goal, not "perfect model."
+// Real ISO/IEC 7810 ID-1 proportions (85.60mm x 53.98mm, ~3.18mm corner
+// radius) scaled to the same 3.37-unit width the old flat-box card
+// already used, so this reads at the same on-screen size as before.
+const CARD_WIDTH = 3.37;
+const CARD_HEIGHT = 2.12;
+const CARD_DEPTH = 0.06;
+const CARD_CORNER_RADIUS = 0.13;
+
+function roundedRectShape(width: number, height: number, radius: number): THREE.Shape {
+  const w = width / 2;
+  const h = height / 2;
+  const shape = new THREE.Shape();
+  shape.moveTo(-w + radius, -h);
+  shape.lineTo(w - radius, -h);
+  shape.quadraticCurveTo(w, -h, w, -h + radius);
+  shape.lineTo(w, h - radius);
+  shape.quadraticCurveTo(w, h, w - radius, h);
+  shape.lineTo(-w + radius, h);
+  shape.quadraticCurveTo(-w, h, -w, h - radius);
+  shape.lineTo(-w, -h + radius);
+  shape.quadraticCurveTo(-w, -h, -w + radius, -h);
+  shape.closePath();
+  return shape;
+}
+
+// Crisp outline (EdgesGeometry + LineSegments) over a near-transparent
+// fill, rather than a wireframe box — a wireframe box shows every
+// triangle's diagonal as a crosshatch; this shows only the silhouette
+// and face boundaries, reading as a clean card outline the way the
+// molecule/bond holograms elsewhere in this file read as clean
+// sphere-and-stick outlines rather than a mess of triangle edges.
+function buildHolographicSolid(geometry: THREE.BufferGeometry, color: number): THREE.Group {
+  const group = new THREE.Group();
+
+  const fillMaterial = new THREE.MeshBasicMaterial({ color, transparent: true, opacity: 0.08 });
+  const fill = new THREE.Mesh(geometry, fillMaterial);
+  fill.userData = { kind: "model" };
+  group.add(fill);
+
+  const edgesGeometry = new THREE.EdgesGeometry(geometry);
+  const edges = new THREE.LineSegments(edgesGeometry, new THREE.LineBasicMaterial({ color, transparent: true, opacity: 0.9 }));
+  group.add(edges);
+
+  // Rim-glow approximation — WebGL's LineBasicMaterial ignores linewidth
+  // on most platforms (a long-standing driver limitation, not a bug
+  // here), so a real Fresnel-edge shader would be the "correct" way to
+  // get a glowing rim; a couple of the same outline drawn slightly
+  // larger and dimmer underneath is the standard cheap substitute for
+  // that, and is visually close enough for a HUD-style hologram.
+  for (const [scale, opacity] of [
+    [1.04, 0.22],
+    [1.09, 0.1],
+  ] as const) {
+    const glowEdges = new THREE.LineSegments(
+      edgesGeometry,
+      new THREE.LineBasicMaterial({ color, transparent: true, opacity })
+    );
+    glowEdges.scale.set(scale, scale, 1);
+    group.add(glowEdges);
+  }
+
+  return group;
+}
+
+// A handful of thin line segments across the chip face, standing in for
+// an EMV contact grid — abstract pattern, not a reproduction of any real
+// chip's actual contact layout.
+function buildChipGridLines(width: number, height: number, color: number): THREE.LineSegments {
+  const points: THREE.Vector3[] = [];
+  const w = width / 2;
+  const h = height / 2;
+  for (const fx of [-0.3, 0, 0.3]) {
+    points.push(new THREE.Vector3(fx * width, -h, 0), new THREE.Vector3(fx * width, h, 0));
+  }
+  for (const fy of [-0.25, 0.25]) {
+    points.push(new THREE.Vector3(-w, fy * height, 0), new THREE.Vector3(w, fy * height, 0));
+  }
+  const geometry = new THREE.BufferGeometry().setFromPoints(points);
+  return new THREE.LineSegments(geometry, new THREE.LineBasicMaterial({ color, transparent: true, opacity: 0.8 }));
+}
+
+// Small raised block(s) standing in for card-number/expiry/cardholder-
+// name embossing — abstract rectangles at roughly the right position and
+// scale, deliberately not actual rendered glyphs (no text geometry, no
+// specific wordmark). "Raised" the same way the chip is: offset slightly
+// above the front face in z, like real embossed printing.
+function buildEmbossedBlock(width: number, height: number, color: number): THREE.Mesh {
+  const material = new THREE.MeshBasicMaterial({ color, transparent: true, opacity: 0.75 });
+  return new THREE.Mesh(new THREE.BoxGeometry(width, height, 0.015), material);
+}
+
+// Credit/debit card — real rounded-rectangle ISO/IEC 7810 silhouette
+// rendered as a holographic solid (semi-transparent fill + glowing
+// edges, see buildHolographicSolid), with an embossed chip, a magnetic
+// stripe on the reverse face, and abstract raised placeholders where a
+// card number/expiry/cardholder name would sit. Deliberately excludes
+// any brand-specific logo, wordmark, or text — see this function's
+// call site in TOOL_DEFINITIONS' schema note and the fix note this was
+// built from for why: reproducing an issuer's actual card artwork is a
+// trademark question, not an engineering one, and was explicitly scoped
+// out.
 function buildCard(label: string): THREE.Group {
   const group = new THREE.Group();
   const color = detectCardNetworkColor(label);
-  const material = new THREE.MeshBasicMaterial({ color, wireframe: true });
 
-  const body = new THREE.Mesh(new THREE.BoxGeometry(3.37, 2.12, 0.06), material);
+  const cardShape = roundedRectShape(CARD_WIDTH, CARD_HEIGHT, CARD_CORNER_RADIUS);
+  const bodyGeometry = new THREE.ExtrudeGeometry(cardShape, { depth: CARD_DEPTH, bevelEnabled: false });
+  bodyGeometry.translate(0, 0, -CARD_DEPTH / 2); // center the extrusion on z=0 like every other hologram in this file
+  const body = buildHolographicSolid(bodyGeometry, color);
   group.add(body);
 
-  const chip = new THREE.Mesh(new THREE.BoxGeometry(0.5, 0.4, 0.1), material);
-  chip.position.set(-1, 0.4, 0.08);
+  // EMV chip — real cards place this roughly a third of the way down
+  // from the top edge, a similar distance in from the left edge; "upper-
+  // left third of the face" per the fix note.
+  const chipWidth = 0.55;
+  const chipHeight = 0.42;
+  const chipShape = roundedRectShape(chipWidth, chipHeight, 0.06);
+  const chipGeometry = new THREE.ExtrudeGeometry(chipShape, { depth: 0.02, bevelEnabled: false });
+  const chip = buildHolographicSolid(chipGeometry, color);
+  const chipX = -CARD_WIDTH / 2 + 0.75;
+  const chipY = CARD_HEIGHT / 2 - 0.62;
+  chip.position.set(chipX, chipY, CARD_DEPTH / 2);
   group.add(chip);
+
+  const chipGrid = buildChipGridLines(chipWidth * 0.75, chipHeight * 0.7, color);
+  chipGrid.position.set(chipX, chipY, CARD_DEPTH / 2 + 0.021);
+  group.add(chipGrid);
+
+  // Magnetic stripe — reverse face (opposite z side from the chip),
+  // positioned near the top the way it is on a real card. Solid dark
+  // fill rather than the translucent holographic treatment everything
+  // else here uses: a mag stripe reads as an opaque physical band, not
+  // part of the glowing hologram material.
+  const stripe = new THREE.Mesh(
+    new THREE.BoxGeometry(CARD_WIDTH - 0.2, 0.32, 0.01),
+    new THREE.MeshBasicMaterial({ color: 0x0a0e16, transparent: true, opacity: 0.85 })
+  );
+  stripe.position.set(0, CARD_HEIGHT / 2 - 0.35, -CARD_DEPTH / 2 - 0.006);
+  stripe.userData = { kind: "model" };
+  group.add(stripe);
+
+  // Abstract embossed placeholders — card number (four digit-group
+  // blocks), expiry, and cardholder name. Positions match where these
+  // sit on a real card; content is intentionally just blank raised bars.
+  const numberY = -0.35;
+  const numberGroupWidth = 0.42;
+  const numberGap = 0.14;
+  const numberStartX = -CARD_WIDTH / 2 + 0.55;
+  for (let i = 0; i < 4; i++) {
+    const block = buildEmbossedBlock(numberGroupWidth, 0.16, color);
+    block.position.set(numberStartX + i * (numberGroupWidth + numberGap) + numberGroupWidth / 2, numberY, CARD_DEPTH / 2);
+    group.add(block);
+  }
+
+  const nameBlock = buildEmbossedBlock(1.3, 0.1, color);
+  nameBlock.position.set(-CARD_WIDTH / 2 + 0.55 + 1.3 / 2, -0.68, CARD_DEPTH / 2);
+  group.add(nameBlock);
+
+  const expiryBlock = buildEmbossedBlock(0.45, 0.1, color);
+  expiryBlock.position.set(CARD_WIDTH / 2 - 0.55, -0.68, CARD_DEPTH / 2);
+  group.add(expiryBlock);
 
   return group;
 }
