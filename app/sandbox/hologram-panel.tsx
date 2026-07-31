@@ -447,11 +447,18 @@ const REACTION_SPECIES_SCALE = 0.55; // reactants render smaller than a standalo
 const REACTION_REACTANT_SPACING = 1.7; // x-distance between reactant centers when there are 2
 const REACTION_HOLD_MS = 1800; // how long reactants sit still before the transformation starts
 const REACTION_CROSSFADE_MS = 1200;
+const REACTION_TOTAL_MS = REACTION_HOLD_MS + REACTION_CROSSFADE_MS;
+// Where the hold phase ends and the crossfade begins, as a fraction of
+// the FULL 0-1 progress range — the single source of truth both
+// computeReactionVisualState and the playback-speed math below key off.
+const REACTION_HOLD_FRACTION = REACTION_HOLD_MS / REACTION_TOTAL_MS;
 // Not literally 0 — a zero-scale Object3D can misbehave in matrix math in
 // some three.js code paths, and a near-zero (rather than exactly zero)
 // scale is also what keeps a technically-still-there mesh effectively
 // unclickable (see the raycast note on ReactionRuntime below).
 const REACTION_MIN_SCALE = 0.001;
+const REACTION_SEEK_STEP_MS = 1000; // rewind/fast-forward button increment
+const REACTION_SPEEDS = [0.25, 0.5, 1, 2, 4] as const;
 
 type ReactionSpeciesRuntime = { group: THREE.Group; baseX: number };
 
@@ -476,14 +483,74 @@ function setGroupOpacity(group: THREE.Group, opacity: number) {
   });
 }
 
+// Pure function of `progress` (0-1, spanning the full hold+crossfade
+// sequence) — no clock, no side effects. This is what makes playback
+// controls possible at all: normal playback is just "advance progress by
+// speed*deltaTime each frame," pause is "stop advancing it," and
+// scrub/rewind/fast-forward are all just "set progress directly," and
+// applying it (see applyReactionState below) always produces the exact
+// same visual result for a given progress value regardless of how it got
+// there.
+type ReactionVisualState = {
+  reactantOpacity: number;
+  reactantScaleFactor: number; // multiplies REACTION_SPECIES_SCALE
+  reactantPositionFactor: number; // multiplies each reactant's baseX
+  productOpacity: number;
+  productScale: number; // absolute, not a factor — the product's target scale is always 1
+};
+
+function computeReactionVisualState(progress: number): ReactionVisualState {
+  const clamped = Math.min(1, Math.max(0, progress));
+
+  if (clamped <= REACTION_HOLD_FRACTION) {
+    // Hold phase — reactants full opacity/scale/position, product not
+    // there yet. Also what a scrub backward into this range should show:
+    // the un-faded starting state, not some interpolated remnant.
+    return {
+      reactantOpacity: 1,
+      reactantScaleFactor: 1,
+      reactantPositionFactor: 1,
+      productOpacity: 0,
+      productScale: REACTION_MIN_SCALE,
+    };
+  }
+
+  const crossfadeProgress = (clamped - REACTION_HOLD_FRACTION) / (1 - REACTION_HOLD_FRACTION); // 0-1 within the crossfade itself
+  return {
+    reactantOpacity: 1 - crossfadeProgress,
+    reactantScaleFactor: 1 - 0.4 * crossfadeProgress,
+    reactantPositionFactor: 1 - crossfadeProgress, // drift toward center — the "merge" cue
+    productOpacity: crossfadeProgress,
+    productScale: REACTION_MIN_SCALE + (1 - REACTION_MIN_SCALE) * crossfadeProgress,
+  };
+}
+
+function applyReactionState(runtime: ReactionRuntime, progress: number) {
+  const state = computeReactionVisualState(progress);
+  for (const { group, baseX } of runtime.reactants) {
+    setGroupOpacity(group, state.reactantOpacity);
+    group.scale.setScalar(REACTION_SPECIES_SCALE * state.reactantScaleFactor);
+    group.position.x = baseX * state.reactantPositionFactor;
+  }
+  for (const group of runtime.products) {
+    setGroupOpacity(group, state.productOpacity);
+    group.scale.setScalar(state.productScale);
+  }
+}
+
 function buildReactionContainer(reactants: ReactionSpecies[], products: ReactionSpecies[]): ReactionRuntime {
   const group = new THREE.Group();
   const reactantRuntimes: ReactionSpeciesRuntime[] = [];
   const productGroups: THREE.Group[] = [];
 
+  // Geometry/position only here — opacity, scale, and drift are all a
+  // pure function of progress (see computeReactionVisualState above), so
+  // the caller applies the actual initial visual state via
+  // applyReactionState(runtime, 0) immediately after building this,
+  // rather than this function guessing at "progress 0" values itself and
+  // risking the two falling out of sync.
   reactants.forEach((species, i) => {
     const sub = buildMolecule(species.structure);
-    sub.scale.setScalar(REACTION_SPECIES_SCALE);
     const baseX = reactants.length > 1 ? (i - (reactants.length - 1) / 2) * REACTION_REACTANT_SPACING : 0;
     sub.position.x = baseX;
     group.add(sub);
@@ -492,13 +559,7 @@ function buildReactionContainer(reactants: ReactionSpecies[], products: Reaction
 
   products.forEach((species) => {
     const sub = buildMolecule(species.structure);
-    // Starts effectively invisible/unclickable at the exact center where
-    // it'll end up full-size — the crossfade animates opacity and scale
-    // up together, so it reads as the product "forming" there rather
-    // than popping in from nothing partway through.
-    sub.scale.setScalar(REACTION_MIN_SCALE);
     sub.position.x = 0;
-    setGroupOpacity(sub, 0);
     group.add(sub);
     productGroups.push(sub);
   });
@@ -876,18 +937,28 @@ export function HologramPanel({ hologram, onClose }: { hologram: HologramVisual;
   >(new Map());
   const animationFrameCountRef = useRef(0); // drives nucleon jitter phase — see animate() below
 
-  // --- Reaction choreography (Phase A) ---
-  // Non-null only while a reaction hologram's crossfade is still running
-  // (or hasn't started, during the hold phase) — the animate() loop reads
-  // this every frame to drive the transition, then leaves it in place
-  // (reactionDoneRef flips to stop recomputing) once the product is at
-  // full opacity/scale. real-time (performance.now()), not a frame
-  // counter like the nucleon jitter above — a crossfade's duration is
-  // user-perceptible UX, worth being accurate about regardless of frame
-  // rate, unlike a subtle idle jitter.
+  // --- Reaction choreography + playback controls (Phase A + controls) ---
+  // reactionProgressRef (0-1, spanning the whole hold+crossfade sequence)
+  // is the single source of truth applyReactionState reads every frame —
+  // normal playback advances it by speed*deltaTime, pause just stops
+  // advancing it, and scrub/rewind/fast-forward all just set it directly.
+  // All in refs, not state: the animate() loop is a plain rAF callback,
+  // not a React render, so it needs the CURRENT value synchronously each
+  // frame. reactionProgressStateRef mirrors the value into the scrub
+  // bar's DOM node directly (see the scrub <input> below) rather than via
+  // React state, which would mean a re-render on every one of ~60
+  // frames/sec during normal playback — same reasoning as spinPausedRef
+  // above for orbit, just for a value that changes continuously instead
+  // of only on user action.
   const reactionRuntimeRef = useRef<ReactionRuntime | null>(null);
-  const reactionStartRef = useRef<number | null>(null);
-  const reactionDoneRef = useRef(false);
+  const reactionProgressRef = useRef(0);
+  const reactionPlayingRef = useRef(true); // autoplays on a fresh reaction hologram, same as the original non-controllable version did
+  const reactionSpeedRef = useRef<number>(1);
+  const reactionLastFrameTimeRef = useRef<number | null>(null);
+  const scrubInputRef = useRef<HTMLInputElement | null>(null);
+  const [isReactionPlaying, setIsReactionPlaying] = useState(true);
+  const [reactionSpeed, setReactionSpeed] = useState<number>(1);
+  const isReactionHologram = hologram.objectType === "reaction";
 
   // Only meaningful when there's real per-atom element data to label —
   // the generic placeholder molecule (see buildGenericMolecule) has no
@@ -934,6 +1005,54 @@ export function HologramPanel({ hologram, onClose }: { hologram: HologramVisual;
     }
     isolatedMeshRef.current = null;
     setIsIsolated(false);
+  }
+
+  // --- Reaction playback controls ---
+  // Every manual seek (scrub/rewind/fast-forward) pauses playback first —
+  // a jump while still advancing on its own would fight the user's
+  // input and read as stuttery. Scrubbing does NOT auto-resume on
+  // release either; staying paused wherever you left it is the same
+  // "safer default for something meant to be studied" call already made
+  // for auto-pause-at-end below.
+  function setReactionProgress(next: number) {
+    const clamped = Math.min(1, Math.max(0, next));
+    reactionProgressRef.current = clamped;
+    if (reactionRuntimeRef.current) applyReactionState(reactionRuntimeRef.current, clamped);
+    if (scrubInputRef.current) scrubInputRef.current.value = String(clamped);
+  }
+
+  function pauseReactionPlayback() {
+    reactionPlayingRef.current = false;
+    setIsReactionPlaying(false);
+  }
+
+  function toggleReactionPlaying() {
+    const next = !reactionPlayingRef.current;
+    // Resuming from the very end restarts from the beginning instead of
+    // just re-arming a loop that's already sitting at progress 1 (which
+    // would visibly do nothing when Play is pressed) — this is the
+    // "meant to be studied" case where you watched it once and want to
+    // watch it again, not a real loop mode.
+    if (next && reactionProgressRef.current >= 1) {
+      setReactionProgress(0);
+    }
+    reactionPlayingRef.current = next;
+    setIsReactionPlaying(next);
+  }
+
+  function seekReactionBy(deltaMs: number) {
+    pauseReactionPlayback();
+    setReactionProgress(reactionProgressRef.current + deltaMs / REACTION_TOTAL_MS);
+  }
+
+  function handleScrubInput(event: React.ChangeEvent<HTMLInputElement>) {
+    pauseReactionPlayback();
+    setReactionProgress(Number(event.target.value));
+  }
+
+  function setPlaybackSpeed(speed: number) {
+    reactionSpeedRef.current = speed;
+    setReactionSpeed(speed);
   }
 
   // Replaces an atom sphere with a nucleus + electron cloud/shells.
@@ -1004,8 +1123,12 @@ export function HologramPanel({ hologram, onClose }: { hologram: HologramVisual;
     revealedAtomsRef.current = new Map(); // the meshes these referenced belong to the previous scene, about to be disposed below
     animationFrameCountRef.current = 0;
     reactionRuntimeRef.current = null;
-    reactionStartRef.current = null;
-    reactionDoneRef.current = false;
+    reactionProgressRef.current = 0;
+    reactionPlayingRef.current = true;
+    reactionSpeedRef.current = 1;
+    reactionLastFrameTimeRef.current = null;
+    setIsReactionPlaying(true);
+    setReactionSpeed(1);
 
     const scene = new THREE.Scene();
     const camera = new THREE.PerspectiveCamera(45, container.clientWidth / container.clientHeight, 0.1, 100);
@@ -1043,7 +1166,7 @@ export function HologramPanel({ hologram, onClose }: { hologram: HologramVisual;
         ? (() => {
             const runtime = buildReactionContainer(hologram.reactants, hologram.products);
             reactionRuntimeRef.current = runtime;
-            reactionStartRef.current = performance.now();
+            applyReactionState(runtime, reactionProgressRef.current); // paints the actual progress=0 starting state — see buildReactionContainer's own comment on why it doesn't set this itself
             return runtime.group;
           })()
         : buildObject(hologram.objectType, hologram.structure, hologram.label);
@@ -1269,40 +1392,42 @@ export function HologramPanel({ hologram, onClose }: { hologram: HologramVisual;
         }
       }
 
-      // Reaction crossfade — hold, then reactants fade/shrink/drift toward
-      // center while the product fades/grows in at that same spot. Skips
-      // entirely once reactionDoneRef is set (final state already applied
-      // on the last transitioning frame — no reason to keep writing the
-      // same material properties every frame forever).
-      if (reactionRuntimeRef.current && reactionStartRef.current !== null && !reactionDoneRef.current) {
-        const elapsed = performance.now() - reactionStartRef.current;
-        const runtime = reactionRuntimeRef.current;
+      // Reaction playback — this loop runs every real frame regardless of
+      // play/pause (same as the orbit rotation above), so `now - last`
+      // stays a normal small frame-to-frame delta even across however
+      // long the reaction sits paused; no special "reset the clock on
+      // resume" logic needed, since pausing never lets a large gap
+      // accumulate in the first place. Only ADVANCING reactionProgressRef
+      // is gated on isPlaying — applying the current progress to the
+      // scene happens every frame either way, since a paused (or
+      // just-scrubbed) reaction still needs to render at wherever it is.
+      if (reactionRuntimeRef.current) {
+        const now = performance.now();
+        const last = reactionLastFrameTimeRef.current ?? now;
+        const deltaMs = now - last;
+        reactionLastFrameTimeRef.current = now;
 
-        if (elapsed >= REACTION_HOLD_MS + REACTION_CROSSFADE_MS) {
-          for (const { group: g } of runtime.reactants) {
-            setGroupOpacity(g, 0);
-            g.scale.setScalar(REACTION_MIN_SCALE);
-          }
-          for (const g of runtime.products) {
-            setGroupOpacity(g, 1);
-            g.scale.setScalar(1);
-          }
-          reactionDoneRef.current = true;
-        } else if (elapsed >= REACTION_HOLD_MS) {
-          const progress = (elapsed - REACTION_HOLD_MS) / REACTION_CROSSFADE_MS; // 0..1
-          for (const { group: g, baseX } of runtime.reactants) {
-            setGroupOpacity(g, 1 - progress);
-            g.scale.setScalar(REACTION_SPECIES_SCALE * (1 - 0.4 * progress));
-            g.position.x = baseX * (1 - progress); // drift toward center — the "merge" cue
-          }
-          for (const g of runtime.products) {
-            setGroupOpacity(g, progress);
-            g.scale.setScalar(REACTION_MIN_SCALE + (1 - REACTION_MIN_SCALE) * progress);
+        if (reactionPlayingRef.current) {
+          reactionProgressRef.current = Math.min(
+            1,
+            reactionProgressRef.current + (deltaMs * reactionSpeedRef.current) / REACTION_TOTAL_MS
+          );
+          if (reactionProgressRef.current >= 1) {
+            // Auto-pause at the end rather than looping — this is meant
+            // to be studied, not watched passively on a loop.
+            reactionPlayingRef.current = false;
+            setIsReactionPlaying(false);
           }
         }
-        // elapsed < REACTION_HOLD_MS: still in the hold phase, nothing to
-        // update — reactants/product are already at their built-time
-        // initial state.
+
+        applyReactionState(reactionRuntimeRef.current, reactionProgressRef.current);
+
+        // Keeps the scrub bar's thumb position in sync during normal
+        // playback without a React re-render every frame — see this
+        // ref's own declaration comment for why state isn't used here.
+        if (scrubInputRef.current && document.activeElement !== scrubInputRef.current) {
+          scrubInputRef.current.value = String(reactionProgressRef.current);
+        }
       }
 
       renderer.render(scene, camera);
@@ -1392,6 +1517,59 @@ export function HologramPanel({ hologram, onClose }: { hologram: HologramVisual;
       <button type="button" className="hud-hologram-close" onClick={onClose} aria-label="Close hologram">
         ✕
       </button>
+      {isReactionHologram && (
+        <div className="hud-hologram-reaction-controls">
+          <button
+            type="button"
+            className="hud-hologram-reaction-btn"
+            onClick={() => seekReactionBy(-REACTION_SEEK_STEP_MS)}
+            aria-label="Rewind 1 second"
+          >
+            ⏮
+          </button>
+          <button
+            type="button"
+            className="hud-hologram-reaction-btn"
+            onClick={toggleReactionPlaying}
+            aria-label={isReactionPlaying ? "Pause" : "Play"}
+          >
+            {isReactionPlaying ? "⏸" : "▶"}
+          </button>
+          <button
+            type="button"
+            className="hud-hologram-reaction-btn"
+            onClick={() => seekReactionBy(REACTION_SEEK_STEP_MS)}
+            aria-label="Fast-forward 1 second"
+          >
+            ⏭
+          </button>
+          <input
+            ref={scrubInputRef}
+            type="range"
+            className="hud-hologram-reaction-scrub"
+            min={0}
+            max={1}
+            step={0.001}
+            defaultValue={0}
+            onChange={handleScrubInput}
+            aria-label="Reaction progress"
+          />
+          <div className="hud-hologram-reaction-speeds">
+            {REACTION_SPEEDS.map((speed) => (
+              <button
+                key={speed}
+                type="button"
+                className={`hud-hologram-reaction-speed-btn${
+                  reactionSpeed === speed ? " hud-hologram-reaction-speed-btn-active" : ""
+                }`}
+                onClick={() => setPlaybackSpeed(speed)}
+              >
+                {speed}x
+              </button>
+            ))}
+          </div>
+        </div>
+      )}
     </div>
   );
 }
