@@ -423,6 +423,56 @@ export const TOOL_DEFINITIONS: Anthropic.Tool[] = [
     },
   },
   {
+    name: "control_ui",
+    description:
+      "Directly control something already on the user's screen — dismiss it, toggle a view state, drive a " +
+      "reaction hologram's playback, or switch the app's current view. Fires immediately with no confirmation " +
+      "step — these are all reversible, UI-only actions, not anything that changes data. Currently supported " +
+      "`action` values (keep this list in sync with UI_ACTION_NAMES in lib/tool-dispatcher.ts and the " +
+      "client-side registries in app/sandbox/hologram-panel.tsx and voice-session-context.tsx whenever a new " +
+      "action is added anywhere):\n" +
+      "- close_display: dismiss whatever's currently shown (a push_to_screen display panel or a hologram). No params.\n" +
+      "- toggle_labels: show/hide element-symbol labels on the current hologram, if it has any. No params.\n" +
+      "- show_all: undo isolate — restore full opacity to every part of the current hologram. No params.\n" +
+      "- reaction_play: resume a paused reaction hologram's playback. No params.\n" +
+      "- reaction_pause: pause a playing reaction hologram. No params.\n" +
+      "- reaction_seek: jump a reaction hologram to a specific point. params: { progress: number } — 0 is the " +
+      "very start, 1 is fully finished, 0-1 in between.\n" +
+      "- reaction_speed: set a reaction hologram's playback speed. params: { multiplier: number } — one of " +
+      "0.25, 0.5, 1, 2, 4.\n" +
+      "- navigate: switch the app's current view. params: { target: string } — one of \"north\", \"dashboard\", " +
+      "\"weekly_review\".\n" +
+      "Only call this for something that's genuinely already on screen and controllable this way — e.g. don't " +
+      "call reaction_play when no reaction hologram is showing, and don't invent an action name not listed above.",
+    input_schema: {
+      type: "object",
+      properties: {
+        action: {
+          type: "string",
+          enum: [
+            "close_display",
+            "toggle_labels",
+            "show_all",
+            "reaction_play",
+            "reaction_pause",
+            "reaction_seek",
+            "reaction_speed",
+            "navigate",
+          ],
+          description: "Which action to perform — see this tool's description for the full current list.",
+        },
+        params: {
+          type: "object",
+          description:
+            "Action-specific parameters, only for the few actions that need them (reaction_seek, " +
+            "reaction_speed, navigate) — see this tool's description for each one's shape. Omit entirely for " +
+            "every other action.",
+        },
+      },
+      required: ["action"],
+    },
+  },
+  {
     name: "note_capability_gap",
     description:
       "Log a request that's genuinely outside your current tools — instead of just declining, this " +
@@ -973,6 +1023,53 @@ function isDisplayContentType(value: unknown): value is DisplayContentType {
   return (DISPLAY_TYPES as readonly string[]).includes(value as string);
 }
 
+// Fired by control_ui (see that tool's definition above) — one generic
+// action name/params pair rather than a bespoke SSE event/handler per
+// capability, same immediate-delivery timing as display/hologram above
+// (see app/api/v1/voice/respond/route.ts). Dispatched client-side
+// through a name->handler registry (see app/sandbox/hologram-panel.tsx's
+// UiAction type/registry and voice-session-context.tsx's SSE listeners)
+// rather than a switch per action — adding a new controllable thing is
+// "write one handler function, add one registry entry," not a new
+// tool/schema/event/handler chain each time.
+export type UiAction = { action: string; params?: Record<string, unknown> };
+
+// Keep in sync with control_ui's schema `action` enum above — this is
+// what handleControlUi actually validates against, so a typo or stale
+// entry in the schema description wouldn't be caught by anything else.
+const UI_ACTION_NAMES = new Set([
+  "close_display",
+  "toggle_labels",
+  "show_all",
+  "reaction_play",
+  "reaction_pause",
+  "reaction_seek",
+  "reaction_speed",
+  "navigate",
+]);
+
+async function handleControlUi(input: { action?: string; params?: Record<string, unknown> }): Promise<{
+  text: string;
+  uiAction?: UiAction;
+}> {
+  try {
+    const action = input.action?.trim();
+    if (!action || !UI_ACTION_NAMES.has(action)) {
+      console.log(`[control_ui] Unknown or missing action: ${JSON.stringify(input.action)}`);
+      return { text: `"${input.action}" isn't a recognized UI action — nothing was done.` };
+    }
+
+    console.log(`[control_ui] action=${action} params=${JSON.stringify(input.params ?? {})}`);
+    return {
+      text: "Done.",
+      uiAction: { action, ...(input.params ? { params: input.params } : {}) },
+    };
+  } catch (error) {
+    reportToolError("control_ui", error, input);
+    return { text: "Couldn't control the screen just now — tell Nishad to try again." };
+  }
+}
+
 type ReactionSpeciesInput = { subject?: string; coefficient?: number };
 
 async function handlePushToScreen(input: {
@@ -1497,23 +1594,30 @@ async function handleRunAgentTask(input: { task: string; targetRepo?: string; co
   }
 }
 
-// Returns { text, visual, display, hologram } uniformly — text is what goes
-// back to Claude as the tool_result content, visual is only ever set by
-// show_map/highlight_building, and display/hologram are only ever set by
+// Returns { text, visual, display, hologram, uiAction } uniformly — text is
+// what goes back to Claude as the tool_result content, visual is only ever
+// set by show_map/highlight_building, display/hologram are only ever set by
 // push_to_screen (mutually exclusive — see handlePushToScreen, which
-// returns at most one of the two). All are lifted by
-// app/api/v1/voice/respond/route.ts into what the frontend actually
-// renders (visual via the final "done" event, display/hologram via their
-// own SSE events fired the moment the tool call resolves — see that route
-// for why these use different delivery timing than visual). sessionId is
-// unused by every handler except show_map/highlight_building (the only
-// ones with "current visual" state to read/write), but threading it
-// through executeTool uniformly is simpler than a special case per caller.
+// returns at most one of the two), and uiAction is only ever set by
+// control_ui. All are lifted by app/api/v1/voice/respond/route.ts into what
+// the frontend actually renders (visual via the final "done" event,
+// display/hologram/uiAction via their own SSE events fired the moment the
+// tool call resolves — see that route for why these use different delivery
+// timing than visual). sessionId is unused by every handler except
+// show_map/highlight_building (the only ones with "current visual" state to
+// read/write), but threading it through executeTool uniformly is simpler
+// than a special case per caller.
 export async function executeTool(
   name: string,
   input: unknown,
   sessionId: string
-): Promise<{ text: string; visual?: VisualState; display?: DisplayContent; hologram?: HologramSignal }> {
+): Promise<{
+  text: string;
+  visual?: VisualState;
+  display?: DisplayContent;
+  hologram?: HologramSignal;
+  uiAction?: UiAction;
+}> {
   switch (name) {
     case "create_task":
       return { text: await handleCreateTask(input as { title: string }) };
@@ -1571,6 +1675,8 @@ export async function executeTool(
           };
         }
       );
+    case "control_ui":
+      return handleControlUi(input as { action?: string; params?: Record<string, unknown> });
     case "note_capability_gap":
       return { text: await handleNoteCapabilityGap(input as { request: string; capability: string }) };
     case "check_bug_status":

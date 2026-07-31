@@ -90,6 +90,7 @@ export default function SandboxPage() {
     setDisplay,
     hologram,
     setHologram,
+    uiActionQueue,
     handleMicTap,
   } = useVoiceSession();
 
@@ -99,7 +100,9 @@ export default function SandboxPage() {
     <AppShell>
       <div className={`hud-page ${takeoverClass}`}>
         {visual && <HudMap visual={visual} onClose={() => setVisual(null)} />}
-        {hologram && <HologramPanel hologram={hologram} onClose={() => setHologram(null)} />}
+        {hologram && (
+          <HologramPanel hologram={hologram} onClose={() => setHologram(null)} uiActionQueue={uiActionQueue} />
+        )}
 
         <div className="hud-ruler">
           {Array.from({ length: 48 }, (_, i) => (

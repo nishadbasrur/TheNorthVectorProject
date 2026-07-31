@@ -543,6 +543,16 @@ export async function POST(request: Request) {
                 if (result.hologram) {
                   controller.enqueue(sseEvent(encoder, "hologram", result.hologram));
                 }
+                // control_ui's generic action name/params pair — same
+                // immediate-delivery timing as display/hologram above, one
+                // event type covering every current and future action
+                // rather than a new event per capability. See
+                // app/sandbox/voice-session-context.tsx for the
+                // client-side listener and app/sandbox/hologram-panel.tsx
+                // for the registry most actions dispatch into.
+                if (result.uiAction) {
+                  controller.enqueue(sseEvent(encoder, "ui_action", result.uiAction));
+                }
                 // Choke-point action logging (see lib/action-log-store.ts) — this is
                 // the single call site every tool execution passes through, so
                 // wrapping it here captures the full #65 activity log without

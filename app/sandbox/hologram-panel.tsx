@@ -70,6 +70,20 @@ export function isHologramVisual(value: unknown): value is HologramVisual {
   return true;
 }
 
+// Mirrors lib/tool-dispatcher.ts's own UiAction (re-declared, not
+// imported — same client/server type decoupling as HologramVisual
+// above). `seq` is added client-side by voice-session-context.tsx, not
+// part of the server payload — it's what lets an effect keyed on this
+// value re-fire even when the same action+params repeats back to back
+// (e.g. "pause" twice in a row), which keying only on action+params
+// wouldn't do.
+export type UiAction = { action: string; params?: Record<string, unknown>; seq: number };
+
+export function isUiAction(value: unknown): value is Omit<UiAction, "seq"> {
+  const v = value as Record<string, unknown> | null | undefined;
+  return !!v && typeof v.action === "string";
+}
+
 const HUD_CYAN = 0x3ad6ff;
 
 // Standard CPK (Corey-Pauling-Koltun) element colors, the same convention
@@ -1061,7 +1075,15 @@ const ISOLATE_FADE_OPACITY = 0.06;
 
 type SceneUserData = { kind?: "atom" | "bond" | "model"; element?: string; index?: number };
 
-export function HologramPanel({ hologram, onClose }: { hologram: HologramVisual; onClose: () => void }) {
+export function HologramPanel({
+  hologram,
+  onClose,
+  uiActionQueue,
+}: {
+  hologram: HologramVisual;
+  onClose: () => void;
+  uiActionQueue?: UiAction[];
+}) {
   const containerRef = useRef<HTMLDivElement | null>(null);
   const frameRef = useRef<number | null>(null);
   // Populated by the scene-building effect below, read by the visibility-
@@ -1069,6 +1091,10 @@ export function HologramPanel({ hologram, onClose }: { hologram: HologramVisual;
   // live THREE objects, not something a re-render should ever recreate.
   const labelObjectsRef = useRef<CSS2DObject[]>([]);
   const [showLabels, setShowLabels] = useState(false);
+  // Highest UiAction.seq already dispatched — see the uiActionQueue drain
+  // effect further down for why this is needed (the queue is append-only
+  // and never shrinks).
+  const lastProcessedUiActionSeqRef = useRef(0);
 
   // --- Orbit/pause (Phase 1a/1b) ---
   // spinPaused lives in a ref, not state: the animate() loop is a plain
@@ -1216,18 +1242,29 @@ export function HologramPanel({ hologram, onClose }: { hologram: HologramVisual;
     setIsReactionPlaying(false);
   }
 
-  function toggleReactionPlaying() {
-    const next = !reactionPlayingRef.current;
-    // Resuming from the very end restarts from the beginning instead of
-    // just re-arming a loop that's already sitting at progress 1 (which
-    // would visibly do nothing when Play is pressed) — this is the
-    // "meant to be studied" case where you watched it once and want to
-    // watch it again, not a real loop mode.
-    if (next && reactionProgressRef.current >= 1) {
+  // Idempotent "make it play" — unlike toggleReactionPlaying below, this
+  // doesn't care whether it was already playing, which is what a direct
+  // control_ui reaction_play action needs (a voice command shouldn't
+  // silently pause something that's already playing just because it
+  // reused the toggle). Resuming from the very end restarts from the
+  // beginning instead of just re-arming a loop that's already sitting at
+  // progress 1 (which would visibly do nothing) — the "meant to be
+  // studied" case where you watched it once and want to watch it again,
+  // not a real loop mode.
+  function resumeReactionPlayback() {
+    if (reactionProgressRef.current >= 1) {
       setReactionProgress(0);
     }
-    reactionPlayingRef.current = next;
-    setIsReactionPlaying(next);
+    reactionPlayingRef.current = true;
+    setIsReactionPlaying(true);
+  }
+
+  function toggleReactionPlaying() {
+    if (reactionPlayingRef.current) {
+      pauseReactionPlayback();
+    } else {
+      resumeReactionPlayback();
+    }
   }
 
   function seekReactionBy(deltaMs: number) {
@@ -1703,6 +1740,52 @@ export function HologramPanel({ hologram, onClose }: { hologram: HologramVisual;
       label.visible = showLabels;
     }
   }, [showLabels]);
+
+  // control_ui dispatch — see this file's UiAction type above and
+  // lib/tool-dispatcher.ts's control_ui tool for the full contract.
+  // Only the hologram-scoped actions are handled here; close_display and
+  // navigate are handled directly in voice-session-context.tsx instead,
+  // since neither needs anything this component owns (see that file's
+  // own comment on the split). Adding a new hologram-controllable action
+  // is: write one function above, add one entry to this map — no new
+  // tool/schema/event/handler chain.
+  //
+  // uiActionQueue is append-only and never shrinks (voice-session-
+  // context.tsx's own comment explains why it's a queue rather than a
+  // single nullable slot — batched SSE events can otherwise silently
+  // drop all but the last one), so this effect tracks the highest `seq`
+  // it's already processed and only runs handlers for entries past that
+  // — otherwise every earlier action would replay every time a new one
+  // arrives, since the array reference (and every element in it) is
+  // still there on each subsequent run.
+  useEffect(() => {
+    if (!uiActionQueue || uiActionQueue.length === 0) return;
+    const handlers: Record<string, (params?: Record<string, unknown>) => void> = {
+      toggle_labels: () => setShowLabels((v) => !v),
+      show_all: () => showAll(),
+      reaction_play: () => resumeReactionPlayback(),
+      reaction_pause: () => pauseReactionPlayback(),
+      reaction_seek: (params) => {
+        const progress = Number(params?.progress);
+        if (Number.isFinite(progress)) {
+          pauseReactionPlayback();
+          setReactionProgress(progress);
+        }
+      },
+      reaction_speed: (params) => {
+        const speed = Number(params?.multiplier);
+        if ((REACTION_SPEEDS as readonly number[]).includes(speed)) {
+          setPlaybackSpeed(speed);
+        }
+      },
+    };
+    for (const entry of uiActionQueue) {
+      if (entry.seq <= lastProcessedUiActionSeqRef.current) continue;
+      lastProcessedUiActionSeqRef.current = entry.seq;
+      handlers[entry.action]?.(entry.params);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [uiActionQueue]);
 
   return (
     <div className="hud-hologram-overlay">
