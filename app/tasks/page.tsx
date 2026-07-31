@@ -1,10 +1,12 @@
 "use client";
 
 import { useEffect, useState } from "react";
+import Link from "next/link";
 import { AppShell } from "@/components/layout/app-shell";
 import {
   createTask,
   getTasks,
+  todayFocusDate,
   updateTaskStatus,
   type TaskDomain,
   type TaskEnergy,
@@ -63,6 +65,7 @@ export default function TasksPage() {
         priority,
         energy,
         domain,
+        focusDate: todayFocusDate(),
         dueDate: dueDate || undefined,
         estimatedMinutes: Number(estimatedMinutes) || 30,
         notes: notes.trim(),
@@ -98,7 +101,8 @@ export default function TasksPage() {
         <div className="page-eyebrow">Execution Layer</div>
         <div className="page-title">Tasks</div>
         <div className="page-meta">
-          Firestore-backed execution queue · {openTasks.length} open · {completedTasks.length} completed
+          Firestore-backed execution queue · {openTasks.length} open · {completedTasks.length} completed ·{" "}
+          <Link href="/tasks/history" style={{ color: "var(--cyan)" }}>Previous dates →</Link>
         </div>
       </div>
 

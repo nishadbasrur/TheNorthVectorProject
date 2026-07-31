@@ -1,6 +1,16 @@
 import "server-only";
 import type Anthropic from "@anthropic-ai/sdk";
-import { createTaskAsAdmin } from "./task-store-admin";
+import {
+  createTaskAsAdmin,
+  getTasksAsAdmin,
+  updateTaskAsAdmin,
+  deleteTaskAsAdmin,
+  moveTaskDateAsAdmin,
+  todayFocusDateAdmin,
+} from "./task-store-admin";
+import { listGoalsAsAdmin } from "./goal-store-admin";
+import type { TaskStatus, TaskPriority, TaskEnergy, TaskDomain, TaskRecord } from "./task-store";
+import type { TaskUpdateFields } from "./task-store-admin";
 import {
   getUpcomingEvents,
   createCalendarEvent,
@@ -54,9 +64,96 @@ export const TOOL_DEFINITIONS: Anthropic.Tool[] = [
       type: "object",
       properties: {
         title: { type: "string", description: "Short task title, in plain sentence case." },
+        focusDate: {
+          type: "string",
+          description:
+            "Which day's Today's Focus list this task belongs on, as YYYY-MM-DD. Omit to default to " +
+            "today — only pass this when Nishad specifies a different day (e.g. \"remind me tomorrow " +
+            "to...\", \"add a task for Friday\").",
+        },
       },
       required: ["title"],
     },
+  },
+  {
+    name: "list_tasks",
+    description:
+      "Read Nishad's tasks — with no filters, every task across every day. Use this before " +
+      "update_task/delete_task/move_task_date (they need the task id this returns), and any time " +
+      "Nishad asks what's on his plate, what's on today's focus, or references a task by " +
+      "description rather than an id. Read-only.",
+    input_schema: {
+      type: "object",
+      properties: {
+        date: {
+          type: "string",
+          description:
+            "Only tasks whose focus day is this YYYY-MM-DD date — e.g. today's date for \"what's on " +
+            "today's focus.\" Omit for every day.",
+        },
+        status: {
+          type: "string",
+          enum: ["scheduled", "active", "completed", "paused", "cancelled"],
+          description: "Only tasks in this status, e.g. \"completed\" for \"what have I finished.\" Omit for every status.",
+        },
+      },
+    },
+  },
+  {
+    name: "update_task",
+    description:
+      "Edit an existing task — title, status (including marking it complete or reopening it), " +
+      "priority, or any other field. Requires the task id from list_tasks. Only include the fields " +
+      "actually changing; everything else is left as-is.",
+    input_schema: {
+      type: "object",
+      properties: {
+        taskId: { type: "string" },
+        title: { type: "string" },
+        description: { type: "string" },
+        status: { type: "string", enum: ["scheduled", "active", "completed", "paused", "cancelled"] },
+        priority: { type: "string", enum: ["low", "medium", "high", "critical"] },
+        energy: { type: "string", enum: ["low", "medium", "high"] },
+        domain: { type: "string", enum: ["academic", "career", "health", "personal", "north-vector"] },
+        dueDate: { type: "string", description: "External deadline, YYYY-MM-DD. Distinct from focusDate." },
+        notes: { type: "string" },
+        estimatedMinutes: { type: "number" },
+      },
+      required: ["taskId"],
+    },
+  },
+  {
+    name: "delete_task",
+    description: "Permanently delete a task. Requires the task id from list_tasks. Executes immediately, no confirmation.",
+    input_schema: {
+      type: "object",
+      properties: { taskId: { type: "string" } },
+      required: ["taskId"],
+    },
+  },
+  {
+    name: "move_task_date",
+    description:
+      "Move a task to a different day's Today's Focus — the explicit \"move it to another date\" " +
+      "action (e.g. \"push that to tomorrow,\" \"move it to Friday instead\"). Requires the task id " +
+      "from list_tasks. Doesn't touch dueDate, status, or anything else about the task, only which " +
+      "day it's focused on.",
+    input_schema: {
+      type: "object",
+      properties: {
+        taskId: { type: "string" },
+        newDate: { type: "string", description: "The new focus day, as YYYY-MM-DD." },
+      },
+      required: ["taskId", "newDate"],
+    },
+  },
+  {
+    name: "list_goals",
+    description:
+      "Read Nishad's strategic goals from Weekly Review (title, horizon, status, progress, target " +
+      "date, risk) — use whenever he asks about goals, the Weekly Review page, or progress toward " +
+      "something long-term. Read-only.",
+    input_schema: { type: "object", properties: {} },
   },
   {
     name: "check_email",
@@ -664,8 +761,17 @@ function reportToolError(toolName: string, error: unknown, input: unknown): void
   void logToolError(toolName, error, input).catch(() => {});
 }
 
-async function handleCreateTask(input: { title: string }): Promise<string> {
+const TASK_DATE_PATTERN = /^\d{4}-\d{2}-\d{2}$/;
+const TASK_STATUSES: TaskStatus[] = ["scheduled", "active", "completed", "paused", "cancelled"];
+const TASK_PRIORITIES: TaskPriority[] = ["low", "medium", "high", "critical"];
+const TASK_ENERGIES: TaskEnergy[] = ["low", "medium", "high"];
+const TASK_DOMAINS: TaskDomain[] = ["academic", "career", "health", "personal", "north-vector"];
+
+async function handleCreateTask(input: { title: string; focusDate?: string }): Promise<string> {
   try {
+    const focusDate =
+      input.focusDate && TASK_DATE_PATTERN.test(input.focusDate) ? input.focusDate : todayFocusDateAdmin();
+
     await createTaskAsAdmin({
       title: input.title,
       description: "",
@@ -673,11 +779,135 @@ async function handleCreateTask(input: { title: string }): Promise<string> {
       priority: "medium",
       energy: "medium",
       domain: "personal",
+      focusDate,
     });
-    return `Created task: "${input.title}".`;
+    return `Created task: "${input.title}" for ${focusDate}.`;
   } catch (error) {
     reportToolError("create_task", error, input);
     return "Task creation failed — tell Nishad to try again.";
+  }
+}
+
+function formatTaskLine(task: TaskRecord): string {
+  const parts = [`priority: ${task.priority}`, `focus: ${task.focusDate}`];
+  if (task.dueDate) parts.push(`due: ${task.dueDate}`);
+  return `[${task.id}] ${task.title} — ${task.status} (${parts.join(", ")})`;
+}
+
+// The read access North was completely missing before this — see this
+// tool's schema description. Every taskId embedded in the output text is
+// deliberate: update_task/delete_task/move_task_date all need one, and
+// this is the only place Claude ever sees them.
+async function handleListTasks(input: { date?: string; status?: string }): Promise<string> {
+  try {
+    const status = input.status && TASK_STATUSES.includes(input.status as TaskStatus) ? (input.status as TaskStatus) : undefined;
+    const tasks = await getTasksAsAdmin({ focusDate: input.date, status });
+
+    if (tasks.length === 0) {
+      return "No tasks match that.";
+    }
+
+    return `${tasks.length} task${tasks.length === 1 ? "" : "s"}:\n${tasks.map(formatTaskLine).join("\n")}`;
+  } catch (error) {
+    reportToolError("list_tasks", error, input);
+    return "Couldn't read tasks just now — tell Nishad to try again.";
+  }
+}
+
+async function handleUpdateTask(input: {
+  taskId?: string;
+  title?: string;
+  description?: string;
+  status?: string;
+  priority?: string;
+  energy?: string;
+  domain?: string;
+  dueDate?: string;
+  notes?: string;
+  estimatedMinutes?: number;
+}): Promise<string> {
+  try {
+    if (!input.taskId) {
+      return "No task id given — call list_tasks first to find the one to edit.";
+    }
+
+    const fields: TaskUpdateFields = {};
+    if (input.title !== undefined) fields.title = input.title;
+    if (input.description !== undefined) fields.description = input.description;
+    if (input.status !== undefined && TASK_STATUSES.includes(input.status as TaskStatus)) {
+      fields.status = input.status as TaskStatus;
+    }
+    if (input.priority !== undefined && TASK_PRIORITIES.includes(input.priority as TaskPriority)) {
+      fields.priority = input.priority as TaskPriority;
+    }
+    if (input.energy !== undefined && TASK_ENERGIES.includes(input.energy as TaskEnergy)) {
+      fields.energy = input.energy as TaskEnergy;
+    }
+    if (input.domain !== undefined && TASK_DOMAINS.includes(input.domain as TaskDomain)) {
+      fields.domain = input.domain as TaskDomain;
+    }
+    if (input.dueDate !== undefined) fields.dueDate = input.dueDate;
+    if (input.notes !== undefined) fields.notes = input.notes;
+    if (input.estimatedMinutes !== undefined) fields.estimatedMinutes = input.estimatedMinutes;
+
+    await updateTaskAsAdmin(input.taskId, fields);
+    return "Updated that task.";
+  } catch (error) {
+    reportToolError("update_task", error, input);
+    return "Updating that task failed — tell Nishad to try again.";
+  }
+}
+
+async function handleDeleteTask(input: { taskId?: string }): Promise<string> {
+  try {
+    if (!input.taskId) {
+      return "No task id given — call list_tasks first to find the one to delete.";
+    }
+    await deleteTaskAsAdmin(input.taskId);
+    return "Deleted that task.";
+  } catch (error) {
+    reportToolError("delete_task", error, input);
+    return "Deleting that task failed — tell Nishad to try again.";
+  }
+}
+
+async function handleMoveTaskDate(input: { taskId?: string; newDate?: string }): Promise<string> {
+  try {
+    if (!input.taskId || !input.newDate) {
+      return "Need both a task id and a new date — call list_tasks first if the id is missing.";
+    }
+    if (!TASK_DATE_PATTERN.test(input.newDate)) {
+      return `"${input.newDate}" isn't a valid date (expected YYYY-MM-DD) — nothing was moved.`;
+    }
+
+    await moveTaskDateAsAdmin(input.taskId, input.newDate);
+    return `Moved that task to ${input.newDate}.`;
+  } catch (error) {
+    reportToolError("move_task_date", error, input);
+    return "Moving that task failed — tell Nishad to try again.";
+  }
+}
+
+async function handleListGoals(): Promise<string> {
+  try {
+    const goals = await listGoalsAsAdmin();
+
+    if (goals.length === 0) {
+      return "No goals recorded yet.";
+    }
+
+    const formatted = goals
+      .map(
+        (g) =>
+          `[${g.id}] ${g.title} — ${g.status}, ${g.horizon}-term, ${g.progress}% (risk: ${g.risk})` +
+          (g.targetDate ? `, target ${g.targetDate}` : "")
+      )
+      .join("\n");
+
+    return `${goals.length} goal${goals.length === 1 ? "" : "s"}:\n${formatted}`;
+  } catch (error) {
+    reportToolError("list_goals", error, {});
+    return "Couldn't read goals just now — tell Nishad to try again.";
   }
 }
 
@@ -1620,7 +1850,32 @@ export async function executeTool(
 }> {
   switch (name) {
     case "create_task":
-      return { text: await handleCreateTask(input as { title: string }) };
+      return { text: await handleCreateTask(input as { title: string; focusDate?: string }) };
+    case "list_tasks":
+      return { text: await handleListTasks(input as { date?: string; status?: string }) };
+    case "update_task":
+      return {
+        text: await handleUpdateTask(
+          input as {
+            taskId?: string;
+            title?: string;
+            description?: string;
+            status?: string;
+            priority?: string;
+            energy?: string;
+            domain?: string;
+            dueDate?: string;
+            notes?: string;
+            estimatedMinutes?: number;
+          }
+        ),
+      };
+    case "delete_task":
+      return { text: await handleDeleteTask(input as { taskId?: string }) };
+    case "move_task_date":
+      return { text: await handleMoveTaskDate(input as { taskId?: string; newDate?: string }) };
+    case "list_goals":
+      return { text: await handleListGoals() };
     case "check_email":
       return { text: await handleCheckEmail(input as { query?: string }) };
     case "search_email":
