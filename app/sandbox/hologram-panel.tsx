@@ -416,13 +416,35 @@ function buildMolecule(structure: HologramStructure | undefined): THREE.Group {
   return buildGenericMolecule();
 }
 
+// Stylized network/issuer color differentiation — explicitly NOT an
+// attempt at real card artwork or logos (exact branded designs are a
+// trademark question, not an engineering one). Just a body/chip color
+// keyed off whichever network name appears in the hologram's label — a
+// Visa card reads as a blue rectangle, Mastercard as red, etc., same
+// idea as any other wireframe hologram in this file, colored instead of
+// uniformly cyan. Falls back to the plain HUD_CYAN scheme (the original,
+// pre-differentiation look) whenever no known network name is found —
+// e.g. a generic "gift card" or an issuer this list doesn't cover.
+const CARD_NETWORK_COLORS: { pattern: RegExp; color: number }[] = [
+  { pattern: /\bvisa\b/i, color: 0x2a5bd7 },
+  { pattern: /\bmastercard\b/i, color: 0xeb4034 },
+  { pattern: /\b(amex|american express)\b/i, color: 0x2fa8a0 },
+  { pattern: /\bdiscover\b/i, color: 0xff8a1e },
+];
+
+function detectCardNetworkColor(label: string): number {
+  const match = CARD_NETWORK_COLORS.find(({ pattern }) => pattern.test(label));
+  return match ? match.color : HUD_CYAN;
+}
+
 // Credit/debit card — flat rectangle at the real ISO/IEC 7810 ID-1 aspect
 // ratio (85.6mm x 53.98mm), plus a smaller embossed rectangle standing in
 // for the chip. Not literal photorealism, per the spec's own "visually
 // interesting and on-theme" goal, not "perfect model."
-function buildCard(): THREE.Group {
+function buildCard(label: string): THREE.Group {
   const group = new THREE.Group();
-  const material = new THREE.MeshBasicMaterial({ color: HUD_CYAN, wireframe: true });
+  const color = detectCardNetworkColor(label);
+  const material = new THREE.MeshBasicMaterial({ color, wireframe: true });
 
   const body = new THREE.Mesh(new THREE.BoxGeometry(3.37, 2.12, 0.06), material);
   group.add(body);
@@ -484,11 +506,11 @@ function buildAbstract(): THREE.Group {
   return group;
 }
 
-function buildObject(objectType: HologramObjectType, structure: HologramStructure | undefined): THREE.Group {
+function buildObject(objectType: HologramObjectType, structure: HologramStructure | undefined, label: string): THREE.Group {
   const group = (() => {
     switch (objectType) {
       case "card":
-        return buildCard();
+        return buildCard(label);
       case "molecule":
         return buildMolecule(structure);
       case "building":
@@ -742,7 +764,7 @@ export function HologramPanel({ hologram, onClose }: { hologram: HologramVisual;
     labelRenderer.domElement.style.pointerEvents = "none";
     container.appendChild(labelRenderer.domElement);
 
-    const object = buildObject(hologram.objectType, hologram.structure);
+    const object = buildObject(hologram.objectType, hologram.structure, hologram.label);
     scene.add(object);
 
     labelObjectsRef.current = [];
