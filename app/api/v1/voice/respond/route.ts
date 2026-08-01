@@ -104,6 +104,48 @@ function rushLine(rushSignal: "rushed" | "normal"): string {
   );
 }
 
+// Extracts a clean leading sentence from a tool's own schema description
+// for generateCapabilitySummary below — most of these descriptions run
+// several sentences deep into schema/usage detail Claude already has
+// natively via the `tools` parameter itself; only the first sentence is
+// needed here. Parenthetical asides are stripped first since that's
+// where nearly every "e.g." in this file's tool descriptions lives —
+// left in, the period inside "e.g." would look like a false sentence
+// boundary and truncate mid-thought. Ellipses (e.g. a quoted "should
+// I...") get the same treatment for the same reason — each of their
+// three dots otherwise reads as its own sentence-ending period. Falls
+// back to a hard character cut for the rare description with no early
+// sentence break at all.
+function firstSentence(text: string): string {
+  // Cleanup order matters: parens/ellipses first (removing them can
+  // leave a doubled space, or a lone space right before whatever
+  // punctuation used to follow), then whitespace collapse, then trim
+  // any space stranded directly before punctuation.
+  const cleaned = text
+    .replace(/\([^)]*\)/g, "")
+    .replace(/\.{2,}/g, "…")
+    .replace(/\s+/g, " ")
+    .replace(/\s+([.,!?])/g, "$1");
+  const match = cleaned.match(/^[^.!?]*[.!?]/);
+  return (match ? match[0] : text.slice(0, 140)).trim();
+}
+
+// Generated directly from TOOL_DEFINITIONS — the same source of truth
+// executeTool's switch and the actual Claude API tool schemas already
+// come from — instead of hand-maintained prose, which has silently
+// drifted stale (missing real tools) more than once already. Every tool
+// already appears in full via the API's own `tools` parameter too; this
+// exists purely so a spoken "what can you do" answer (which draws on
+// prose the model can recite back, not the tools array it reasons over
+// internally) can't go stale the same way again — this is regenerated
+// on every prompt build, so a new tool is covered automatically the
+// moment it's added to TOOL_DEFINITIONS, with nothing else to remember
+// to update.
+function generateCapabilitySummary(): string {
+  const sentences = TOOL_DEFINITIONS.map((tool) => firstSentence(tool.description ?? tool.name));
+  return `Your actual tools, generated directly from what's registered — never hand-maintained, so this can't go stale: ${sentences.join(" ")}`;
+}
+
 function buildSystemPrompt(
   preferences: Awaited<ReturnType<typeof getPreferences>>,
   rushSignal: "rushed" | "normal"
@@ -126,20 +168,22 @@ function buildSystemPrompt(
     "60 words total, as a complete finished thought — never trail off mid-sentence, never write " +
     "the kind of answer you'd put in a document.\n\n" +
 
-    "You have tools for checking/sending/searching/deleting Gmail, checking/searching Nishad's " +
-    "separate iCloud Mail inbox, checking/creating/updating/deleting calendar events, checking " +
-    "Notion, creating tasks, showing an interactive map on screen and highlighting a building on " +
-    "it, pushing rich visual content (markdown, tables, code, images, structured data) to the " +
-    "screen with push_to_screen, getting a decision recommendation, and a general research tool " +
-    "for anything needing a live web lookup. Gmail and iCloud are separate inboxes with their " +
+    generateCapabilitySummary() + "\n\n" +
+
+    "Every one of those executes fully autonomously by default — no confirmation needed, just call " +
+    "it the moment it's the right tool. The single exception is financial actions (moving money, " +
+    "trades, purchases): those always need Nishad's explicit confirmation first. There is no other " +
+    "hesitation anywhere in that list — don't invent one.\n\n" +
+
+    "Gmail and iCloud are separate inboxes with their " +
     "own tools — if a request doesn't say which one and the obvious one comes up empty, try the " +
     "other before telling Nishad you can't find something. Default order for any request: answer " +
     "directly if it's reasoning, arithmetic, or something you already know and search wouldn't " +
     "change; call research for anything needing current or external information you don't have a " +
     "specific tool for (weather, prices, currency conversion, general facts — don't assume there's " +
     "no way to answer just because there's no topic-specific tool); use the specific tool for " +
-    "Nishad's own accounts/data (Gmail, calendar, Notion, tasks) when the request is actually about " +
-    "those. When " +
+    "Nishad's own accounts/data (Gmail, calendar, Notion, tasks, watches) when the request is " +
+    "actually about those. When " +
     "show_map or highlight_building runs, the visual itself is the answer — keep your spoken " +
     "response to a short acknowledgment (\"Here's Boston, sir\"), don't also describe the place in " +
     "words. Same when push_to_screen runs — call it alongside a short spoken response, never " +
@@ -149,8 +193,7 @@ function buildSystemPrompt(
     "not an image URL. The system will find and render the appropriate visual. If " +
     "get_decision_recommendation comes back with " +
     "\"specific\": false, give a real, honest opinion yourself rather than deflecting — this is " +
-    "advisory only, you never move money or take financial action without explicit confirmation " +
-    "(that boundary is the one exception to acting autonomously). Only call note_capability_gap " +
+    "advisory only. Only call note_capability_gap " +
     "for a request that genuinely needs a new integration research can't cover (a new account, " +
     "API, or credential) — say so plainly when that's the case, don't just let it evaporate as a " +
     "flat no. If you notice mid-conversation that Nishad's mentioned meaning to reply to someone " +
