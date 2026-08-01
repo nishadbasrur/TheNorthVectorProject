@@ -11,6 +11,7 @@ import {
 import { listGoalsAsAdmin } from "./goal-store-admin";
 import type { TaskStatus, TaskPriority, TaskEnergy, TaskDomain, TaskRecord } from "./task-store";
 import type { TaskUpdateFields } from "./task-store-admin";
+import { createWatchAsAdmin, listWatchesAsAdmin, deleteWatchAsAdmin, type WatchRecord } from "./watch-store-admin";
 import {
   getUpcomingEvents,
   createCalendarEvent,
@@ -235,6 +236,52 @@ export const TOOL_DEFINITIONS: Anthropic.Tool[] = [
       type: "object",
       properties: { messageId: { type: "string" } },
       required: ["messageId"],
+    },
+  },
+  {
+    name: "create_watch",
+    description:
+      "Set up an ad-hoc watch on incoming email — every new message is evaluated against this " +
+      "watch's criteria using real language understanding (not keyword matching), and a push " +
+      "notification fires the moment something matches. Use when Nishad asks to be alerted about " +
+      "something specific happening in email that isn't already covered by the standing urgency " +
+      "check (e.g. \"let me know if Chase emails about my ACH transfer,\" \"watch for anything about " +
+      "the Freedom Rise application\"). Not for one-off lookups — use check_email/search_email for " +
+      "those. Executes immediately, no confirmation.",
+    input_schema: {
+      type: "object",
+      properties: {
+        criteria: {
+          type: "string",
+          description:
+            "The actual matching rule, written so a classifier can judge a single email against it " +
+            "— e.g. \"An email from Chase about an ACH transfer, or about the Freedom Rise credit " +
+            "card application.\" Be specific enough to avoid false positives.",
+        },
+        description: {
+          type: "string",
+          description:
+            "Short human-readable label for this watch, e.g. \"Chase ACH/Freedom Rise watch\" — " +
+            "shown back when listing active watches and in the push notification itself.",
+        },
+      },
+      required: ["criteria", "description"],
+    },
+  },
+  {
+    name: "list_watches",
+    description:
+      "List every active ad-hoc email watch currently running. Use when Nishad asks what North is " +
+      "watching for, or before delete_watch (it needs the watch id this returns). Read-only.",
+    input_schema: { type: "object", properties: {} },
+  },
+  {
+    name: "delete_watch",
+    description: "Stop an ad-hoc email watch. Requires the watch id from list_watches.",
+    input_schema: {
+      type: "object",
+      properties: { watchId: { type: "string" } },
+      required: ["watchId"],
     },
   },
   {
@@ -1023,6 +1070,56 @@ async function handleDeleteEmail(input: { messageId: string }): Promise<string> 
   } catch (error) {
     reportToolError("delete_email", error, input);
     return "Deleting the email failed — tell Nishad to try again.";
+  }
+}
+
+async function handleCreateWatch(input: { criteria?: string; description?: string }): Promise<string> {
+  try {
+    const criteria = input.criteria?.trim();
+    const description = input.description?.trim();
+
+    if (!criteria || !description) {
+      return "Need both criteria and a description to set up a watch.";
+    }
+
+    await createWatchAsAdmin({ criteria, description });
+    return `Watching for: ${description}.`;
+  } catch (error) {
+    reportToolError("create_watch", error, input);
+    return "Couldn't set up that watch — tell Nishad to try again.";
+  }
+}
+
+function formatWatchLine(watch: WatchRecord): string {
+  return `[${watch.id}] ${watch.description} — "${watch.criteria}"`;
+}
+
+async function handleListWatches(): Promise<string> {
+  try {
+    const watches = await listWatchesAsAdmin();
+
+    if (watches.length === 0) {
+      return "No active watches right now.";
+    }
+
+    return `${watches.length} active watch${watches.length === 1 ? "" : "es"}:\n${watches.map(formatWatchLine).join("\n")}`;
+  } catch (error) {
+    reportToolError("list_watches", error, {});
+    return "Couldn't read watches just now — tell Nishad to try again.";
+  }
+}
+
+async function handleDeleteWatch(input: { watchId?: string }): Promise<string> {
+  try {
+    if (!input.watchId) {
+      return "No watch id given — call list_watches first to find the one to stop.";
+    }
+
+    await deleteWatchAsAdmin(input.watchId);
+    return "Stopped that watch.";
+  } catch (error) {
+    reportToolError("delete_watch", error, input);
+    return "Stopping that watch failed — tell Nishad to try again.";
   }
 }
 
@@ -1888,6 +1985,12 @@ export async function executeTool(
       };
     case "delete_email":
       return { text: await handleDeleteEmail(input as { messageId: string }) };
+    case "create_watch":
+      return { text: await handleCreateWatch(input as { criteria?: string; description?: string }) };
+    case "list_watches":
+      return { text: await handleListWatches() };
+    case "delete_watch":
+      return { text: await handleDeleteWatch(input as { watchId?: string }) };
     case "check_calendar":
       return { text: await handleCheckCalendar(input as { withinHours?: number }) };
     case "create_calendar_event":

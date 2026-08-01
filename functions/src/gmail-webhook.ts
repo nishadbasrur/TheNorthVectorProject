@@ -4,6 +4,7 @@ import type { MessagePublishedData } from "firebase-functions/v2/pubsub";
 import { registerGmailWatch, getGmailHistoryDelta } from "../../lib/gmail-client";
 import { getGmailWatchState, saveGmailWatchState, updateGmailHistoryId } from "../../lib/gmail-watch-store";
 import { checkUrgentEmailsRaw } from "../../lib/gmail-urgency";
+import { evaluateWatches } from "../../lib/gmail-watch-evaluator";
 import { sendPushNotification } from "./push";
 
 // Real-time Gmail push notifications, replacing "on-demand only, never
@@ -74,6 +75,16 @@ export async function handleGmailPush(event: CloudEvent<MessagePublishedData<Gma
         `North: ${urgent.length} urgent email${urgent.length === 1 ? "" : "s"}`,
         subjects
       );
+    }
+
+    // Ad-hoc watches (create_watch) — separate concern from the standing
+    // urgency check above (different criteria per watch, own dedup — see
+    // lib/gmail-watch-evaluator.ts), same real-time trigger point. A
+    // no-op Gmail/Claude-call-wise whenever there are no active watches.
+    const watchMatches = await evaluateWatches();
+
+    for (const match of watchMatches) {
+      await sendPushNotification(`North: ${match.watch.description}`, `${match.message.subject} — ${match.reason}`);
     }
   } catch (error) {
     logger.error("[gmail-webhook] Failed to process Gmail push:", error);
