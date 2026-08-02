@@ -1297,6 +1297,11 @@ export function VoiceSessionProvider({ children }: { children: ReactNode }) {
     enabled: mode === "dormant" && micArmed,
     onDetect: handleWakeWordDetected,
     onError: (error) => console.warn("[Sandbox] Wake-word engine error:", error),
+    // Opt-in via ?wakeword-debug=1 — turns on WakeWordEngine's per-chunk
+    // console.debug score logging (see app/sandbox/use-wake-word.ts), the
+    // mechanism for tuning DEFAULT_DETECTION_THRESHOLD against real "Hey
+    // North" utterances. Off by default; too noisy for normal use.
+    debug: typeof window !== "undefined" && new URLSearchParams(window.location.search).has("wakeword-debug"),
   });
 
   const handleMicTap = useCallback(() => {
