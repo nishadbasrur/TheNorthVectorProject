@@ -1,5 +1,5 @@
 import "server-only";
-import { askClaude } from "@/lib/anthropic-client";
+import { askOpenAI, MODEL_CLASSIFIER } from "@/lib/openai-client";
 import { setConnectionEngagement } from "@/lib/synthesis-store";
 import type { SynthesisConnection } from "@/lib/synthesis-engine";
 
@@ -25,10 +25,11 @@ function buildPrompt(connection: SynthesisConnection): string {
 // failure must never affect the actual voice response.
 export async function detectEngagement(connection: SynthesisConnection, nextUserTurnText: string): Promise<void> {
   try {
-    const result = await askClaude({
+    const result = await askOpenAI({
       systemPrompt: buildPrompt(connection),
       userMessage: nextUserTurnText,
       maxTokens: 10,
+      model: MODEL_CLASSIFIER,
     });
 
     if (!result.ok) return;

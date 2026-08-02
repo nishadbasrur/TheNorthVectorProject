@@ -1,5 +1,4 @@
 import "server-only";
-import type Anthropic from "@anthropic-ai/sdk";
 import {
   createTaskAsAdmin,
   getTasksAsAdmin,
@@ -35,7 +34,7 @@ import { logCapabilityGap, getRecentCapabilityGaps, logDraftEmailGap } from "./c
 import { getRecentIcloudMessages, searchIcloudEmails } from "./icloud-mail-client";
 import { logToolError, getRecentToolErrors } from "./tool-error-log";
 import { logTechnicalError } from "./error-log-store";
-import { askClaudeWithWebSearch } from "./anthropic-client";
+import { askOpenAIWithWebSearch, MODEL_AGENTIC, type ToolDefinition } from "./openai-client";
 import { getRecentTextMessages, searchTextMessages } from "./text-message-store";
 import { requiresConfirmation } from "./tool-tiers";
 import {
@@ -54,14 +53,15 @@ import { fetchPubChemStructure } from "./pubchem-client";
 // duplication, and the drift risk it created, is what
 // lib/capability-manifest.ts used to paper over). See
 // North_Vector_JARVIS_Tool_Calling_Migration_Plan.md Section 5.1.
-export const TOOL_DEFINITIONS: Anthropic.Tool[] = [
+export const TOOL_DEFINITIONS: ToolDefinition[] = [
   {
+    type: "function",
     name: "create_task",
     description:
       "Create a new task/reminder for Nishad. Use when the request is a direct instruction to " +
       "remember or do something later (e.g. \"add task,\" \"remind me to,\" \"I need to...\"), not " +
       "for questions or requests to check on something.",
-    input_schema: {
+    parameters: {
       type: "object",
       properties: {
         title: { type: "string", description: "Short task title, in plain sentence case." },
@@ -77,13 +77,14 @@ export const TOOL_DEFINITIONS: Anthropic.Tool[] = [
     },
   },
   {
+    type: "function",
     name: "list_tasks",
     description:
       "Read Nishad's tasks — with no filters, every task across every day. Use this before " +
       "update_task/delete_task/move_task_date (they need the task id this returns), and any time " +
       "Nishad asks what's on his plate, what's on today's focus, or references a task by " +
       "description rather than an id. Read-only.",
-    input_schema: {
+    parameters: {
       type: "object",
       properties: {
         date: {
@@ -101,12 +102,13 @@ export const TOOL_DEFINITIONS: Anthropic.Tool[] = [
     },
   },
   {
+    type: "function",
     name: "update_task",
     description:
       "Edit an existing task — title, status (including marking it complete or reopening it), " +
       "priority, or any other field. Requires the task id from list_tasks. Only include the fields " +
       "actually changing; everything else is left as-is.",
-    input_schema: {
+    parameters: {
       type: "object",
       properties: {
         taskId: { type: "string" },
@@ -124,22 +126,24 @@ export const TOOL_DEFINITIONS: Anthropic.Tool[] = [
     },
   },
   {
+    type: "function",
     name: "delete_task",
     description: "Permanently delete a task. Requires the task id from list_tasks. Executes immediately, no confirmation.",
-    input_schema: {
+    parameters: {
       type: "object",
       properties: { taskId: { type: "string" } },
       required: ["taskId"],
     },
   },
   {
+    type: "function",
     name: "move_task_date",
     description:
       "Move a task to a different day's Today's Focus — the explicit \"move it to another date\" " +
       "action (e.g. \"push that to tomorrow,\" \"move it to Friday instead\"). Requires the task id " +
       "from list_tasks. Doesn't touch dueDate, status, or anything else about the task, only which " +
       "day it's focused on.",
-    input_schema: {
+    parameters: {
       type: "object",
       properties: {
         taskId: { type: "string" },
@@ -149,14 +153,16 @@ export const TOOL_DEFINITIONS: Anthropic.Tool[] = [
     },
   },
   {
+    type: "function",
     name: "list_goals",
     description:
       "Read Nishad's strategic goals from Weekly Review (title, horizon, status, progress, target " +
       "date, risk) — use whenever he asks about goals, the Weekly Review page, or progress toward " +
       "something long-term. Read-only.",
-    input_schema: { type: "object", properties: {} },
+    parameters: { type: "object", properties: {} },
   },
   {
+    type: "function",
     name: "check_email",
     description:
       "Check Gmail. With no query, checks for anything urgent or time-sensitive right now. With a " +
@@ -164,7 +170,7 @@ export const TOOL_DEFINITIONS: Anthropic.Tool[] = [
       "to answer that specific lookup question instead of judging urgency. Only covers the ~25 most " +
       "recent inbox messages — use search_email instead for anything further back. Read-only; use " +
       "send_email/delete_email to act on the inbox.",
-    input_schema: {
+    parameters: {
       type: "object",
       properties: {
         query: {
@@ -176,13 +182,14 @@ export const TOOL_DEFINITIONS: Anthropic.Tool[] = [
     },
   },
   {
+    type: "function",
     name: "search_email",
     description:
       "Search the full inbox history using Gmail's own search syntax — not limited to recent " +
       "messages. Use for anything asking about an email that isn't necessarily recent (e.g. \"find " +
       "that email from a few months ago\", \"emails from GradGuard\"). Supports Gmail operators like " +
       "from:, subject:, older_than:3m, newer_than:1y, has:attachment.",
-    input_schema: {
+    parameters: {
       type: "object",
       properties: {
         query: { type: "string", description: "Gmail search query syntax." },
@@ -191,12 +198,13 @@ export const TOOL_DEFINITIONS: Anthropic.Tool[] = [
     },
   },
   {
+    type: "function",
     name: "send_email",
     description:
       "Draft and send an email on Nishad's behalf. Executes immediately once you decide it's the " +
       "right action — no confirmation step. Use good judgment on tone and content since this sends " +
       "as Nishad, to a real recipient, with no review before it goes out.",
-    input_schema: {
+    parameters: {
       type: "object",
       properties: {
         to: { type: "string", description: "Recipient email address." },
@@ -207,13 +215,14 @@ export const TOOL_DEFINITIONS: Anthropic.Tool[] = [
     },
   },
   {
+    type: "function",
     name: "draft_email",
     description:
       "Save an email as a Gmail draft and offer it for review — never sends. Use instead of " +
       "send_email when YOU notice mid-conversation that Nishad's mentioned meaning to reply to " +
       "someone (not when he directly asks you to send something — that's still send_email). He " +
       "reviews and approves/denies it later in the app; the draft only actually sends if he approves.",
-    input_schema: {
+    parameters: {
       type: "object",
       properties: {
         to: { type: "string", description: "Recipient email address." },
@@ -228,17 +237,19 @@ export const TOOL_DEFINITIONS: Anthropic.Tool[] = [
     },
   },
   {
+    type: "function",
     name: "delete_email",
     description:
       "Move an email to Trash (recoverable for 30 days, not a permanent erase). Requires the " +
       "specific message id — use check_email or search_email first to find it.",
-    input_schema: {
+    parameters: {
       type: "object",
       properties: { messageId: { type: "string" } },
       required: ["messageId"],
     },
   },
   {
+    type: "function",
     name: "create_watch",
     description:
       "Set up an ad-hoc watch on incoming email — every new message is evaluated against this " +
@@ -248,7 +259,7 @@ export const TOOL_DEFINITIONS: Anthropic.Tool[] = [
       "check (e.g. \"let me know if Chase emails about my ACH transfer,\" \"watch for anything about " +
       "the Freedom Rise application\"). Not for one-off lookups — use check_email/search_email for " +
       "those. Executes immediately, no confirmation.",
-    input_schema: {
+    parameters: {
       type: "object",
       properties: {
         criteria: {
@@ -269,29 +280,32 @@ export const TOOL_DEFINITIONS: Anthropic.Tool[] = [
     },
   },
   {
+    type: "function",
     name: "list_watches",
     description:
       "List every active ad-hoc email watch currently running. Use when Nishad asks what North is " +
       "watching for, or before delete_watch (it needs the watch id this returns). Read-only.",
-    input_schema: { type: "object", properties: {} },
+    parameters: { type: "object", properties: {} },
   },
   {
+    type: "function",
     name: "delete_watch",
     description: "Stop an ad-hoc email watch. Requires the watch id from list_watches.",
-    input_schema: {
+    parameters: {
       type: "object",
       properties: { watchId: { type: "string" } },
       required: ["watchId"],
     },
   },
   {
+    type: "function",
     name: "check_calendar",
     description:
       "Check Google Calendar for upcoming events. Defaults to the next 48 hours; pass a narrower or " +
       "wider window if the request implies one (e.g. \"today\" -> 24, \"this week\" -> 168). " +
       "Read-only; use create_calendar_event/update_calendar_event/delete_calendar_event to act on " +
       "the calendar.",
-    input_schema: {
+    parameters: {
       type: "object",
       properties: {
         withinHours: {
@@ -302,12 +316,13 @@ export const TOOL_DEFINITIONS: Anthropic.Tool[] = [
     },
   },
   {
+    type: "function",
     name: "create_calendar_event",
     description:
       "Create a new calendar event on the primary calendar. Executes immediately, no confirmation. " +
       "Other attendees are NOT notified by Google of this change (silent by design) — tell Nishad " +
       "explicitly if anyone else needs to know.",
-    input_schema: {
+    parameters: {
       type: "object",
       properties: {
         title: { type: "string" },
@@ -323,12 +338,13 @@ export const TOOL_DEFINITIONS: Anthropic.Tool[] = [
     },
   },
   {
+    type: "function",
     name: "update_calendar_event",
     description:
       "Modify an existing calendar event's time or title. Requires the event id from check_calendar. " +
       "Other attendees are NOT notified by Google of this change (silent by design) — tell Nishad " +
       "explicitly if anyone else needs to know, e.g. a shared tutoring session that just moved.",
-    input_schema: {
+    parameters: {
       type: "object",
       properties: {
         eventId: { type: "string" },
@@ -340,30 +356,33 @@ export const TOOL_DEFINITIONS: Anthropic.Tool[] = [
     },
   },
   {
+    type: "function",
     name: "delete_calendar_event",
     description:
       "Delete an existing calendar event. Requires the event id from check_calendar. Other attendees " +
       "are NOT notified by Google of this cancellation (silent by design) — tell Nishad explicitly if " +
       "anyone else needs to know.",
-    input_schema: {
+    parameters: {
       type: "object",
       properties: { eventId: { type: "string" } },
       required: ["eventId"],
     },
   },
   {
+    type: "function",
     name: "check_notion",
     description: "Check the shared Notion database (read-only) for items flagged Urgent.",
-    input_schema: { type: "object", properties: {} },
+    parameters: { type: "object", properties: {} },
   },
   {
+    type: "function",
     name: "get_decision_recommendation",
     description:
       "Get a reasoned recommendation for a \"should I...\" / \"which is better\" style decision " +
       "question, from North's decision engine (which remembers and reuses past answers to the same " +
       "question). Use for decision-shaped questions before answering from general reasoning alone — " +
       "the engine may have a specific stored rule or prior answer worth grounding the reply in.",
-    input_schema: {
+    parameters: {
       type: "object",
       properties: {
         question: { type: "string", description: "The decision question, verbatim or lightly cleaned up." },
@@ -372,6 +391,7 @@ export const TOOL_DEFINITIONS: Anthropic.Tool[] = [
     },
   },
   {
+    type: "function",
     name: "get_proactive_updates",
     description:
       "Check for anything worth knowing that's been surfaced by cross-source reasoning — " +
@@ -379,9 +399,10 @@ export const TOOL_DEFINITIONS: Anthropic.Tool[] = [
       "checking a single source alone. Call this for open-ended asks like 'what should I know', " +
       "'anything I should know about', 'catch me up', or 'what's going on' — not for specific " +
       "single-source questions, which have their own tools.",
-    input_schema: { type: "object", properties: {} },
+    parameters: { type: "object", properties: {} },
   },
   {
+    type: "function",
     name: "get_full_briefing",
     description:
       "Give a full, genuinely synthesized 'state of everything' briefing — calendar, email, Notion, " +
@@ -390,9 +411,10 @@ export const TOOL_DEFINITIONS: Anthropic.Tool[] = [
       "('give me the full rundown', 'what's my whole situation right now', 'brief me on everything') " +
       "— not for a quick check-in, which should use get_proactive_updates instead. This is allowed to " +
       "run longer than the usual brevity rule since it was explicitly requested.",
-    input_schema: { type: "object", properties: {} },
+    parameters: { type: "object", properties: {} },
   },
   {
+    type: "function",
     name: "show_map",
     description:
       "Show an interactive map on screen, or adjust the map that's already showing. Use for any " +
@@ -402,7 +424,7 @@ export const TOOL_DEFINITIONS: Anthropic.Tool[] = [
       "by omitting location and setting zoomDelta/zoomLevel, or by giving a new location to recenter " +
       "on. If nothing is currently showing and no location is given, this fails — ask what place to " +
       "show first.",
-    input_schema: {
+    parameters: {
       type: "object",
       properties: {
         location: {
@@ -423,6 +445,7 @@ export const TOOL_DEFINITIONS: Anthropic.Tool[] = [
     },
   },
   {
+    type: "function",
     name: "highlight_building",
     description:
       "Outline/highlight the building or structure at the center of the map that's currently showing " +
@@ -430,9 +453,10 @@ export const TOOL_DEFINITIONS: Anthropic.Tool[] = [
       "outline\", etc. Requires a map already on screen (call show_map first if nothing is showing). " +
       "Not every location has a distinct building footprint in the map data (parks, open areas, " +
       "natural landmarks) — if none is found, say so rather than pretending it worked.",
-    input_schema: { type: "object", properties: {} },
+    parameters: { type: "object", properties: {} },
   },
   {
+    type: "function",
     name: "push_to_screen",
     description:
       "Push rich visual content to the user's screen during a response. Use this when your response " +
@@ -467,7 +491,7 @@ export const TOOL_DEFINITIONS: Anthropic.Tool[] = [
       "more literal answer to a scenario described this way. Omit `vessel` entirely for a reaction " +
       "described as pure chemistry with no physical setup (\"what happens when you burn hydrogen " +
       "in chlorine gas\") — don't invent a vessel/solvent/conditions the problem didn't mention.",
-    input_schema: {
+    parameters: {
       type: "object",
       properties: {
         content: {
@@ -567,6 +591,7 @@ export const TOOL_DEFINITIONS: Anthropic.Tool[] = [
     },
   },
   {
+    type: "function",
     name: "control_ui",
     description:
       "Directly control something already on the user's screen — dismiss it, toggle a view state, drive a " +
@@ -588,7 +613,7 @@ export const TOOL_DEFINITIONS: Anthropic.Tool[] = [
       "\"weekly_review\".\n" +
       "Only call this for something that's genuinely already on screen and controllable this way — e.g. don't " +
       "call reaction_play when no reaction hologram is showing, and don't invent an action name not listed above.",
-    input_schema: {
+    parameters: {
       type: "object",
       properties: {
         action: {
@@ -617,6 +642,7 @@ export const TOOL_DEFINITIONS: Anthropic.Tool[] = [
     },
   },
   {
+    type: "function",
     name: "note_capability_gap",
     description:
       "Log a request that's genuinely outside your current tools — instead of just declining, this " +
@@ -628,7 +654,7 @@ export const TOOL_DEFINITIONS: Anthropic.Tool[] = [
       "anything answerable from general knowledge, reasoning, or arithmetic alone. Still tell " +
       "Nishad plainly in your spoken reply that you can't do it yet and that you've flagged it — " +
       "this doesn't grant the capability immediately.",
-    input_schema: {
+    parameters: {
       type: "object",
       properties: {
         request: { type: "string", description: "What was asked, verbatim or lightly cleaned up." },
@@ -641,6 +667,7 @@ export const TOOL_DEFINITIONS: Anthropic.Tool[] = [
     },
   },
   {
+    type: "function",
     name: "check_bug_status",
     description:
       "Check the status of bugs North has detected and fixes currently being drafted or awaiting " +
@@ -648,9 +675,10 @@ export const TOOL_DEFINITIONS: Anthropic.Tool[] = [
       "/tool-errors and /capability-review pages. Read-only status check, not a fix trigger — bugs " +
       "get detected and drafted automatically on their own. Use when asked about bugs, issues, fixes " +
       "in progress, or what's in the resolution pipeline.",
-    input_schema: { type: "object", properties: {} },
+    parameters: { type: "object", properties: {} },
   },
   {
+    type: "function",
     name: "check_icloud_email",
     description:
       "Check Nishad's iCloud Mail inbox (separate account from Gmail — use this specifically when " +
@@ -658,7 +686,7 @@ export const TOOL_DEFINITIONS: Anthropic.Tool[] = [
       "didn't answer it). With no query, returns the most recent messages. With a query, looks up " +
       "recent messages to answer that specific question. Only covers the ~25 most recent messages — " +
       "use search_icloud_email for anything further back. Read-only.",
-    input_schema: {
+    parameters: {
       type: "object",
       properties: {
         query: {
@@ -669,12 +697,13 @@ export const TOOL_DEFINITIONS: Anthropic.Tool[] = [
     },
   },
   {
+    type: "function",
     name: "search_icloud_email",
     description:
       "Search Nishad's iCloud Mail inbox history for something not in the most recent messages. Less " +
       "expressive than Gmail search (no from:/subject: operators) — plain keyword/phrase matching " +
       "against headers and body.",
-    input_schema: {
+    parameters: {
       type: "object",
       properties: {
         query: { type: "string", description: "Keywords or phrase to search for." },
@@ -683,13 +712,14 @@ export const TOOL_DEFINITIONS: Anthropic.Tool[] = [
     },
   },
   {
+    type: "function",
     name: "check_messages",
     description:
       "Check Nishad's recent text messages (iMessage/SMS, synced from his Mac). With no query, " +
       "returns the most recent messages. With a query, looks up recent messages to answer that " +
       "specific question. Only covers the ~25 most recent messages — use search_messages for " +
       "anything further back. Read-only; there is no tool to send a text yet.",
-    input_schema: {
+    parameters: {
       type: "object",
       properties: {
         query: {
@@ -700,11 +730,12 @@ export const TOOL_DEFINITIONS: Anthropic.Tool[] = [
     },
   },
   {
+    type: "function",
     name: "search_messages",
     description:
       "Search Nishad's text message history for something not in the most recent messages — plain " +
       "keyword/phrase matching against the message text and sender.",
-    input_schema: {
+    parameters: {
       type: "object",
       properties: {
         query: { type: "string", description: "Keywords or phrase to search for." },
@@ -713,13 +744,14 @@ export const TOOL_DEFINITIONS: Anthropic.Tool[] = [
     },
   },
   {
+    type: "function",
     name: "log_technical_error",
     description:
       "Log a backend error, bug, or technical issue to a secure internal review area for later " +
       "diagnosis and repair. Use when Nishad reports something technically broken (an error, a " +
       "crash, a failure, unexpected behavior) that engineering should look at — not for a general " +
       "missing feature (use note_capability_gap) and not for a personal to-do (use create_task).",
-    input_schema: {
+    parameters: {
       type: "object",
       properties: {
         description: {
@@ -739,6 +771,7 @@ export const TOOL_DEFINITIONS: Anthropic.Tool[] = [
     },
   },
   {
+    type: "function",
     name: "research",
     description:
       "Look up anything needing current or external information, using live web search — weather, " +
@@ -749,7 +782,7 @@ export const TOOL_DEFINITIONS: Anthropic.Tool[] = [
       "Don't use this for anything involving Nishad's own accounts/data (email, calendar, tasks, " +
       "Notion — those have their own tools) or for pure arithmetic/reasoning you can already do " +
       "directly without external information.",
-    input_schema: {
+    parameters: {
       type: "object",
       properties: {
         query: { type: "string", description: "What to look up or research, in plain language." },
@@ -758,6 +791,7 @@ export const TOOL_DEFINITIONS: Anthropic.Tool[] = [
     },
   },
   {
+    type: "function",
     name: "run_agent_task",
     description:
       "Spin up an autonomous coding agent (Claude Agent SDK) to carry out a real software task — " +
@@ -769,7 +803,7 @@ export const TOOL_DEFINITIONS: Anthropic.Tool[] = [
       "start anything. Read that description to the user, and only call this again with " +
       "confirmed: true after they clearly say yes out loud in their next reply. Never set " +
       "confirmed: true on the first call.",
-    input_schema: {
+    parameters: {
       type: "object",
       properties: {
         task: {
@@ -1797,11 +1831,12 @@ const RESEARCH_SYSTEM_PROMPT =
 // which is a distinct concern from "answer this one question right now."
 async function handleResearch(input: { query: string }): Promise<string> {
   try {
-    const result = await askClaudeWithWebSearch({
+    const result = await askOpenAIWithWebSearch({
       systemPrompt: RESEARCH_SYSTEM_PROMPT,
       userMessage: input.query,
       maxTokens: 800,
       maxSearches: 2,
+      model: MODEL_AGENTIC,
     });
 
     if (!result.ok) {

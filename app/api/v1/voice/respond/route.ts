@@ -1,7 +1,7 @@
 import { NextResponse, after } from "next/server";
-import type Anthropic from "@anthropic-ai/sdk";
+import type { Response, ResponseFunctionToolCall, ResponseInputItem } from "openai/resources/responses/responses";
 import { requireOwner } from "@/lib/require-owner";
-import { streamClaudeWithTools } from "@/lib/anthropic-client";
+import { streamOpenAIWithTools, MODEL_AGENTIC } from "@/lib/openai-client";
 import { synthesizeSpeech } from "@/lib/google-tts";
 import { getPreferences, formatPreferencesForPrompt } from "@/lib/preferences-store";
 import { detectAndStorePreference } from "@/lib/preference-detector";
@@ -305,7 +305,7 @@ function buildSystemPrompt(
 // than treated as a sentence boundary, since at that point there's no way
 // to tell "real sentence end, more text just hasn't arrived yet" apart from
 // "mid-stream chunk boundary right after a period." The caller's final
-// flush (after streamClaudeWithTools's "done" event) handles whatever's
+// flush (after streamOpenAIWithTools's "done" event) handles whatever's
 // left in remainder once the stream genuinely ends. Doesn't special-case
 // abbreviations ("Mr.", "3.5") — the persona prompt's spoken-sentence style
 // (short, plain, no decimals/titles in practice) makes this not worth the
@@ -419,7 +419,7 @@ export async function POST(request: Request) {
     systemPrompt += `\n\n${opener.text}`;
   }
 
-  const messages: Anthropic.MessageParam[] = [
+  const messages: ResponseInputItem[] = [
     ...priorTurns.map((t) => ({ role: t.role, content: t.content })),
     { role: "user", content: text },
   ];
@@ -479,30 +479,25 @@ export async function POST(request: Request) {
           for (let i = 0; i < MAX_TOOL_ITERATIONS; i++) {
             const callStart = performance.now();
             let sentenceBuffer = "";
-            let iterationContent: Anthropic.ContentBlock[] = [];
-            let iterationStopReason = "end_turn";
+            let iterationContent: Response["output"] = [];
+            let iterationFinishReason: "tool_calls" | "stop" = "stop";
             let iterationError: string | null = null;
 
-            for await (const event of streamClaudeWithTools({
+            for await (const event of streamOpenAIWithTools({
               systemPrompt,
               messages,
               tools: TOOL_DEFINITIONS,
+              model: MODEL_AGENTIC,
               maxTokens: 2000, // was 300, was 150, was 400 originally — 150 turned out
                                // tight enough to truncate mid-tool-call on some turns
-                               // (stop_reason "max_tokens" instead of "tool_use", no
-                               // completed text block, finalText came back null). 300
-                               // fixed that for every tool's short JSON args, but
-                               // push_to_screen's `content` can run to a whole
-                               // markdown table or several paragraphs — the Anthropic
-                               // SDK falls back to input: {} when a tool call's JSON
-                               // gets cut off mid-stream (see
-                               // node_modules/@anthropic-ai/sdk/lib/middleware.js's
-                               // safeJSON(partial_json) ?? block.input), which made
-                               // handlePushToScreen see no `content` at all and skip
-                               // sending a "display" event — same class of bug as the
-                               // 150->300 fix, just for a tool with a much bigger
-                               // payload. 2000 gives real headroom for that while
-                               // still being a hard backstop, not unbounded.
+                               // (finishReason "stop" from hitting max_output_tokens
+                               // instead of "tool_calls", no completed text item,
+                               // finalText came back null). 300 fixed that for every
+                               // tool's short JSON args, but push_to_screen's
+                               // `content` can run to a whole markdown table or
+                               // several paragraphs. 2000 gives real headroom for
+                               // that while still being a hard backstop, not
+                               // unbounded.
             })) {
               if (event.type === "text_delta") {
                 sentenceBuffer += event.text;
@@ -513,13 +508,13 @@ export async function POST(request: Request) {
                 }
                 sentenceBuffer = remainder;
               } else if (event.type === "done") {
-                iterationContent = event.content;
-                iterationStopReason = event.stopReason;
+                iterationContent = event.output;
+                iterationFinishReason = event.finishReason;
               } else if (event.type === "error") {
                 iterationError = event.error;
               }
-              // tool_use events carry the same blocks already present in
-              // event.content once "done" fires — no separate handling
+              // tool_use events carry the same items already present in
+              // event.output once "done" fires — no separate handling
               // needed here, matches the shape the old askClaudeWithTools
               // caller already consumed via result.content.
             }
@@ -531,7 +526,7 @@ export async function POST(request: Request) {
             }
 
             console.log(
-              `[voice-respond] Claude call ${i + 1}: stopReason=${iterationStopReason} in ${Math.round(performance.now() - callStart)}ms`
+              `[voice-respond] Claude call ${i + 1}: finishReason=${iterationFinishReason} in ${Math.round(performance.now() - callStart)}ms`
             );
 
             // Flush whatever's left in the buffer once this iteration's
@@ -548,23 +543,40 @@ export async function POST(request: Request) {
               await drainReady();
             }
 
-            messages.push({ role: "assistant", content: iterationContent });
+            // iterationContent's items (ResponseOutputMessage /
+            // ResponseFunctionToolCall) structurally satisfy ResponseInputItem's
+            // corresponding members, but TS's ResponseOutputItem union is
+            // broader (reasoning items, MCP calls, etc. this app never
+            // produces) than ResponseInputItem's — cast rather than narrow,
+            // same spread-not-wrapped shape the Responses API expects for
+            // feeding a turn's own output back in as the next input.
+            messages.push(...(iterationContent as unknown as ResponseInputItem[]));
 
-            if (iterationStopReason !== "tool_use") {
-              const textBlock = iterationContent.find((b) => b.type === "text");
-              finalText = textBlock && textBlock.type === "text" ? textBlock.text : null;
+            if (iterationFinishReason !== "tool_calls") {
+              const messageItem = iterationContent.find((item) => item.type === "message");
+              const textBlock =
+                messageItem && messageItem.type === "message"
+                  ? messageItem.content.find((c) => c.type === "output_text")
+                  : null;
+              finalText = textBlock && textBlock.type === "output_text" ? textBlock.text : null;
               break;
             }
 
             const toolUseBlocks = iterationContent.filter(
-              (b): b is Anthropic.ToolUseBlock => b.type === "tool_use"
+              (item): item is ResponseFunctionToolCall => item.type === "function_call"
             );
 
             const toolStart = performance.now();
-            const toolResults: Anthropic.ToolResultBlockParam[] = await Promise.all(
+            const toolResults: ResponseInputItem.FunctionCallOutput[] = await Promise.all(
               toolUseBlocks.map(async (block) => {
                 toolsUsed.push(block.name);
-                const result = await executeTool(block.name, block.input, sessionId);
+                let toolInput: unknown = {};
+                try {
+                  toolInput = JSON.parse(block.arguments);
+                } catch (err) {
+                  console.error(`[voice-respond] Failed to parse arguments for ${block.name}:`, err);
+                }
+                const result = await executeTool(block.name, toolInput, sessionId);
                 if (result.visual) visual = result.visual;
                 // push_to_screen's whole point is showing up before North
                 // finishes speaking — sent as its own SSE event the instant
@@ -613,14 +625,14 @@ export async function POST(request: Request) {
                     () => {}
                   );
                 }
-                return { type: "tool_result" as const, tool_use_id: block.id, content: result.text };
+                return { type: "function_call_output" as const, call_id: block.call_id, output: result.text };
               })
             );
             console.log(
               `[voice-respond] Tool execution (${toolUseBlocks.map((b) => b.name).join(", ")}) in ${Math.round(performance.now() - toolStart)}ms`
             );
 
-            messages.push({ role: "user", content: toolResults });
+            messages.push(...toolResults);
           }
 
           const responseText = finalText ?? "I didn't catch that clearly — mind trying again?";

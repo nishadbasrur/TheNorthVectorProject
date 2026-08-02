@@ -8,7 +8,7 @@ import { getFirestore, FieldValue } from "firebase-admin/firestore";
 import { ensureFirebaseApp } from "./ensure-firebase-app";
 import { getRecentInboxMessages, type InboxMessage } from "./gmail-client";
 import { listWatchesAsAdmin, type WatchRecord } from "./watch-store-admin";
-import { askClaude } from "./anthropic-client";
+import { askOpenAI, MODEL_CLASSIFIER } from "./openai-client";
 
 // Keyed per (watch, message) pair in its own `watch_surfaced` collection
 // — deliberately NOT lib/gmail-urgency.ts's `gmail_surfaced` (which marks
@@ -74,12 +74,13 @@ export async function evaluateWatches(): Promise<WatchMatch[]> {
         continue; // already evaluated this exact (watch, message) pair recently
       }
 
-      const result = await askClaude({
+      const result = await askOpenAI({
         systemPrompt: WATCH_MATCH_SYSTEM_PROMPT,
         userMessage:
           `Watch criteria: ${watch.criteria}\n\n` +
           `Email —\nSubject: ${message.subject}\nFrom: ${message.from}\n\nBody:\n${message.bodyText.slice(0, 4000)}`,
         maxTokens: 60,
+        model: MODEL_CLASSIFIER,
       });
 
       const verdict = result.ok ? parseWatchVerdict(result.text) : { matched: false, reason: "Evaluation failed." };

@@ -1,5 +1,5 @@
 import { logger } from "firebase-functions";
-import Anthropic from "@anthropic-ai/sdk";
+import { submitBatch, pollBatch, MODEL_AGENTIC, MODEL_CLASSIFIER, type BatchRequestSpec } from "../../lib/openai-client";
 import { assembleWeeklyRetrospectiveContext } from "../../lib/weekly-retrospective-context";
 import {
   runWeeklyRetrospective,
@@ -85,11 +85,6 @@ export async function runWeeklyRetrospectiveScan(): Promise<WeeklyRetrospectiveS
 
 const RETROSPECTIVE_CUSTOM_ID = "weekly-retrospective";
 const MEMORY_PROMOTION_CUSTOM_ID = "memory-promotion";
-// Pattern-matching across a batch of General/ entries, not open-ended
-// reasoning — Haiku, not Sonnet (unlike the retrospective request below,
-// which does genuine cross-session reasoning and stays on Sonnet). See
-// functions/src/index.ts's weeklyRetrospectiveScan.
-const MEMORY_PROMOTION_BATCH_MODEL = "claude-haiku-4-5-20251001";
 // Matches lib/memory-promotion-engine.ts's proposeMemoryPromotions own
 // "last 7 days" window exactly.
 const MEMORY_PROMOTION_WINDOW_MS = 7 * 24 * 60 * 60 * 1000;
@@ -108,46 +103,46 @@ export async function submitWeeklyRetrospectiveScan(apiKey: string): Promise<str
   const since = new Date(Date.now() - MEMORY_PROMOTION_WINDOW_MS);
   const entries = await loadGeneralMemoriesSince(since);
 
-  const client = new Anthropic({ apiKey });
-
-  const requests = [
+  const requests: BatchRequestSpec[] = [
     {
-      custom_id: RETROSPECTIVE_CUSTOM_ID,
-      params: {
-        model: "claude-sonnet-5", // genuine cross-session reasoning — see
-                                    // this file's own module comment above
-        max_tokens: 800,
-        system: RETROSPECTIVE_SYSTEM_PROMPT,
-        messages: [{ role: "user" as const, content: serializeContextForPrompt(context) }],
-      },
+      customId: RETROSPECTIVE_CUSTOM_ID,
+      systemPrompt: RETROSPECTIVE_SYSTEM_PROMPT,
+      userMessage: serializeContextForPrompt(context),
+      maxTokens: 800,
+      model: MODEL_AGENTIC, // genuine cross-session reasoning — see this
+                             // file's own module comment above
     },
     ...(entries.length > 0
       ? [
           {
-            custom_id: MEMORY_PROMOTION_CUSTOM_ID,
-            params: {
-              model: MEMORY_PROMOTION_BATCH_MODEL,
-              max_tokens: 1200,
-              system: PROMOTION_SYSTEM_PROMPT,
-              messages: [{ role: "user" as const, content: serializeEntriesForPrompt(entries) }],
-            },
+            customId: MEMORY_PROMOTION_CUSTOM_ID,
+            systemPrompt: PROMOTION_SYSTEM_PROMPT,
+            userMessage: serializeEntriesForPrompt(entries),
+            maxTokens: 1200,
+            model: MODEL_CLASSIFIER, // pattern-matching across a batch of
+                                      // General/ entries, not open-ended
+                                      // reasoning
           },
         ]
       : []),
   ];
 
-  const batch = await client.messages.batches.create({ requests });
+  const result = await submitBatch(requests, apiKey);
+
+  if (!result.ok) {
+    throw new Error(`Failed to submit weekly retrospective batch: ${result.error}`);
+  }
 
   await recordBatchSubmission({
-    batchId: batch.id,
+    batchId: result.batchId,
     weekId: context.weekId,
     includesMemoryPromotion: entries.length > 0,
   });
 
   logger.log(
-    `[weeklyRetrospectiveScan] Submitted batch ${batch.id} (weekId=${context.weekId}, memoryPromotion=${entries.length > 0}, entriesReviewed=${entries.length}).`
+    `[weeklyRetrospectiveScan] Submitted batch ${result.batchId} (weekId=${context.weekId}, memoryPromotion=${entries.length > 0}, entriesReviewed=${entries.length}).`
   );
-  return batch.id;
+  return result.batchId;
 }
 
 // Checks the currently outstanding batch, if any — a single cheap
@@ -157,10 +152,14 @@ export async function pollWeeklyRetrospectiveScan(apiKey: string): Promise<void>
   const pending = await getPendingBatch();
   if (!pending) return;
 
-  const client = new Anthropic({ apiKey });
-  const batch = await client.messages.batches.retrieve(pending.batchId);
+  const status = await pollBatch(pending.batchId, apiKey);
 
-  if (batch.processing_status !== "ended") {
+  if (!status.ok) {
+    logger.error(`[weeklyRetrospectiveScan] Batch poll failed: ${status.error}`);
+    return;
+  }
+
+  if (status.status === "pending") {
     logger.log(`[weeklyRetrospectiveScan] Batch ${pending.batchId} still processing.`);
     return;
   }
@@ -168,19 +167,22 @@ export async function pollWeeklyRetrospectiveScan(apiKey: string): Promise<void>
   let retrospectiveText = "";
   let promotionText = "";
 
-  for await (const item of await client.messages.batches.results(pending.batchId)) {
-    if (item.result.type !== "succeeded") {
-      logger.error(`[weeklyRetrospectiveScan] Batch request "${item.custom_id}" did not succeed: ${item.result.type}`);
-      continue;
+  if (status.status === "completed") {
+    const retrospectiveResult = status.results.get(RETROSPECTIVE_CUSTOM_ID);
+    if (retrospectiveResult?.ok) {
+      retrospectiveText = retrospectiveResult.text;
+    } else if (retrospectiveResult) {
+      logger.error(`[weeklyRetrospectiveScan] Batch request "${RETROSPECTIVE_CUSTOM_ID}" did not succeed: ${retrospectiveResult.error}`);
     }
 
-    const textBlocks = item.result.message.content.filter(
-      (block): block is Anthropic.TextBlock => block.type === "text"
-    );
-    const text = textBlocks.map((block) => block.text).join("\n\n");
-
-    if (item.custom_id === RETROSPECTIVE_CUSTOM_ID) retrospectiveText = text;
-    else if (item.custom_id === MEMORY_PROMOTION_CUSTOM_ID) promotionText = text;
+    const promotionResult = status.results.get(MEMORY_PROMOTION_CUSTOM_ID);
+    if (promotionResult?.ok) {
+      promotionText = promotionResult.text;
+    } else if (promotionResult) {
+      logger.error(`[weeklyRetrospectiveScan] Batch request "${MEMORY_PROMOTION_CUSTOM_ID}" did not succeed: ${promotionResult.error}`);
+    }
+  } else {
+    logger.error(`[weeklyRetrospectiveScan] Batch ${pending.batchId} failed: ${status.error}`);
   }
 
   await markBatchProcessed();

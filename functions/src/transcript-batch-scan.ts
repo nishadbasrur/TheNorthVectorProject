@@ -1,5 +1,5 @@
 import { logger } from "firebase-functions";
-import Anthropic from "@anthropic-ai/sdk";
+import { submitBatch, pollBatch, MODEL_CLASSIFIER, type BatchRequestSpec } from "../../lib/openai-client";
 import { listTranscriptsSince } from "../../lib/transcript-store";
 import { createMemory, extractTags } from "../../lib/obsidian-memory-store";
 import { embedText, storeEmbedding } from "../../lib/memory-embeddings";
@@ -25,11 +25,6 @@ import { TRANSCRIPT_EXTRACTION_SYSTEM_PROMPT, parseTranscriptExtraction } from "
 // back to its source transcript. See
 // North_Vector_Three_Tier_Memory_Pipeline_Plan.md.
 //
-// Cheap, mechanical extraction task, not reasoning — Haiku, not Sonnet
-// (unlike opportunity-scan's research pass, which genuinely needs a
-// stronger model for live web search + judgment calls on what's real).
-const EXTRACTION_MODEL = "claude-haiku-4-5-20251001";
-
 // Submits a new batch request — one message per transcript captured since
 // the last run. Deliberately does not itself check for an already-
 // outstanding batch — functions/src/index.ts's transcriptBatchSubmit
@@ -44,29 +39,30 @@ export async function submitTranscriptBatch(apiKey: string): Promise<void> {
     return;
   }
 
-  const client = new Anthropic({ apiKey });
-
   // custom_id must be unique per request within a batch — each transcript's
   // own Drive file ID already is, so no separate ID scheme needed.
   const requestMap: TranscriptBatchRequestMap = {};
-  const requests = transcripts.map((transcript) => {
+  const requests: BatchRequestSpec[] = transcripts.map((transcript) => {
     requestMap[transcript.fileId] = transcript.fileName;
     return {
-      custom_id: transcript.fileId,
-      params: {
-        model: EXTRACTION_MODEL,
-        max_tokens: 150,
-        system: TRANSCRIPT_EXTRACTION_SYSTEM_PROMPT,
-        messages: [{ role: "user" as const, content: transcript.content }],
-      },
+      customId: transcript.fileId,
+      systemPrompt: TRANSCRIPT_EXTRACTION_SYSTEM_PROMPT,
+      userMessage: transcript.content,
+      maxTokens: 150,
+      model: MODEL_CLASSIFIER, // cheap, mechanical extraction task, not
+                                // reasoning
     };
   });
 
   const watermark = new Date();
-  const batch = await client.messages.batches.create({ requests });
+  const result = await submitBatch(requests, apiKey);
 
-  await recordBatchSubmission(batch.id, requestMap, watermark);
-  logger.log(`[transcript-batch-scan] Submitted batch ${batch.id} with ${requests.length} transcript(s).`);
+  if (!result.ok) {
+    throw new Error(`Failed to submit transcript batch: ${result.error}`);
+  }
+
+  await recordBatchSubmission(result.batchId, requestMap, watermark);
+  logger.log(`[transcript-batch-scan] Submitted batch ${result.batchId} with ${requests.length} transcript(s).`);
 }
 
 // Checks the currently outstanding batch, if any. Same cheap-when-idle
@@ -76,10 +72,14 @@ export async function pollTranscriptBatch(apiKey: string): Promise<void> {
   const pending = await getPendingBatch();
   if (!pending) return;
 
-  const client = new Anthropic({ apiKey });
-  const batch = await client.messages.batches.retrieve(pending.batchId);
+  const status = await pollBatch(pending.batchId, apiKey);
 
-  if (batch.processing_status !== "ended") {
+  if (!status.ok) {
+    logger.error(`[transcript-batch-scan] Batch poll failed: ${status.error}`);
+    return;
+  }
+
+  if (status.status === "pending") {
     logger.log(`[transcript-batch-scan] Batch ${pending.batchId} still processing.`);
     return;
   }
@@ -88,30 +88,30 @@ export async function pollTranscriptBatch(apiKey: string): Promise<void> {
   let skipped = 0;
   let failed = 0;
 
-  for await (const item of await client.messages.batches.results(pending.batchId)) {
-    const transcriptFileName = pending.requestMap[item.custom_id];
-    if (!transcriptFileName) {
+  if (status.status !== "completed") {
+    logger.error(`[transcript-batch-scan] Batch ${pending.batchId} failed: ${status.error}`);
+    await markBatchProcessed();
+    return;
+  }
+
+  for (const [customId, transcriptFileName] of Object.entries(pending.requestMap)) {
+    const result = status.results.get(customId);
+    if (!result) {
       // Shouldn't happen (every custom_id we submitted is in our own map),
-      // but a batch result for an ID we don't recognize must not crash the
-      // whole poll pass over every other result.
-      logger.error(`[transcript-batch-scan] Unknown custom_id in batch results: ${item.custom_id}`);
+      // but a missing batch result for an ID we submitted must not crash
+      // the whole poll pass over every other result.
+      logger.error(`[transcript-batch-scan] No batch result for custom_id: ${customId}`);
       failed++;
       continue;
     }
 
-    if (item.result.type !== "succeeded") {
-      logger.error(
-        `[transcript-batch-scan] Request for ${transcriptFileName} did not succeed: ${item.result.type}`
-      );
+    if (!result.ok) {
+      logger.error(`[transcript-batch-scan] Request for ${transcriptFileName} did not succeed: ${result.error}`);
       failed++;
       continue;
     }
 
-    const textBlocks = item.result.message.content.filter(
-      (block): block is Anthropic.TextBlock => block.type === "text"
-    );
-    const responseText = textBlocks.map((block) => block.text).join("\n\n");
-    const extraction = parseTranscriptExtraction(responseText);
+    const extraction = parseTranscriptExtraction(result.text);
 
     if (extraction === null) {
       skipped++;
@@ -128,9 +128,9 @@ export async function pollTranscriptBatch(apiKey: string): Promise<void> {
         type: "transcript-extract",
         tier: "general",
         tags,
-        // Classified in the same Haiku call above (see
+        // Classified in the same classifier-tier call above (see
         // TRANSCRIPT_EXTRACTION_SYSTEM_PROMPT) rather than costing a
-        // second Claude call inside createMemory itself.
+        // second call inside createMemory itself.
         category,
         extraFrontmatter: {
           source: "transcript-batch",
