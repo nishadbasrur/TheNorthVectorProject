@@ -28,7 +28,11 @@ export async function detectEngagement(connection: SynthesisConnection, nextUser
     const result = await askOpenAI({
       systemPrompt: buildPrompt(connection),
       userMessage: nextUserTurnText,
-      maxTokens: 10,
+      maxTokens: 20, // OpenAI's Responses API hard-rejects anything below
+                     // 16 for max_output_tokens (confirmed live) — 20
+                     // leaves a little margin above that floor for a
+                     // single-word ENGAGED/IGNORED answer without
+                     // meaningfully changing cost.
       model: MODEL_CLASSIFIER,
     });
 
