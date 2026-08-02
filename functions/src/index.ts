@@ -504,7 +504,8 @@ export const onCapabilityGap = onDocumentCreated(
       event.params.gapId,
       kind,
       typeof data.request === "string" ? data.request : "",
-      typeof data.capability === "string" ? data.capability : ""
+      typeof data.capability === "string" ? data.capability : "",
+      typeof data.proposedApproach === "string" ? data.proposedApproach : undefined
     );
 
     if (!ok) {

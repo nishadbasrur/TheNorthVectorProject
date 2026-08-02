@@ -13,9 +13,21 @@ import type {
   ResponseInputItem,
 } from "openai/resources/responses/responses";
 
-const client = new OpenAI({
-  apiKey: process.env.OPENAI_API_KEY,
-});
+// Lazy singleton — constructing OpenAI({apiKey}) eagerly at module load
+// broke the CI build: Next.js's build step statically loads every route to
+// collect page data, which pulled in this module with no real
+// OPENAI_API_KEY set (CI deliberately runs without one, same as its
+// placeholder Firebase values) and the SDK throws "Missing credentials"
+// immediately on construction. Deferring construction to first actual use
+// means a route that never calls into this file (most of them, at build
+// time) never touches the OpenAI SDK at all.
+let _client: OpenAI | null = null;
+function getClient(): OpenAI {
+  if (!_client) {
+    _client = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
+  }
+  return _client;
+}
 
 // No hidden default model — every caller passes MODEL_AGENTIC or
 // MODEL_CLASSIFIER explicitly, so rebalancing the mini/nano split is a
@@ -68,7 +80,7 @@ export async function askOpenAI(params: {
 
   try {
     callsToday += 1;
-    const response = await client.responses.create({
+    const response = await getClient().responses.create({
       model: params.model,
       instructions: params.systemPrompt,
       input: params.userMessage,
@@ -111,7 +123,7 @@ export async function askOpenAIWithTools(params: {
 
   try {
     callsToday += 1;
-    const response = await client.responses.create({
+    const response = await getClient().responses.create({
       model: params.model,
       instructions: params.systemPrompt,
       input: params.messages,
@@ -162,7 +174,7 @@ export async function* streamOpenAIWithTools(params: {
   callsToday += 1;
 
   try {
-    const stream = client.responses.stream({
+    const stream = getClient().responses.stream({
       model: params.model,
       instructions: params.systemPrompt,
       input: params.messages,
@@ -225,7 +237,7 @@ export async function askOpenAIWithWebSearch(params: {
 
   try {
     callsToday += 1;
-    const response = await client.responses.create({
+    const response = await getClient().responses.create({
       model: params.model,
       instructions: params.systemPrompt,
       input: params.userMessage,
@@ -275,7 +287,7 @@ export async function submitBatch(requests: BatchRequestSpec[], apiKeyOverride?:
     return { ok: false, error: "OPENAI_API_KEY not configured" };
   }
 
-  const batchClient = apiKeyOverride ? new OpenAI({ apiKey: apiKeyOverride }) : client;
+  const batchClient = apiKeyOverride ? new OpenAI({ apiKey: apiKeyOverride }) : getClient();
 
   try {
     const lines = requests.map((req) =>
@@ -318,7 +330,7 @@ export async function pollBatch(batchId: string, apiKeyOverride?: string): Promi
     return { ok: false, error: "OPENAI_API_KEY not configured" };
   }
 
-  const batchClient = apiKeyOverride ? new OpenAI({ apiKey: apiKeyOverride }) : client;
+  const batchClient = apiKeyOverride ? new OpenAI({ apiKey: apiKeyOverride }) : getClient();
 
   try {
     const batch = await batchClient.batches.retrieve(batchId);

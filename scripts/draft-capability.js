@@ -21,6 +21,7 @@ const TOOL_DISPATCHER_PATH = path.join(REPO_ROOT, "lib/tool-dispatcher.ts");
 const GAP_ID = process.env.GAP_ID || "";
 const CAPABILITY_REQUEST = process.env.CAPABILITY_REQUEST || "";
 const CAPABILITY_DESCRIPTION = process.env.CAPABILITY_DESCRIPTION || "";
+const CAPABILITY_PROPOSED_APPROACH = process.env.CAPABILITY_PROPOSED_APPROACH || "";
 const ANTHROPIC_API_KEY = process.env.ANTHROPIC_API_KEY;
 
 function setOutput(name, value) {
@@ -62,6 +63,14 @@ async function main() {
     `Request: "${CAPABILITY_REQUEST}"`,
     `Missing capability: "${CAPABILITY_DESCRIPTION}"`,
     "",
+    ...(CAPABILITY_PROPOSED_APPROACH
+      ? [
+          "North's own proposed approach at the time it flagged this gap (a head start, not a spec —",
+          "verify it against the codebase and STRICT CONSTRAINTS below rather than following it blindly):",
+          `"${CAPABILITY_PROPOSED_APPROACH}"`,
+          "",
+        ]
+      : []),
     "Here is the FULL current contents of lib/tool-dispatcher.ts for context and convention-matching:",
     "```ts",
     existingSource,

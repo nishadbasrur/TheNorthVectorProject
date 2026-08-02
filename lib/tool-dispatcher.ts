@@ -662,6 +662,14 @@ export const TOOL_DEFINITIONS: ToolDefinition[] = [
           type: "string",
           description: "Short description of the missing capability, e.g. \"highlight a building's interior layout on the map\".",
         },
+        proposedApproach: {
+          type: "string",
+          description:
+            "Your own best guess at how this gap could be closed — which integration, API, or " +
+            "credential it would likely need and roughly how it'd work. Feeds the automatic draft " +
+            "pipeline as a head start, not a guarantee — give your honest best guess even if you're " +
+            "not fully sure, rather than leaving this out.",
+        },
       },
       required: ["request", "capability"],
     },
@@ -1632,9 +1640,13 @@ async function handlePushToScreen(input: {
   }
 }
 
-async function handleNoteCapabilityGap(input: { request: string; capability: string }): Promise<string> {
+async function handleNoteCapabilityGap(input: {
+  request: string;
+  capability: string;
+  proposedApproach?: string;
+}): Promise<string> {
   try {
-    await logCapabilityGap(input.request, input.capability);
+    await logCapabilityGap(input.request, input.capability, input.proposedApproach);
     return "Flagged for Nishad to review and build later.";
   } catch (error) {
     reportToolError("note_capability_gap", error, input);
