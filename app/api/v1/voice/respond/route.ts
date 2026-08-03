@@ -1,4 +1,5 @@
 import { NextResponse, after } from "next/server";
+import { createHash } from "node:crypto";
 import type { Response, ResponseFunctionToolCall, ResponseInputItem } from "openai/resources/responses/responses";
 import { requireOwner } from "@/lib/require-owner";
 import { streamOpenAIWithTools, MODEL_AGENTIC } from "@/lib/openai-client";
@@ -147,12 +148,20 @@ function generateCapabilitySummary(): string {
   return `Your actual tools, generated directly from what's registered — never hand-maintained, so this can't go stale: ${sentences.join(" ")}`;
 }
 
-function buildSystemPrompt(
-  preferences: Awaited<ReturnType<typeof getPreferences>>,
-  rushSignal: "rushed" | "normal"
-): string {
-  return (
-    currentTimeLine() + "\n\n" +
+// Computed once at module load, not per-request — the whole point of
+// prompt caching (see lib/openai-client.ts's promptCacheRetention option)
+// is that the model provider reuses its own processing of an identical
+// prefix instead of redoing it from scratch on every call in a session.
+// That only works if this block is byte-for-byte identical call to call,
+// which is trivially guaranteed by it being one fixed string rather than
+// reassembled each time — generateCapabilitySummary() only ever depends on
+// TOOL_DEFINITIONS (static per deployment), never on anything that
+// actually varies per request. Nothing in this block may reference
+// per-request state (current time, standing preferences, rush signal,
+// session summary, an opener) — see buildSystemPrompt() below, which
+// appends all of that AFTER this block rather than weaving it in, so the
+// cached prefix never shifts.
+const STATIC_SYSTEM_PROMPT =
     "You are North, Nishad's personal chief-of-staff. You address him as \"sir\" — dry, direct, " +
     "warm underneath the formality. You state a real assessment or push back once, plainly, " +
     "when something's worth pushing back on — then comply without relitigating it if he holds " +
@@ -299,8 +308,28 @@ function buildSystemPrompt(
 
     "Nishad: Any bugs in the pipeline right now?\n" +
     "North: Two, sir — Gmail search and checking are both getting fixes drafted as we speak. " +
-    "I'll flag you the moment either's ready to review.\n\n" +
+    "I'll flag you the moment either's ready to review.";
 
+// Short fingerprint of STATIC_SYSTEM_PROMPT, logged per call below —
+// verifies the "byte-identical prefix" claim the whole caching strategy
+// rests on is actually true in practice, not just true by inspection.
+// Computed once here, not per-request, for the same reason
+// STATIC_SYSTEM_PROMPT itself is a constant rather than a function result.
+const STATIC_SYSTEM_PROMPT_HASH = createHash("sha256").update(STATIC_SYSTEM_PROMPT).digest("hex").slice(0, 12);
+
+// Appends everything that legitimately changes call to call — current
+// time, standing preferences, and a rush-mode nudge — AFTER
+// STATIC_SYSTEM_PROMPT above, never woven into it, so the cached prefix
+// stays byte-identical across every turn in a session. The session summary
+// and any opener get appended by POST itself on top of this, for the same
+// reason — see the prompt-caching comment on STATIC_SYSTEM_PROMPT.
+function buildSystemPrompt(
+  preferences: Awaited<ReturnType<typeof getPreferences>>,
+  rushSignal: "rushed" | "normal"
+): string {
+  return (
+    STATIC_SYSTEM_PROMPT +
+    "\n\n" + currentTimeLine() +
     formatPreferencesForPrompt(preferences) +
     rushLine(rushSignal)
   );
@@ -568,12 +597,18 @@ export async function POST(request: Request) {
             let iterationContent: Response["output"] = [];
             let iterationFinishReason: "tool_calls" | "stop" = "stop";
             let iterationError: string | null = null;
+            let iterationUsage: Response["usage"] | undefined;
 
             for await (const event of streamOpenAIWithTools({
               systemPrompt,
               messages,
               tools: TOOL_DEFINITIONS,
               model: MODEL_AGENTIC,
+              promptCacheRetention: "24h", // see lib/openai-client.ts's own
+                                           // comment on this option — the
+                                           // system prompt's static prefix
+                                           // (STATIC_SYSTEM_PROMPT above) is
+                                           // what actually gets cached
               maxTokens: 2000, // was 300, was 150, was 400 originally — 150 turned out
                                // tight enough to truncate mid-tool-call on some turns
                                // (finishReason "stop" from hitting max_output_tokens
@@ -596,6 +631,7 @@ export async function POST(request: Request) {
               } else if (event.type === "done") {
                 iterationContent = event.output;
                 iterationFinishReason = event.finishReason;
+                iterationUsage = event.usage;
               } else if (event.type === "error") {
                 iterationError = event.error;
               }
@@ -613,6 +649,20 @@ export async function POST(request: Request) {
 
             console.log(
               `[voice-respond] Claude call ${i + 1}: finishReason=${iterationFinishReason} in ${Math.round(performance.now() - callStart)}ms`
+            );
+            // Prompt-cache verification — staticPromptHash should be
+            // identical across every call in every session (confirms the
+            // "byte-identical prefix" claim STATIC_SYSTEM_PROMPT depends
+            // on); cachedTokens > 0 confirms this specific call actually
+            // hit the cache rather than reprocessing the prefix from
+            // scratch. Expect cachedTokens=0/cacheWriteTokens>0 on a
+            // session's first call (nothing cached yet to hit) and
+            // cachedTokens>0 from the second call onward.
+            console.log(
+              `[voice-respond] Prompt cache: staticPromptHash=${STATIC_SYSTEM_PROMPT_HASH} ` +
+                `cachedTokens=${iterationUsage?.input_tokens_details?.cached_tokens ?? "n/a"} ` +
+                `cacheWriteTokens=${iterationUsage?.input_tokens_details?.cache_write_tokens ?? "n/a"} ` +
+                `inputTokens=${iterationUsage?.input_tokens ?? "n/a"}`
             );
 
             // Flush whatever's left in the buffer once this iteration's

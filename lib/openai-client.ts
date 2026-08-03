@@ -63,6 +63,31 @@ function toFunctionTools(tools: ToolDefinition[]): FunctionTool[] {
   }));
 }
 
+// The SDK decorates response output items with convenience fields for its
+// own .parse()-based structured-output helpers — `parsed_arguments` on
+// function_call items, `parsed` on message content blocks — that this app
+// never uses. The Responses API itself REJECTS these if echoed straight
+// back as input on a later turn ("Unknown parameter: input[N].parsed_arguments",
+// confirmed live): every multi-turn conversation where a tool call
+// happened would break on the very next turn without this, since callers
+// (e.g. app/api/v1/voice/respond/route.ts's messages.push(...iterationContent))
+// feed a turn's own output back in as the next turn's input verbatim.
+// Strips both fields so `output` is safe to read now AND reuse later.
+function sanitizeOutputForReuse(items: readonly unknown[]): Response["output"] {
+  return items.map((rawItem) => {
+    const item = { ...(rawItem as Record<string, unknown>) };
+    delete item.parsed_arguments;
+    if (Array.isArray(item.content)) {
+      item.content = (item.content as Record<string, unknown>[]).map((block) => {
+        const cleaned = { ...block };
+        delete cleaned.parsed;
+        return cleaned;
+      });
+    }
+    return item;
+  }) as unknown as Response["output"];
+}
+
 export async function askOpenAI(params: {
   systemPrompt: string;
   userMessage: string;
@@ -132,7 +157,11 @@ export async function askOpenAIWithTools(params: {
     });
 
     const hasToolCalls = response.output.some((item) => item.type === "function_call");
-    return { ok: true, finishReason: hasToolCalls ? "tool_calls" : "stop", output: response.output };
+    return {
+      ok: true,
+      finishReason: hasToolCalls ? "tool_calls" : "stop",
+      output: sanitizeOutputForReuse(response.output),
+    };
   } catch (err) {
     console.error("[openai-client] Tool-use API call failed:", err);
     return { ok: false, error: err instanceof Error ? err.message : "Unknown error" };
@@ -154,10 +183,28 @@ export async function* streamOpenAIWithTools(params: {
   tools: ToolDefinition[];
   maxTokens?: number;
   model: string;
+  // "24h" extends OpenAI's automatic prefix-caching window from its short
+  // default up to 24 hours — worth it for a caller like the voice
+  // tool-calling loop, which resends the same large persona+tool-schema
+  // system prompt on every turn of a session. Confirmed live against this
+  // account (2026-08) that 24h is already the default for orgs without
+  // Zero Data Retention enabled, so this mostly makes that explicit/
+  // guaranteed rather than actually changing behavior — still worth
+  // setting so a future account-level policy change or model-tier switch
+  // can't silently shorten it. No extra write cost on mini/nano (both
+  // pre-5.6) either way — see
+  // https://platform.openai.com/docs/guides/prompt-caching#prompt-cache-retention.
+  // Omit to leave the account default in effect.
+  promptCacheRetention?: "24h" | "in_memory";
 }): AsyncGenerator<
   | { type: "text_delta"; text: string }
   | { type: "tool_use"; block: ResponseFunctionToolCall }
-  | { type: "done"; finishReason: "tool_calls" | "stop"; output: Response["output"] }
+  | {
+      type: "done";
+      finishReason: "tool_calls" | "stop";
+      output: Response["output"];
+      usage?: Response["usage"];
+    }
   | { type: "error"; error: string }
 > {
   if (!process.env.OPENAI_API_KEY) {
@@ -180,6 +227,7 @@ export async function* streamOpenAIWithTools(params: {
       input: params.messages,
       max_output_tokens: params.maxTokens ?? 400,
       tools: toFunctionTools(params.tools),
+      prompt_cache_retention: params.promptCacheRetention,
     });
 
     for await (const event of stream) {
@@ -189,12 +237,11 @@ export async function* streamOpenAIWithTools(params: {
     }
 
     // stream.finalResponse() returns ParsedResponse<null> — its output items
-    // carry an extra `parsed_arguments` field (from the SDK's optional
-    // structured-output parsing, unused here) that isn't part of the plain
-    // Response["output"] shape this generator's callers expect. Cast rather
-    // than fight the SDK's generic — this app never uses structured parsing.
+    // are shaped slightly differently from the plain Response["output"]
+    // this generator's callers expect (see sanitizeOutputForReuse above,
+    // which also strips the SDK-only fields that break reuse as input).
     const final = await stream.finalResponse();
-    const output = final.output as unknown as Response["output"];
+    const output = sanitizeOutputForReuse(final.output);
     const toolUseBlocks = output.filter(
       (item): item is ResponseFunctionToolCall => item.type === "function_call"
     );
@@ -203,7 +250,7 @@ export async function* streamOpenAIWithTools(params: {
     }
 
     const finishReason = toolUseBlocks.length > 0 ? "tool_calls" : "stop";
-    yield { type: "done", finishReason, output };
+    yield { type: "done", finishReason, output, usage: final.usage };
   } catch (err) {
     console.error("[openai-client] Streaming tool-use API call failed:", err);
     yield { type: "error", error: err instanceof Error ? err.message : "Unknown error" };
