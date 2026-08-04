@@ -16,6 +16,7 @@ const navGroups = [
       { label: "North", href: "/sandbox", icon: "○" },
       { label: "Dashboard", href: "/dashboard", icon: "⊞" },
       { label: "Weekly Review", href: "/weekly-review", icon: "◈" },
+      { label: "Notifications", href: "/notifications", icon: "◎" },
     ],
   },
 ];
