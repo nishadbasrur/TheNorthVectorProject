@@ -463,10 +463,26 @@ export const TOOL_DEFINITIONS: ToolDefinition[] = [
       "includes anything worth seeing rather than just hearing — comparisons, structured data, " +
       "schematics, step-by-step breakdowns, reference material, visualizations, code, tables, or " +
       "anything the user might want to read or refer back to while listening. Call this alongside " +
-      "your voice response, not instead of it. Always pass descriptive text describing what to " +
-      "show — never a raw image URL or file path, even for the \"image\" type. For example, pass " +
-      "\"Caffeine molecule (C8H10N4O2) - molecular structure and properties\", not an image URL. " +
-      "The system finds and renders the appropriate visual from that description itself. Whenever " +
+      "your voice response, not instead of it. " +
+      "CRITICAL — for \"markdown\", \"json\", and \"html\" (the default and most common cases), " +
+      "`content` gets rendered to the screen verbatim, exactly as written — it must be the actual " +
+      "finished material: real table rows, real data points, real numbers, real text, actually " +
+      "sourced from something Nishad told you or a tool actually returned. It must NEVER be a " +
+      "description or summary of what the panel is supposed to contain (e.g. never write \"A table " +
+      "showing job applications\" — write the actual table, with actual rows) — AND it must never be " +
+      "content you invented or guessed to fill the panel, even if it reads as plausible, real-looking " +
+      "data (e.g. a generic 'starter checklist' for something Nishad has no tracked data for is the " +
+      "exact same failure as a one-line description — both are standing in for data you don't " +
+      "actually have, just in different disguises). If you don't have the real data yet, that's a " +
+      "signal to go get it (call the tool that would have it — list_tasks, search_email, etc. — " +
+      "first) or to say so honestly instead of calling this tool at all — never call it with " +
+      "placeholder, descriptive, or invented text standing in for data you don't actually have. " +
+      "Only the \"image\" type is genuinely different: for that one specific case, " +
+      "`content` IS meant to be a short descriptive lookup query (never a raw image URL or file " +
+      "path) — the system resolves that description to an actual image or rendered visual itself. " +
+      "For example, pass \"Caffeine molecule (C8H10N4O2) - molecular structure and properties\", not " +
+      "an image URL or a description of a panel. This image-type lookup behavior does not extend to " +
+      "markdown/json/html — don't reuse \"descriptive text\" phrasing for those. Whenever " +
       "what you're showing has a precise real-world name or identity — a specific molecule, a " +
       "specific card product, a specific building, a specific device — always also pass `subject` " +
       "with that exact name (e.g. \"caffeine\", \"Chase Freedom Rise Visa Signature\", \"Eiffel " +
@@ -497,9 +513,11 @@ export const TOOL_DEFINITIONS: ToolDefinition[] = [
         content: {
           type: "string",
           description:
-            "Descriptive text of what to display — never a raw image URL or file path. The system " +
-            "resolves the actual visual (including fetching a real image where appropriate) from " +
-            "this description.",
+            "For markdown/json/html (the default): the ACTUAL finished content, rendered verbatim — " +
+            "real rows, real values, real text. Never a description or summary of what should be " +
+            "shown (e.g. never \"A table of applications\" — the real table itself, or don't call " +
+            "this tool). For type \"image\" only: a short descriptive lookup query instead — never a " +
+            "raw image URL or file path — which the system resolves to an actual image itself.",
         },
         type: {
           type: "string",
@@ -1625,6 +1643,35 @@ async function handlePushToScreen(input: {
       console.log(
         `[push_to_screen] type "image" requested but content isn't a URL — forcing to markdown. Content: ${input.content.slice(0, 200)}`
       );
+    }
+
+    // Backstop for the "content describes the panel instead of being the
+    // panel" failure mode (see this tool's own schema description) — a
+    // prompt-only fix has a real failure rate, same lesson already learned
+    // from the raw-image-URL bug above, so this is a hard check, not just
+    // guidance. Matched against the START of the content: real data (a
+    // markdown table, a JSON object, an actual paragraph) doesn't
+    // typically open with "a dashboard showing..." the way a self-
+    // describing placeholder does. Only applies once content has resolved
+    // to markdown/json/html (never "image" — that type's content is a
+    // legitimate lookup query, not data, by design). Imperfect as a hard
+    // rule — a real answer could coincidentally start this way — so this
+    // declines with an honest, actionable message rather than silently
+    // dropping the call.
+    const looksLikeSelfDescription =
+      resolvedType !== "image" &&
+      /^\s*(this is |here('s| is) )?(a|an|the)\s+(dashboard|page|panel|table|chart|graph|visuali[sz]ation|view|screen|widget|tracker|summary)\s+(showing|displaying|for|that (shows|displays|tracks)|of|to (track|show|display))/i.test(
+        input.content
+      );
+    if (looksLikeSelfDescription) {
+      console.warn(
+        `[push_to_screen] Content looks like a description of the panel rather than real data — declining. Content: ${input.content.slice(0, 200)}`
+      );
+      return {
+        text:
+          "I don't actually have real data for that yet — I'll go look it up or tell Nishad honestly " +
+          "there's nothing tracked, rather than push an empty panel.",
+      };
     }
 
     const display: DisplayContent = {
