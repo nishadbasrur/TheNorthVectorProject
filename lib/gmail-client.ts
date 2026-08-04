@@ -40,6 +40,13 @@ export type InboxMessage = {
   from: string;
   date: string;
   bodyText: string;
+  // Whether this message carries a List-Unsubscribe header — a standard,
+  // strong signal of bulk/marketing mail (RFC 2369/8058), not present on
+  // genuine person-to-person or transactional-but-personal email. Used by
+  // lib/gmail-watch-evaluator.ts's pre-classifier bulk-mail filter; kept
+  // on the shared type (not computed ad hoc there) since it's cheap to
+  // extract once here, at the same point every other header is read.
+  hasListUnsubscribe: boolean;
 };
 
 function decodeBase64Url(data: string): string {
@@ -100,8 +107,9 @@ async function fetchMessagesByRefs(
         const from = getHeader(full.data.payload, "From") || "(unknown sender)";
         const date = getHeader(full.data.payload, "Date") || "";
         const bodyText = extractBodyText(full.data.payload) || full.data.snippet || "";
+        const hasListUnsubscribe = getHeader(full.data.payload, "List-Unsubscribe").length > 0;
 
-        return { id: ref.id, subject, from, date, bodyText };
+        return { id: ref.id, subject, from, date, bodyText, hasListUnsubscribe };
       })
   );
 }
