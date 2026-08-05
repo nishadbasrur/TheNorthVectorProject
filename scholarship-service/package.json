@@ -1,0 +1,25 @@
+{
+  "name": "scholarship-service",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "engines": {
+    "node": "22"
+  },
+  "description": "Standalone scholarship-automation service (headless Playwright), same shape as ../agent-runner-service rather than bolted onto the voice pipeline. Currently a scoped proof-of-concept: one-time login/session-persistence against a single real site (Scholarship America), before scaling to the full scholarship list and the missing-info/essay-drafting/notification loop described in North_Vector's scholarship-automation fix note.",
+  "scripts": {
+    "login": "tsx src/login-scholarshipamerica.ts",
+    "verify-session": "tsx src/verify-session.ts",
+    "fetch-scholarship": "tsx src/fetch-scholarship.ts",
+    "assess": "tsx --env-file=../.env.local src/assess-applicability.ts",
+    "typecheck": "tsc --noEmit -p tsconfig.json"
+  },
+  "dependencies": {
+    "playwright": "^1.62.1"
+  },
+  "devDependencies": {
+    "@types/node": "^22.0.0",
+    "tsx": "^4.19.0",
+    "typescript": "^5.6.0"
+  }
+}
