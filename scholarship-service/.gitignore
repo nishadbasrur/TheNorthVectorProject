@@ -1,0 +1,13 @@
+# Real logged-in session state (cookies/storage) — never the password
+# itself, but still equivalent to being logged in as Nishad on the real
+# site. Never committed. Production version of this service will move
+# these to Secret Manager/GCS with encryption at rest instead of a local
+# file — this is the scoped-test version only.
+.sessions/
+
+node_modules/
+*.log
+
+# Scraped scholarship data pulled during test runs — real applicant-
+# facing content from the live site, not something to keep in git history.
+.data/
