@@ -1,5 +1,5 @@
 import "server-only";
-import { askOpenAI, MODEL_CLASSIFIER } from "@/lib/openai-client";
+import { askClaude } from "@/lib/anthropic-client";
 import { setConnectionEngagement } from "@/lib/synthesis-store";
 import type { SynthesisConnection } from "@/lib/synthesis-engine";
 
@@ -25,15 +25,10 @@ function buildPrompt(connection: SynthesisConnection): string {
 // failure must never affect the actual voice response.
 export async function detectEngagement(connection: SynthesisConnection, nextUserTurnText: string): Promise<void> {
   try {
-    const result = await askOpenAI({
+    const result = await askClaude({
       systemPrompt: buildPrompt(connection),
       userMessage: nextUserTurnText,
-      maxTokens: 20, // OpenAI's Responses API hard-rejects anything below
-                     // 16 for max_output_tokens (confirmed live) — 20
-                     // leaves a little margin above that floor for a
-                     // single-word ENGAGED/IGNORED answer without
-                     // meaningfully changing cost.
-      model: MODEL_CLASSIFIER,
+      maxTokens: 10,
     });
 
     if (!result.ok) return;

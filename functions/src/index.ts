@@ -245,7 +245,7 @@ export const triggerCalendarWatchRenew = onRequest(
 // credentials (Calendar, Notion, Gmail) plus the Anthropic API for the
 // reasoning pass itself.
 const gmailRefreshToken = defineSecret("GMAIL_REFRESH_TOKEN");
-const openaiApiKey = defineSecret("OPENAI_API_KEY");
+const anthropicApiKey = defineSecret("ANTHROPIC_API_KEY");
 // Only transcriptBatchPoll below actually needs this (it's the one call
 // site under functions/ that generates NEW embeddings via
 // lib/memory-embeddings.ts — the Weekly Retrospective's promotion engine
@@ -259,7 +259,7 @@ const synthesisScanSecrets = [
   googleCalendarRefreshToken,
   notionApiToken,
   gmailRefreshToken,
-  openaiApiKey,
+  anthropicApiKey,
 ];
 
 // Manual-trigger endpoint — kept alongside the schedule below (same
@@ -318,7 +318,7 @@ export const synthesisScanSubmit = onSchedule(
     }
 
     try {
-      await submitSynthesisScan(openaiApiKey.value());
+      await submitSynthesisScan(anthropicApiKey.value());
     } catch (error) {
       logger.error("[synthesisScanSubmit] Failed to submit batch:", error);
     }
@@ -326,10 +326,10 @@ export const synthesisScanSubmit = onSchedule(
 );
 
 export const synthesisScanPoll = onSchedule(
-  { schedule: "every 30 minutes", secrets: [openaiApiKey] },
+  { schedule: "every 30 minutes", secrets: [anthropicApiKey] },
   async () => {
     try {
-      await pollSynthesisScan(openaiApiKey.value());
+      await pollSynthesisScan(anthropicApiKey.value());
     } catch (error) {
       logger.error("[synthesisScanPoll] Failed to poll batch:", error);
     }
@@ -344,7 +344,7 @@ const weeklyRetrospectiveSecrets = [
   googleCalendarClientId,
   googleCalendarClientSecret,
   googleCalendarRefreshToken,
-  openaiApiKey,
+  anthropicApiKey,
 ];
 
 // Manual-trigger endpoint, same triggerSynthesisScan/triggerUrgencyScan
@@ -384,7 +384,7 @@ export const weeklyRetrospectiveScanSubmit = onSchedule(
     }
 
     try {
-      await submitWeeklyRetrospectiveScan(openaiApiKey.value());
+      await submitWeeklyRetrospectiveScan(anthropicApiKey.value());
     } catch (error) {
       logger.error("[weeklyRetrospectiveScanSubmit] Failed to submit batch:", error);
     }
@@ -392,10 +392,10 @@ export const weeklyRetrospectiveScanSubmit = onSchedule(
 );
 
 export const weeklyRetrospectiveScanPoll = onSchedule(
-  { schedule: "every 30 minutes", secrets: [openaiApiKey] },
+  { schedule: "every 30 minutes", secrets: [anthropicApiKey] },
   async () => {
     try {
-      await pollWeeklyRetrospectiveScan(openaiApiKey.value());
+      await pollWeeklyRetrospectiveScan(anthropicApiKey.value());
     } catch (error) {
       logger.error("[weeklyRetrospectiveScanPoll] Failed to poll batch:", error);
     }
@@ -418,7 +418,7 @@ export const weeklyRetrospectiveScanPoll = onSchedule(
 const gmailWatchSecrets = [googleCalendarClientId, googleCalendarClientSecret, gmailRefreshToken];
 
 export const gmailWatch = onMessagePublished(
-  { topic: "gmail-push", secrets: [...gmailWatchSecrets, openaiApiKey] },
+  { topic: "gmail-push", secrets: [...gmailWatchSecrets, anthropicApiKey] },
   async (event) => {
     await handleGmailPush(event);
   }
@@ -504,8 +504,7 @@ export const onCapabilityGap = onDocumentCreated(
       event.params.gapId,
       kind,
       typeof data.request === "string" ? data.request : "",
-      typeof data.capability === "string" ? data.capability : "",
-      typeof data.proposedApproach === "string" ? data.proposedApproach : undefined
+      typeof data.capability === "string" ? data.capability : ""
     );
 
     if (!ok) {
@@ -676,7 +675,7 @@ export const notifyCapabilityDraftReady = onRequest(
 // boundaries — acceptable here, this only needs to be "roughly every two
 // days," not precise to the hour.
 export const opportunityScanSubmit = onSchedule(
-  { schedule: "0 9 */2 * *", timeZone: "America/New_York", secrets: [openaiApiKey] },
+  { schedule: "0 9 */2 * *", timeZone: "America/New_York", secrets: [anthropicApiKey] },
   async () => {
     const pending = await getPendingBatch();
     if (pending) {
@@ -685,7 +684,7 @@ export const opportunityScanSubmit = onSchedule(
     }
 
     try {
-      await submitOpportunityScan(openaiApiKey.value());
+      await submitOpportunityScan(anthropicApiKey.value());
     } catch (error) {
       logger.error("[opportunityScanSubmit] Failed to submit batch:", error);
     }
@@ -693,10 +692,10 @@ export const opportunityScanSubmit = onSchedule(
 );
 
 export const opportunityScanPoll = onSchedule(
-  { schedule: "every 30 minutes", secrets: [openaiApiKey] },
+  { schedule: "every 30 minutes", secrets: [anthropicApiKey] },
   async () => {
     try {
-      await pollOpportunityScan(openaiApiKey.value());
+      await pollOpportunityScan(anthropicApiKey.value());
     } catch (error) {
       logger.error("[opportunityScanPoll] Failed to poll batch:", error);
     }
@@ -730,7 +729,7 @@ export const transcriptBatchSubmit = onSchedule(
     }
 
     try {
-      await submitTranscriptBatch(openaiApiKey.value());
+      await submitTranscriptBatch(anthropicApiKey.value());
     } catch (error) {
       logger.error("[transcriptBatchSubmit] Failed to submit batch:", error);
     }
@@ -741,7 +740,7 @@ export const transcriptBatchPoll = onSchedule(
   { schedule: "every 30 minutes", secrets: transcriptBatchSecrets },
   async () => {
     try {
-      await pollTranscriptBatch(openaiApiKey.value());
+      await pollTranscriptBatch(anthropicApiKey.value());
     } catch (error) {
       logger.error("[transcriptBatchPoll] Failed to poll batch:", error);
     }

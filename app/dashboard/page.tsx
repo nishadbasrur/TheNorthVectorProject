@@ -1,9 +1,8 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import Link from "next/link";
 import { AppShell } from "@/components/layout/app-shell";
-import { getTasks, todayFocusDate, type TaskRecord } from "@/lib/task-store";
+import { getTasks, type TaskRecord } from "@/lib/task-store";
 import { getGoals, type GoalRecord } from "@/lib/goal-store";
 import { getProjects, type ProjectRecord } from "@/lib/project-store";
 import { getDecisions, type StoredDecision } from "@/lib/decision-memory";
@@ -97,15 +96,7 @@ export default function DashboardPage() {
   }, []);
 
   const openTasks = tasks.filter((t) => t.status !== "completed" && t.status !== "cancelled");
-  // Genuinely date-scoped, not "however many tasks happen to be open" —
-  // see lib/task-store.ts's own comment on focusDate for why this needs
-  // no rollover logic: a task simply stops matching "today" once the
-  // calendar moves on, at which point it shows up under its own day in
-  // the Previous Dates history view instead (app/tasks/history/page.tsx)
-  // rather than lingering here or silently vanishing. No cap-at-5 either
-  // — once this is actually date-scoped, showing everything genuinely on
-  // today is the correct behavior, not an arbitrary top-N.
-  const todayTasks = tasks.filter((t) => t.focusDate === todayFocusDate());
+  const todayTasks = openTasks.slice(0, 5);
   const activeGoals = goals.filter((g) => g.status === "active");
   const activeProjects = projects.filter((p) => p.status === "active");
   const risks = evaluateRisks(tasks, goals);
@@ -185,16 +176,10 @@ export default function DashboardPage() {
           <div>
             {/* Today's tasks */}
             <div style={{ marginBottom: 24 }}>
-              <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
-                <div className="section-heading">Today&apos;s Focus</div>
-                <Link href="/tasks/history" style={{ fontSize: 11, color: "var(--text-faint)" }}>
-                  Previous dates →
-                </Link>
+              <div className="section-heading">
+                Today&apos;s Focus
               </div>
               <div className="card">
-                {todayTasks.length === 0 && (
-                  <div style={{ fontSize: 12, color: "var(--text-faint)" }}>Nothing focused on today.</div>
-                )}
                 {todayTasks.map(task => (
                   <div key={task.id} className="task-row">
                     <div className={`task-check ${task.status === "completed" ? "done" : ""}`} />

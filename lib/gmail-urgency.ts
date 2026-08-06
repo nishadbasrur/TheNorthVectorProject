@@ -1,7 +1,7 @@
 import { getApps, initializeApp } from "firebase-admin/app";
 import { getFirestore, FieldValue } from "firebase-admin/firestore";
 import { getRecentInboxMessages } from "./gmail-client";
-import { askOpenAI, MODEL_CLASSIFIER } from "./openai-client";
+import { askClaude } from "./anthropic-client";
 
 // Deliberately no "server-only" guard, lazy admin-app init instead of
 // importing lib/firebase-admin.ts's adminDb — shared cross-runtime, same
@@ -88,11 +88,10 @@ export async function checkUrgentEmailsRaw(): Promise<UrgentEmailCheck> {
   const urgentResults: UrgentEmailResult[] = [];
 
   for (const message of candidates) {
-    const result = await askOpenAI({
+    const result = await askClaude({
       systemPrompt: URGENCY_SYSTEM_PROMPT,
       userMessage: `Subject: ${message.subject}\n\nBody:\n${message.bodyText.slice(0, 4000)}`,
       maxTokens: 60,
-      model: MODEL_CLASSIFIER,
     });
 
     const verdict = result.ok

@@ -29,10 +29,6 @@ on:
       capability:
         description: "Missing capability description (capability) or the real error message (bug_fix)"
         required: true
-      proposedApproach:
-        description: "North's own best guess at how to close the gap (capability only) — a head start for the draft, not a guarantee"
-        required: false
-        default: ""
 
 # Only what this workflow actually needs: push a branch, open a PR. No
 # permission to modify branch protection, no permission to merge — merging
@@ -66,7 +62,6 @@ jobs:
           GAP_ID: ${{ inputs.gapId }}
           CAPABILITY_REQUEST: ${{ inputs.request }}
           CAPABILITY_DESCRIPTION: ${{ inputs.capability }}
-          CAPABILITY_PROPOSED_APPROACH: ${{ inputs.proposedApproach }}
           TOOL_NAME: ${{ inputs.request }}
           ERROR_MESSAGE: ${{ inputs.capability }}
         run: |

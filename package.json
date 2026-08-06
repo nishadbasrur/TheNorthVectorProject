@@ -32,7 +32,6 @@
     "leaflet": "^1.9.4",
     "next": "latest",
     "next-auth": "latest",
-    "openai": "^7.3.0",
     "openwakeword-wasm-browser": "^0.1.1",
     "plaid": "^43.0.0",
     "react": "latest",

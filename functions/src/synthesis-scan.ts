@@ -1,5 +1,5 @@
 import { logger } from "firebase-functions";
-import { submitBatch, pollBatch, MODEL_CLASSIFIER } from "../../lib/openai-client";
+import Anthropic from "@anthropic-ai/sdk";
 import { assembleSynthesisContext, type SynthesisContext } from "../../lib/synthesis-context";
 import { runSynthesis, SYNTHESIS_SYSTEM_PROMPT, serializeContextForPrompt, parseConnections } from "../../lib/synthesis-engine";
 import { deliveryChannel } from "../../lib/synthesis-priority";
@@ -109,9 +109,9 @@ export async function runSynthesisScan(): Promise<SynthesisScanSummary> {
 }
 
 // Pattern-matching across a structured context snapshot, not open-ended
-// reasoning — the classifier tier, not the agentic tier (unlike the
-// on-demand/manual path above, which stays on MODEL_AGENTIC). See
-// functions/src/index.ts's synthesisScan.
+// reasoning — Haiku, not Sonnet (unlike the on-demand/manual path above,
+// which stays on Sonnet). See functions/src/index.ts's synthesisScan.
+const SYNTHESIS_BATCH_MODEL = "claude-haiku-4-5-20251001";
 const CUSTOM_ID = "synthesis-scan";
 
 // Submits a new batch request. Deliberately does not itself check for an
@@ -120,27 +120,25 @@ const CUSTOM_ID = "synthesis-scan";
 // division of responsibility as submitOpportunityScan.
 export async function submitSynthesisScan(apiKey: string): Promise<string> {
   const context = await assembleSynthesisContext();
+  const client = new Anthropic({ apiKey });
 
-  const result = await submitBatch(
-    [
+  const batch = await client.messages.batches.create({
+    requests: [
       {
-        customId: CUSTOM_ID,
-        systemPrompt: SYNTHESIS_SYSTEM_PROMPT,
-        userMessage: serializeContextForPrompt(context),
-        maxTokens: 1500,
-        model: MODEL_CLASSIFIER,
+        custom_id: CUSTOM_ID,
+        params: {
+          model: SYNTHESIS_BATCH_MODEL,
+          max_tokens: 1500,
+          system: SYNTHESIS_SYSTEM_PROMPT,
+          messages: [{ role: "user", content: serializeContextForPrompt(context) }],
+        },
       },
     ],
-    apiKey
-  );
+  });
 
-  if (!result.ok) {
-    throw new Error(`Failed to submit synthesis batch: ${result.error}`);
-  }
-
-  await recordBatchSubmission(result.batchId, contextSummaryOf(context));
-  logger.log(`[synthesisScan] Submitted batch ${result.batchId}`);
-  return result.batchId;
+  await recordBatchSubmission(batch.id, contextSummaryOf(context));
+  logger.log(`[synthesisScan] Submitted batch ${batch.id}`);
+  return batch.id;
 }
 
 // Checks the currently outstanding batch, if any — a single cheap
@@ -150,28 +148,26 @@ export async function pollSynthesisScan(apiKey: string): Promise<void> {
   const pending = await getPendingBatch();
   if (!pending) return;
 
-  const status = await pollBatch(pending.batchId, apiKey);
+  const client = new Anthropic({ apiKey });
+  const batch = await client.messages.batches.retrieve(pending.batchId);
 
-  if (!status.ok) {
-    logger.error(`[synthesisScan] Batch poll failed: ${status.error}`);
-    return;
-  }
-
-  if (status.status === "pending") {
+  if (batch.processing_status !== "ended") {
     logger.log(`[synthesisScan] Batch ${pending.batchId} still processing.`);
     return;
   }
 
   let foundText = "";
-  if (status.status === "completed") {
-    const result = status.results.get(CUSTOM_ID);
-    if (result?.ok) {
-      foundText = result.text;
+  for await (const item of await client.messages.batches.results(pending.batchId)) {
+    if (item.custom_id !== CUSTOM_ID) continue;
+
+    if (item.result.type === "succeeded") {
+      const textBlocks = item.result.message.content.filter(
+        (block): block is Anthropic.TextBlock => block.type === "text"
+      );
+      foundText = textBlocks.map((block) => block.text).join("\n\n");
     } else {
-      logger.error(`[synthesisScan] Batch request did not succeed: ${result?.error ?? "no result"}`);
+      logger.error(`[synthesisScan] Batch request did not succeed: ${item.result.type}`);
     }
-  } else {
-    logger.error(`[synthesisScan] Batch ${pending.batchId} failed: ${status.error}`);
   }
 
   await markBatchProcessed();

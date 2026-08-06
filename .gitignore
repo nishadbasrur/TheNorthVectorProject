@@ -47,7 +47,7 @@ public/ort/
 # comment) — local tools to run once when widening OAuth scopes, not app code.
 scripts/oauth-widen-scopes.js
 scripts/oauth-widen-scopes-drive.js
-scripts/oauth-switch-gmail-account.js
+scripts/oauth-switch-calendar-account.js
 
 # Mac Mini Messages agent's real secret + runtime state — machine-specific,
 # never committed. agent.js and the LaunchAgent plist template are the real

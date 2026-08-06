@@ -1,5 +1,5 @@
 import "server-only";
-import { askOpenAI, MODEL_CLASSIFIER } from "@/lib/openai-client";
+import { askClaude } from "@/lib/anthropic-client";
 import { recordOccurrence } from "@/lib/recurring-signal-store";
 
 // #88 — "opportunity-cost" detection: the same stated intent ("I keep
@@ -65,11 +65,10 @@ export async function detectIntentSignal(userMessage: string): Promise<void> {
   if (!matchesTrigger(lower)) return;
 
   try {
-    const result = await askOpenAI({
+    const result = await askClaude({
       systemPrompt: buildExtractionPrompt(),
       userMessage,
       maxTokens: 100,
-      model: MODEL_CLASSIFIER,
     });
 
     if (!result.ok) return;

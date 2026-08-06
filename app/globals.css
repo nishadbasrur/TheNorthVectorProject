@@ -1006,28 +1006,6 @@ html, body {
   display: none;
 }
 
-/* push_to_screen's non-3D takeover (app/sandbox/display-panel.tsx) — same
-   structural pattern as the map/hologram takeovers above (shrink the orb
-   into a still-tappable bottom-right widget, hide the ruler/panel), just
-   for markdown/JSON/HTML/image content instead of a WebGL canvas or map. */
-.hud-page-display-active .hud-ruler {
-  display: none;
-}
-
-.hud-page-display-active .hud-stage {
-  position: fixed;
-  bottom: 20px;
-  right: 20px;
-  z-index: 40;
-  padding: 0;
-  transform: scale(0.4);
-  transform-origin: bottom right;
-}
-
-.hud-page-display-active .hud-panel {
-  display: none;
-}
-
 .hud-hologram-overlay {
   position: fixed;
   inset: 0;
@@ -1074,25 +1052,6 @@ html, body {
   border-radius: 4px;
 }
 
-/* Reaction-conditions readout for the vessel/beaker scenario — same
-   badge treatment as .hud-hologram-label, stacked just below it rather
-   than sharing space in one line, since the label can already run long
-   for a reaction ("hydrogen + chlorine -> hydrogen chloride"). */
-.hud-hologram-vessel-conditions {
-  position: absolute;
-  top: 58px;
-  left: 20px;
-  z-index: 21;
-  font-family: 'JetBrains Mono', monospace;
-  font-size: 11px;
-  letter-spacing: 0.06em;
-  color: var(--hud-cyan);
-  background: rgba(4, 7, 15, 0.7);
-  padding: 5px 12px;
-  border: 1px solid rgba(58, 214, 255, 0.2);
-  border-radius: 4px;
-}
-
 .hud-hologram-close {
   position: absolute;
   top: 16px;
@@ -1110,214 +1069,6 @@ html, body {
 
 .hud-hologram-close:hover {
   background: rgba(58, 214, 255, 0.15);
-}
-
-/* Element-label toggle — same circular button treatment as
-   .hud-hologram-close, offset to sit just to its left rather than
-   overlapping it. */
-.hud-hologram-labels-toggle {
-  position: absolute;
-  top: 16px;
-  right: 58px;
-  z-index: 21;
-  width: 32px;
-  height: 32px;
-  border-radius: 50%;
-  border: 1px solid rgba(58, 214, 255, 0.3);
-  background: rgba(4, 7, 15, 0.7);
-  color: var(--hud-cyan);
-  font-family: 'JetBrains Mono', monospace;
-  font-size: 12px;
-  cursor: pointer;
-}
-
-.hud-hologram-labels-toggle:hover {
-  background: rgba(58, 214, 255, 0.15);
-}
-
-/* Active (labels currently shown) state — filled instead of outlined, same
-   visual language as other toggled-on controls elsewhere in the HUD. */
-.hud-hologram-labels-toggle-active {
-  background: rgba(58, 214, 255, 0.35);
-  color: var(--white);
-}
-
-/* Per-atom element-symbol label — the CSS2DObject content itself (see
-   hologram-panel.tsx). Deliberately plain/small: this rides directly on
-   top of the 3D scene at each atom's projected screen position, so it
-   needs to read clearly without competing visually with the model itself. */
-.hud-hologram-atom-label {
-  font-family: 'JetBrains Mono', monospace;
-  font-size: 10px;
-  font-weight: 600;
-  color: var(--hud-cyan);
-  background: rgba(4, 7, 15, 0.55);
-  padding: 1px 4px;
-  border-radius: 3px;
-  white-space: nowrap;
-  transform: translate(10px, -10px); /* offset up-right of the atom center, out of the sphere itself */
-}
-
-/* Floating per-object menu (Isolate / Reveal / Shells) — a CSS2DObject
-   anchored to whatever atom/bond was just clicked (see hologram-panel.tsx's
-   selectMesh). pointer-events: auto overrides the label-renderer layer's
-   own pointer-events: none, which is what actually lets these buttons be
-   clickable at all despite living in that otherwise click-through layer. */
-.hud-hologram-floating-menu {
-  display: flex;
-  gap: 4px;
-  pointer-events: auto;
-  transform: translate(12px, -12px);
-}
-
-.hud-hologram-floating-menu button {
-  pointer-events: auto;
-  font-family: 'JetBrains Mono', monospace;
-  font-size: 10px;
-  letter-spacing: 0.04em;
-  text-transform: uppercase;
-  color: var(--hud-cyan);
-  background: rgba(4, 7, 15, 0.85);
-  border: 1px solid rgba(58, 214, 255, 0.4);
-  border-radius: 3px;
-  padding: 3px 7px;
-  cursor: pointer;
-  white-space: nowrap;
-}
-
-.hud-hologram-floating-menu button:hover {
-  background: rgba(58, 214, 255, 0.2);
-}
-
-/* Persistent "Show all" corner button — only rendered while something is
-   isolated (see hologram-panel.tsx). Positioned below the label pill
-   (top-left, same column) rather than circular like close/labels-toggle:
-   "Show all" doesn't fit a 32px circle, so this borrows the label pill's
-   own rounded-rect treatment instead while keeping the same border/
-   background/color language as every other hologram overlay control. */
-.hud-hologram-show-all {
-  position: absolute;
-  top: 60px;
-  left: 20px;
-  z-index: 21;
-  font-family: 'JetBrains Mono', monospace;
-  font-size: 11px;
-  letter-spacing: 0.06em;
-  text-transform: uppercase;
-  color: var(--hud-cyan);
-  background: rgba(4, 7, 15, 0.7);
-  border: 1px solid rgba(58, 214, 255, 0.3);
-  border-radius: 4px;
-  padding: 6px 12px;
-  cursor: pointer;
-}
-
-.hud-hologram-show-all:hover {
-  background: rgba(58, 214, 255, 0.15);
-}
-
-/* Reaction playback controls — a horizontal bar across the bottom of the
-   overlay, only rendered for a "reaction" hologram (see hologram-panel.tsx).
-   Same dark/cyan-border treatment as every other hologram overlay control,
-   just as one bar instead of separate corner buttons, since these are all
-   one related control group (transport buttons, scrub, speed) rather than
-   independent toggles. */
-.hud-hologram-reaction-controls {
-  position: absolute;
-  bottom: 24px;
-  left: 50%;
-  transform: translateX(-50%);
-  z-index: 21;
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  padding: 8px 14px;
-  background: rgba(4, 7, 15, 0.75);
-  border: 1px solid rgba(58, 214, 255, 0.3);
-  border-radius: 8px;
-  width: min(560px, calc(100% - 48px));
-}
-
-.hud-hologram-reaction-btn {
-  flex: 0 0 auto;
-  width: 28px;
-  height: 28px;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  border-radius: 50%;
-  border: 1px solid rgba(58, 214, 255, 0.3);
-  background: rgba(4, 7, 15, 0.7);
-  color: var(--hud-cyan);
-  font-size: 12px;
-  cursor: pointer;
-}
-
-.hud-hologram-reaction-btn:hover {
-  background: rgba(58, 214, 255, 0.15);
-}
-
-/* A native range input, restyled — picked over a custom drag-built
-   scrubber for the free keyboard/accessibility support and because
-   dragging it is literally just "the value the browser already computes
-   for you," matching hologram-panel.tsx's own reasoning for reading it
-   as an uncontrolled ref rather than fighting it with per-frame React
-   state during playback. */
-.hud-hologram-reaction-scrub {
-  flex: 1 1 auto;
-  -webkit-appearance: none;
-  appearance: none;
-  height: 4px;
-  border-radius: 2px;
-  background: rgba(58, 214, 255, 0.25);
-  outline: none;
-  cursor: pointer;
-}
-
-.hud-hologram-reaction-scrub::-webkit-slider-thumb {
-  -webkit-appearance: none;
-  appearance: none;
-  width: 12px;
-  height: 12px;
-  border-radius: 50%;
-  background: var(--hud-cyan);
-  cursor: pointer;
-}
-
-.hud-hologram-reaction-scrub::-moz-range-thumb {
-  width: 12px;
-  height: 12px;
-  border: none;
-  border-radius: 50%;
-  background: var(--hud-cyan);
-  cursor: pointer;
-}
-
-.hud-hologram-reaction-speeds {
-  flex: 0 0 auto;
-  display: flex;
-  gap: 2px;
-}
-
-.hud-hologram-reaction-speed-btn {
-  flex: 0 0 auto;
-  font-family: 'JetBrains Mono', monospace;
-  font-size: 10px;
-  color: rgba(58, 214, 255, 0.55);
-  background: transparent;
-  border: none;
-  padding: 3px 5px;
-  cursor: pointer;
-}
-
-.hud-hologram-reaction-speed-btn:hover {
-  color: var(--hud-cyan);
-}
-
-.hud-hologram-reaction-speed-btn-active {
-  color: var(--white);
-  background: rgba(58, 214, 255, 0.2);
-  border-radius: 3px;
 }
 
 /* Build/commit indicator — bottom-right corner of the canvas. position:
@@ -1679,112 +1430,88 @@ html, body {
   text-align: center;
 }
 
-/* push_to_screen's non-3D display surface (app/sandbox/display-panel.tsx) —
-   a general canvas for markdown/JSON/HTML/image content, structurally
-   parallel to .hud-hologram-overlay above (full-viewport takeover, same
-   label-badge + circular-close chrome) rather than the small corner card
-   this used to be. Rendered as a top-level sibling of .hud-stage (see the
-   comment on DisplayPanel itself), so .hud-page-display-active's
-   .hud-stage shrink-transform never applies to it. */
-.hud-display-overlay {
-  position: fixed;
-  inset: 0;
-  z-index: 20;
-  background: #04070f;
+/* push_to_screen's display surface (app/sandbox/display-panel.tsx) — a
+   general canvas, not a set of pre-defined widgets. Sits alongside
+   .hud-panel as its own sibling under .hud-stage (not nested inside
+   .hud-panel) specifically so .hud-page-map-active .hud-panel's
+   `display: none` doesn't also hide it if a map happens to be up at the
+   same time. Invisible by default (only rendered at all when
+   sandbox/page.tsx's `display` state is non-null) and fades/slides in on
+   mount — see hud-display-in below. */
+.hud-display-panel {
+  width: 100%;
+  max-width: 640px;
+  margin-top: 20px;
+  border: 1px solid rgba(58, 214, 255, 0.18);
+  background: rgba(58, 214, 255, 0.04);
+  border-radius: 6px;
   overflow: hidden;
-  animation: hud-display-in 0.3s ease;
+  animation: hud-display-in 0.35s ease;
 }
 
 @keyframes hud-display-in {
-  from { opacity: 0; }
-  to { opacity: 1; }
+  from { opacity: 0; transform: translateY(8px); }
+  to { opacity: 1; transform: translateY(0); }
 }
 
-/* Same purpose as .hud-hologram-fade — softens the flat background toward
-   the edges so the takeover reads as a deliberate presentation surface,
-   not a bare fill color. */
-.hud-display-fade {
-  position: absolute;
-  inset: 0;
-  z-index: 1;
-  background: radial-gradient(circle at 50% 42%, rgba(4, 7, 15, 0) 40%, rgba(4, 7, 15, 0.7) 100%);
-  pointer-events: none;
+.hud-display-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 10px 14px;
+  border-bottom: 1px solid rgba(58, 214, 255, 0.14);
 }
 
-.hud-display-label {
-  position: absolute;
-  top: 20px;
-  left: 20px;
-  z-index: 21;
-  max-width: calc(100% - 96px);
+.hud-display-title {
   font-family: 'JetBrains Mono', monospace;
-  font-size: 12px;
-  letter-spacing: 0.08em;
+  font-size: 10px;
+  letter-spacing: 0.14em;
   text-transform: uppercase;
   color: var(--hud-cyan);
-  background: rgba(4, 7, 15, 0.7);
-  padding: 6px 12px;
-  border: 1px solid rgba(58, 214, 255, 0.3);
-  border-radius: 4px;
+  opacity: 0.8;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 
+/* Subtle by design, per the ticket — a ghost text button in the same
+   register as .hud-transcript-toggle, not a prominent circular close
+   button like .hud-map-close (that one sits over a full-bleed map takeover
+   and needs to read clearly against arbitrary tile imagery; this panel is
+   already framed by its own bordered card). */
 .hud-display-close {
-  position: absolute;
-  top: 16px;
-  right: 16px;
-  z-index: 21;
-  width: 32px;
-  height: 32px;
-  border-radius: 50%;
-  border: 1px solid rgba(58, 214, 255, 0.3);
-  background: rgba(4, 7, 15, 0.7);
+  flex-shrink: 0;
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 10px;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
   color: var(--hud-cyan);
-  font-size: 14px;
+  opacity: 0.55;
+  background: none;
+  border: none;
   cursor: pointer;
+  padding: 2px 4px;
 }
 
 .hud-display-close:hover {
-  background: rgba(58, 214, 255, 0.15);
+  opacity: 0.9;
 }
 
-/* Fills the viewport below the label/close chrome; content itself scrolls
-   here if it runs tall, so the label/close stay fixed in place rather than
-   scrolling away with it. */
 .hud-display-body {
-  position: relative;
-  z-index: 2;
-  height: 100%;
+  max-height: 50vh;
   overflow-y: auto;
-  display: flex;
-  justify-content: center;
-  padding: 96px 48px 64px;
-  box-sizing: border-box;
-}
-
-/* Caps line/table width for readability at full-screen scale — full
-   viewport width would make wrapped text and table rows too wide to scan
-   comfortably, same reasoning as any full-bleed reading surface. Wide
-   enough to give the UConn-tracker-style table real room, well past the
-   old 640px corner-card width. */
-.hud-display-content {
-  width: 100%;
-  max-width: 960px;
-  margin: auto 0;
+  padding: 14px 16px;
 }
 
 /* Body copy inherits the app's default Times New Roman (see the global
    `body` rule) — matches .hud-readout-text's own treatment, this is just a
    bigger canvas for the same kind of content. Headers/links pick up the
-   HUD cyan accent instead of introducing a third color into this page.
-   Sizes bumped up from the old corner-card values now that this fills the
-   whole screen instead of a 640px box. */
+   HUD cyan accent instead of introducing a third color into this page. */
 .hud-display-markdown {
   color: var(--text-primary);
-  font-size: 17px;
-  line-height: 1.65;
+  font-size: 14px;
+  line-height: 1.6;
 }
 
 .hud-display-markdown :first-child {
@@ -1802,26 +1529,26 @@ html, body {
   color: var(--hud-cyan);
   font-weight: 600;
   line-height: 1.3;
-  margin: 22px 0 10px;
+  margin: 16px 0 8px;
 }
 
-.hud-display-markdown h1 { font-size: 30px; }
-.hud-display-markdown h2 { font-size: 24px; }
-.hud-display-markdown h3 { font-size: 20px; }
-.hud-display-markdown h4 { font-size: 17px; }
+.hud-display-markdown h1 { font-size: 20px; }
+.hud-display-markdown h2 { font-size: 17px; }
+.hud-display-markdown h3 { font-size: 15px; }
+.hud-display-markdown h4 { font-size: 14px; }
 
 .hud-display-markdown p {
-  margin: 0 0 14px;
+  margin: 0 0 10px;
 }
 
 .hud-display-markdown ul,
 .hud-display-markdown ol {
-  margin: 0 0 14px;
-  padding-left: 26px;
+  margin: 0 0 10px;
+  padding-left: 22px;
 }
 
 .hud-display-markdown li {
-  margin: 4px 0;
+  margin: 3px 0;
 }
 
 .hud-display-markdown a {
@@ -1834,23 +1561,23 @@ html, body {
 
 .hud-display-markdown code {
   font-family: 'JetBrains Mono', monospace;
-  font-size: 14px;
+  font-size: 12px;
   color: var(--hud-cyan);
   background: rgba(58, 214, 255, 0.1);
-  padding: 1px 6px;
+  padding: 1px 5px;
   border-radius: 3px;
 }
 
 .hud-display-markdown pre {
   font-family: 'JetBrains Mono', monospace;
-  font-size: 14px;
+  font-size: 12px;
   color: var(--text-primary);
   background: rgba(3, 7, 17, 0.6);
   border: 1px solid rgba(58, 214, 255, 0.14);
   border-radius: 4px;
-  padding: 12px 14px;
+  padding: 10px 12px;
   overflow-x: auto;
-  margin: 0 0 14px;
+  margin: 0 0 10px;
 }
 
 .hud-display-markdown pre code {
@@ -1860,8 +1587,8 @@ html, body {
 }
 
 .hud-display-markdown blockquote {
-  margin: 0 0 14px;
-  padding-left: 14px;
+  margin: 0 0 10px;
+  padding-left: 12px;
   border-left: 2px solid rgba(58, 214, 255, 0.3);
   color: var(--text-secondary);
 }
@@ -1869,20 +1596,20 @@ html, body {
 .hud-display-markdown table {
   width: 100%;
   border-collapse: collapse;
-  margin: 0 0 14px;
-  font-size: 15px;
+  margin: 0 0 10px;
+  font-size: 13px;
 }
 
 .hud-display-markdown th,
 .hud-display-markdown td {
   border: 1px solid rgba(58, 214, 255, 0.16);
-  padding: 9px 14px;
+  padding: 6px 10px;
   text-align: left;
 }
 
 .hud-display-markdown th {
   font-family: 'JetBrains Mono', monospace;
-  font-size: 11px;
+  font-size: 10px;
   letter-spacing: 0.06em;
   text-transform: uppercase;
   color: var(--hud-cyan);
@@ -1891,8 +1618,7 @@ html, body {
 
 .hud-display-json {
   font-family: 'JetBrains Mono', monospace;
-  font-size: 14px;
-  line-height: 1.6;
+  font-size: 12px;
   color: var(--text-primary);
   white-space: pre-wrap;
   word-break: break-word;
@@ -1901,15 +1627,12 @@ html, body {
 
 .hud-display-html {
   color: var(--text-primary);
-  font-size: 17px;
-  line-height: 1.65;
+  font-size: 14px;
+  line-height: 1.6;
 }
 
 .hud-display-image {
   display: block;
   max-width: 100%;
-  max-height: 78vh;
-  margin: 0 auto;
-  border-radius: 8px;
-  box-shadow: 0 0 40px rgba(58, 214, 255, 0.1);
+  border-radius: 4px;
 }

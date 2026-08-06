@@ -1,5 +1,5 @@
 import "server-only";
-import { askOpenAI, MODEL_AGENTIC } from "@/lib/openai-client";
+import { askClaude } from "@/lib/anthropic-client";
 import type { SynthesisContext } from "@/lib/synthesis-context";
 
 // #89 — reuses lib/synthesis-context.ts's assembleSynthesisContext
@@ -10,9 +10,9 @@ import type { SynthesisContext } from "@/lib/synthesis-context";
 // get_proactive_updates' "only what's noteworthy" filter. Kept as a
 // separate tool/engine rather than folded into either — different intent
 // (everything, synthesized) from both.
-const BRIEFING_MODEL = MODEL_AGENTIC; // same reasoning as
-                                       // lib/synthesis-engine.ts's
-                                       // SYNTHESIS_MODEL
+const BRIEFING_MODEL = "claude-sonnet-5"; // same reasoning as
+                                            // lib/synthesis-engine.ts's
+                                            // SYNTHESIS_MODEL
 
 const BRIEFING_SYSTEM_PROMPT = `
 You are North, giving a full "state of everything" spoken briefing when Nishad explicitly asks for the complete picture — not a quick check-in, the whole thing. You will be given a snapshot of everything currently active across his calendar, inbox, Notion urgent items, recent text messages, tasks, goals, and relevant stored memories.
@@ -52,7 +52,7 @@ function serializeContextForPrompt(context: SynthesisContext): string {
 }
 
 export async function runStateOfEverythingBriefing(context: SynthesisContext): Promise<string> {
-  const result = await askOpenAI({
+  const result = await askClaude({
     systemPrompt: BRIEFING_SYSTEM_PROMPT,
     userMessage: serializeContextForPrompt(context),
     maxTokens: 700,

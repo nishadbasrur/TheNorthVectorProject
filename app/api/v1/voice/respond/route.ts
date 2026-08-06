@@ -1,8 +1,7 @@
 import { NextResponse, after } from "next/server";
-import { createHash } from "node:crypto";
-import type { Response, ResponseFunctionToolCall, ResponseInputItem } from "openai/resources/responses/responses";
+import type Anthropic from "@anthropic-ai/sdk";
 import { requireOwner } from "@/lib/require-owner";
-import { streamOpenAIWithTools, MODEL_AGENTIC } from "@/lib/openai-client";
+import { streamClaudeWithTools } from "@/lib/anthropic-client";
 import { synthesizeSpeech } from "@/lib/google-tts";
 import { getPreferences, formatPreferencesForPrompt } from "@/lib/preferences-store";
 import { detectAndStorePreference } from "@/lib/preference-detector";
@@ -22,7 +21,6 @@ import { recordOccurrence } from "@/lib/recurring-signal-store";
 import { detectEngagement } from "@/lib/engagement-detector";
 import { detectRushSignal } from "@/lib/rush-detector";
 import { createTranscript } from "@/lib/transcript-store";
-import { isRepeatRequest } from "@/lib/repeat-detector";
 
 // #96 — read-only "check"/"search" tools stand in for question categories:
 // Claude already picked the tool, so the category is free and deterministic,
@@ -106,62 +104,12 @@ function rushLine(rushSignal: "rushed" | "normal"): string {
   );
 }
 
-// Extracts a clean leading sentence from a tool's own schema description
-// for generateCapabilitySummary below — most of these descriptions run
-// several sentences deep into schema/usage detail Claude already has
-// natively via the `tools` parameter itself; only the first sentence is
-// needed here. Parenthetical asides are stripped first since that's
-// where nearly every "e.g." in this file's tool descriptions lives —
-// left in, the period inside "e.g." would look like a false sentence
-// boundary and truncate mid-thought. Ellipses (e.g. a quoted "should
-// I...") get the same treatment for the same reason — each of their
-// three dots otherwise reads as its own sentence-ending period. Falls
-// back to a hard character cut for the rare description with no early
-// sentence break at all.
-function firstSentence(text: string): string {
-  // Cleanup order matters: parens/ellipses first (removing them can
-  // leave a doubled space, or a lone space right before whatever
-  // punctuation used to follow), then whitespace collapse, then trim
-  // any space stranded directly before punctuation.
-  const cleaned = text
-    .replace(/\([^)]*\)/g, "")
-    .replace(/\.{2,}/g, "…")
-    .replace(/\s+/g, " ")
-    .replace(/\s+([.,!?])/g, "$1");
-  const match = cleaned.match(/^[^.!?]*[.!?]/);
-  return (match ? match[0] : text.slice(0, 140)).trim();
-}
-
-// Generated directly from TOOL_DEFINITIONS — the same source of truth
-// executeTool's switch and the actual Claude API tool schemas already
-// come from — instead of hand-maintained prose, which has silently
-// drifted stale (missing real tools) more than once already. Every tool
-// already appears in full via the API's own `tools` parameter too; this
-// exists purely so a spoken "what can you do" answer (which draws on
-// prose the model can recite back, not the tools array it reasons over
-// internally) can't go stale the same way again — this is regenerated
-// on every prompt build, so a new tool is covered automatically the
-// moment it's added to TOOL_DEFINITIONS, with nothing else to remember
-// to update.
-function generateCapabilitySummary(): string {
-  const sentences = TOOL_DEFINITIONS.map((tool) => firstSentence(tool.description ?? tool.name));
-  return `Your actual tools, generated directly from what's registered — never hand-maintained, so this can't go stale: ${sentences.join(" ")}`;
-}
-
-// Computed once at module load, not per-request — the whole point of
-// prompt caching (see lib/openai-client.ts's promptCacheRetention option)
-// is that the model provider reuses its own processing of an identical
-// prefix instead of redoing it from scratch on every call in a session.
-// That only works if this block is byte-for-byte identical call to call,
-// which is trivially guaranteed by it being one fixed string rather than
-// reassembled each time — generateCapabilitySummary() only ever depends on
-// TOOL_DEFINITIONS (static per deployment), never on anything that
-// actually varies per request. Nothing in this block may reference
-// per-request state (current time, standing preferences, rush signal,
-// session summary, an opener) — see buildSystemPrompt() below, which
-// appends all of that AFTER this block rather than weaving it in, so the
-// cached prefix never shifts.
-const STATIC_SYSTEM_PROMPT =
+function buildSystemPrompt(
+  preferences: Awaited<ReturnType<typeof getPreferences>>,
+  rushSignal: "rushed" | "normal"
+): string {
+  return (
+    currentTimeLine() + "\n\n" +
     "You are North, Nishad's personal chief-of-staff. You address him as \"sir\" — dry, direct, " +
     "warm underneath the formality. You state a real assessment or push back once, plainly, " +
     "when something's worth pushing back on — then comply without relitigating it if he holds " +
@@ -178,59 +126,34 @@ const STATIC_SYSTEM_PROMPT =
     "60 words total, as a complete finished thought — never trail off mid-sentence, never write " +
     "the kind of answer you'd put in a document.\n\n" +
 
-    generateCapabilitySummary() + "\n\n" +
-
-    "Every one of those executes fully autonomously by default — no confirmation needed, just call " +
-    "it the moment it's the right tool. The single exception is financial actions (moving money, " +
-    "trades, purchases): those always need Nishad's explicit confirmation first. There is no other " +
-    "hesitation anywhere in that list — don't invent one.\n\n" +
-
-    "Gmail and iCloud are separate inboxes with their " +
+    "You have tools for checking/sending/searching/deleting Gmail, checking/searching Nishad's " +
+    "separate iCloud Mail inbox, checking/creating/updating/deleting calendar events, checking " +
+    "Notion, creating tasks, showing an interactive map on screen and highlighting a building on " +
+    "it, pushing rich visual content (markdown, tables, code, images, structured data) to the " +
+    "screen with push_to_screen, getting a decision recommendation, and a general research tool " +
+    "for anything needing a live web lookup. Gmail and iCloud are separate inboxes with their " +
     "own tools — if a request doesn't say which one and the obvious one comes up empty, try the " +
     "other before telling Nishad you can't find something. Default order for any request: answer " +
     "directly if it's reasoning, arithmetic, or something you already know and search wouldn't " +
     "change; call research for anything needing current or external information you don't have a " +
     "specific tool for (weather, prices, currency conversion, general facts — don't assume there's " +
     "no way to answer just because there's no topic-specific tool); use the specific tool for " +
-    "Nishad's own accounts/data (Gmail, calendar, Notion, tasks, watches) when the request is " +
-    "actually about those. When " +
+    "Nishad's own accounts/data (Gmail, calendar, Notion, tasks) when the request is actually about " +
+    "those. When " +
     "show_map or highlight_building runs, the visual itself is the answer — keep your spoken " +
     "response to a short acknowledgment (\"Here's Boston, sir\"), don't also describe the place in " +
     "words. Same when push_to_screen runs — call it alongside a short spoken response, never " +
-    "instead of one, and don't read the pushed content aloud verbatim. push_to_screen's content must " +
-    "be the real, finished material — actual table rows, actual data points — never a description " +
-    "or summary of what the panel would contain (that's a real failure mode, not a hypothetical " +
-    "one), and never content you invented or guessed to fill the panel even if it looks plausible " +
-    "(a made-up 'starter checklist' for something Nishad has no real tracked data for is the same " +
-    "failure as a one-line description, just in disguise). If showing something needs real data you " +
-    "don't already have (e.g. \"show me the jobs " +
-    "I've applied to\" with no tracked applications yet), go get it first — call whatever tool " +
-    "might actually have it (list_tasks, search_email, etc.) — and only push real results. If " +
-    "genuinely nothing exists to show, say so honestly out loud instead of pushing an empty or " +
-    "placeholder panel — same propose-a-path-forward spirit as note_capability_gap below, just for " +
-    "\"I have the tool but no real data\" rather than \"I don't have the tool at all\" (e.g. \"I " +
-    "don't have any applications tracked yet — want me to start logging them as you apply?\"). The " +
-    "one exception is the \"image\" type specifically: there, content IS meant to be a short " +
-    "descriptive lookup query, never a raw image URL or file path — for example, pass \"Caffeine " +
-    "molecule (C8H10N4O2) - molecular structure and properties\" not an image URL, and the system " +
-    "finds and renders the appropriate visual from that description. That lookup behavior is unique " +
-    "to \"image\" — it does not license writing a description in place of real data for any other " +
-    "type. If " +
+    "instead of one, and don't read the pushed content aloud verbatim. When calling push_to_screen, " +
+    "always pass descriptive text content describing what to show — never raw image URLs or file " +
+    "paths. For example, pass \"Caffeine molecule (C8H10N4O2) - molecular structure and properties\" " +
+    "not an image URL. The system will find and render the appropriate visual. If " +
     "get_decision_recommendation comes back with " +
     "\"specific\": false, give a real, honest opinion yourself rather than deflecting — this is " +
-    "advisory only. Only call note_capability_gap " +
+    "advisory only, you never move money or take financial action without explicit confirmation " +
+    "(that boundary is the one exception to acting autonomously). Only call note_capability_gap " +
     "for a request that genuinely needs a new integration research can't cover (a new account, " +
-    "API, or credential) — never for something correctly declined for another reason (a financial " +
-    "action, entering a password or credential, or a genuine safety boundary), which just gets a " +
-    "plain ordinary decline with no capability-gap framing at all. When you do hit a real gap, your " +
-    "spoken reply does three things: name specifically what's missing and why, in your own words, " +
-    "not a flat \"I can't do that\"; say plainly that it's been logged and a draft fix may show up " +
-    "automatically as a PR for Nishad to review (true, given the pipeline behind this — not a vague " +
-    "promise); and offer to walk through any real manual workaround right now, if one actually " +
-    "exists. Always pass your own best-guess proposedApproach when calling the tool — which " +
-    "integration or credential it'd likely need and roughly how it'd work — even when you're not " +
-    "fully sure, rather than leaving it blank. If you notice mid-conversation that Nishad's " +
-    "mentioned meaning to reply to someone " +
+    "API, or credential) — say so plainly when that's the case, don't just let it evaporate as a " +
+    "flat no. If you notice mid-conversation that Nishad's mentioned meaning to reply to someone " +
     "(not a direct instruction to send something right now — that's still send_email), use " +
     "draft_email instead of send_email: it saves a Gmail draft and offers it for his review rather " +
     "than sending unreviewed.\n\n" +
@@ -323,28 +246,8 @@ const STATIC_SYSTEM_PROMPT =
 
     "Nishad: Any bugs in the pipeline right now?\n" +
     "North: Two, sir — Gmail search and checking are both getting fixes drafted as we speak. " +
-    "I'll flag you the moment either's ready to review.";
+    "I'll flag you the moment either's ready to review.\n\n" +
 
-// Short fingerprint of STATIC_SYSTEM_PROMPT, logged per call below —
-// verifies the "byte-identical prefix" claim the whole caching strategy
-// rests on is actually true in practice, not just true by inspection.
-// Computed once here, not per-request, for the same reason
-// STATIC_SYSTEM_PROMPT itself is a constant rather than a function result.
-const STATIC_SYSTEM_PROMPT_HASH = createHash("sha256").update(STATIC_SYSTEM_PROMPT).digest("hex").slice(0, 12);
-
-// Appends everything that legitimately changes call to call — current
-// time, standing preferences, and a rush-mode nudge — AFTER
-// STATIC_SYSTEM_PROMPT above, never woven into it, so the cached prefix
-// stays byte-identical across every turn in a session. The session summary
-// and any opener get appended by POST itself on top of this, for the same
-// reason — see the prompt-caching comment on STATIC_SYSTEM_PROMPT.
-function buildSystemPrompt(
-  preferences: Awaited<ReturnType<typeof getPreferences>>,
-  rushSignal: "rushed" | "normal"
-): string {
-  return (
-    STATIC_SYSTEM_PROMPT +
-    "\n\n" + currentTimeLine() +
     formatPreferencesForPrompt(preferences) +
     rushLine(rushSignal)
   );
@@ -359,7 +262,7 @@ function buildSystemPrompt(
 // than treated as a sentence boundary, since at that point there's no way
 // to tell "real sentence end, more text just hasn't arrived yet" apart from
 // "mid-stream chunk boundary right after a period." The caller's final
-// flush (after streamOpenAIWithTools's "done" event) handles whatever's
+// flush (after streamClaudeWithTools's "done" event) handles whatever's
 // left in remainder once the stream genuinely ends. Doesn't special-case
 // abbreviations ("Mr.", "3.5") — the persona prompt's spoken-sentence style
 // (short, plain, no decimals/titles in practice) makes this not worth the
@@ -386,63 +289,6 @@ function extractCompleteSentences(buffer: string): { complete: string[]; remaind
 // terminated per the SSE spec.
 function sseEvent(encoder: TextEncoder, event: string, data: unknown): Uint8Array {
   return encoder.encode(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`);
-}
-
-// Explicit globalThis.Response — this file also imports OpenAI's own
-// `Response` type (the Responses API object), so the bare name is shadowed.
-function sseResponse(stream: ReadableStream<Uint8Array>): globalThis.Response {
-  return new Response(stream, {
-    headers: {
-      "Content-Type": "text/event-stream",
-      "Cache-Control": "no-cache, no-transform",
-      Connection: "keep-alive",
-    },
-  });
-}
-
-// Sentence-level synthesis pipeline, shared by both the real tool-calling
-// loop and the repeat/clarify re-speak path below — synthesizeSpeech is
-// fired the instant a sentence is extracted, not awaited there, so
-// synthesis for sentence N+1 overlaps with sentence N being sent to (and
-// starting to play on) the client instead of happening strictly after it.
-// audioQueue holds these promises in emission order; drainReady() awaits
-// them in that same order (even though the underlying calls may resolve
-// out of order) so playback order is never at risk.
-//
-// Uses the batch synthesizeSpeech (MP3), not the true streaming
-// streamSynthesizeSentence (OGG_OPUS) — confirmed live that Google's
-// streaming synthesis produces genuinely lower-fidelity ("raspy") audio for
-// this Chirp3 HD voice specifically (verified the OGG container itself was
-// valid — real "OggS" magic bytes — so this is a real quality difference in
-// Google's pipeline, not a bug in this code). Still gets the actual latency
-// win (pipelining across sentences), just via the known-good batch call per
-// sentence instead of a true duplex stream per sentence.
-function createAudioPipeline(controller: ReadableStreamDefaultController<Uint8Array>, encoder: TextEncoder) {
-  const audioQueue: Promise<{ audioBase64: string; mimeType: string } | null>[] = [];
-  let drainIndex = 0;
-
-  function enqueueSentence(sentenceText: string) {
-    audioQueue.push(
-      synthesizeSpeech(sentenceText)
-        .then((buf) => ({ audioBase64: buf.toString("base64"), mimeType: "audio/mpeg" }))
-        .catch((err) => {
-          console.error("[voice-respond] synthesizeSpeech failed for sentence:", err);
-          return null; // client skips a null chunk rather than the whole turn failing
-        })
-    );
-  }
-
-  async function drainReady() {
-    while (drainIndex < audioQueue.length) {
-      const result = await audioQueue[drainIndex];
-      if (result) {
-        controller.enqueue(sseEvent(encoder, "audio", { index: drainIndex, ...result }));
-      }
-      drainIndex++;
-    }
-  }
-
-  return { enqueueSentence, drainReady };
 }
 
 export async function POST(request: Request) {
@@ -491,8 +337,7 @@ export async function POST(request: Request) {
     console.error("[voice-respond] createTranscript failed:", error);
   }
 
-  const [preferences, session] = await Promise.all([getPreferences(), loadSession(sessionId)]);
-  const { turns: priorTurns, summary } = session;
+  const [preferences, priorTurns] = await Promise.all([getPreferences(), loadSession(sessionId)]);
   console.log(`[voice-respond] Session loaded (${priorTurns.length} prior turn(s)) in ${Math.round(performance.now() - requestStart)}ms`);
 
   detectAndStorePreference(text); // fire-and-forget, unchanged from the old router's behavior
@@ -512,57 +357,6 @@ export async function POST(request: Request) {
       .catch((error) => console.error("[voice-respond] Engagement check failed:", error));
   }
 
-  // Repeat/clarify short-circuit ("what did you say", "say that again") —
-  // blocking, not fire-and-forget, since the rest of this handler branches
-  // on the result. Only meaningful once there's a prior assistant turn to
-  // repeat; a fresh session (priorTurns.length === 0) skips straight past
-  // this. On a match, re-speak the cached response and return WITHOUT ever
-  // calling saveSession — this exchange never occupies a slot in the
-  // 12-turn budget (see lib/voice-session-store.ts), so it can't push a
-  // genuine earlier exchange out of the window.
-  const lastAssistantTurn = [...priorTurns].reverse().find((t) => t.role === "assistant");
-  const isRepeat = lastAssistantTurn ? await isRepeatRequest(text, lastAssistantTurn.content) : false;
-
-  if (isRepeat && lastAssistantTurn) {
-    console.log("[voice-respond] Repeat/clarify request detected — re-speaking cached response, no session slot consumed.");
-    const responseText = lastAssistantTurn.content;
-    const encoder = new TextEncoder();
-
-    const stream = new ReadableStream<Uint8Array>({
-      start(controller) {
-        const { enqueueSentence, drainReady } = createAudioPipeline(controller, encoder);
-
-        (async () => {
-          try {
-            // Trailing space so a sentence-ending punctuation mark right at
-            // the end of the cached text still gets picked up as a boundary
-            // by extractCompleteSentences (which requires trailing
-            // whitespace after terminal punctuation to treat it as one).
-            const { complete, remainder } = extractCompleteSentences(`${responseText} `);
-            for (const sentence of complete) {
-              enqueueSentence(sentence);
-              await drainReady();
-            }
-            if (remainder.trim()) {
-              enqueueSentence(remainder.trim());
-              await drainReady();
-            }
-            controller.enqueue(sseEvent(encoder, "done", { responseText, toolsUsed: [], visual: undefined }));
-          } catch (error) {
-            console.error("[voice-respond] Repeat re-speak failed:", error);
-            controller.enqueue(
-              sseEvent(encoder, "error", { error: error instanceof Error ? error.message : "Unknown error" })
-            );
-          } finally {
-            controller.close();
-          }
-        })();
-      },
-    });
-
-    return sseResponse(stream);
-  }
-
   // Conversational opener — only checked on the first turn of a genuinely
   // new session (priorTurns.length === 0), never mid-conversation, since
   // interjecting an unrelated finding partway through an exchange would
@@ -578,18 +372,11 @@ export async function POST(request: Request) {
 
   const rushSignal = detectRushSignal(priorTurns, text);
   let systemPrompt = buildSystemPrompt(preferences, rushSignal);
-  // Gist of whatever aged out of the raw 12-turn window (see
-  // lib/voice-session-store.ts's saveSession) — rides along on every call
-  // so a long real conversation degrades to a summary instead of just
-  // vanishing once it outgrows the window.
-  if (summary) {
-    systemPrompt += `\n\nEarlier in this conversation (summarized — older raw turns aged out of the window): ${summary}`;
-  }
   if (opener) {
     systemPrompt += `\n\n${opener.text}`;
   }
 
-  const messages: ResponseInputItem[] = [
+  const messages: Anthropic.MessageParam[] = [
     ...priorTurns.map((t) => ({ role: t.role, content: t.content })),
     { role: "user", content: text },
   ];
@@ -602,38 +389,77 @@ export async function POST(request: Request) {
 
   const stream = new ReadableStream<Uint8Array>({
     start(controller) {
-      const { enqueueSentence, drainReady } = createAudioPipeline(controller, encoder);
+      // Sentence-level synthesis pipeline — synthesizeSpeech is fired the
+      // instant a sentence is extracted, not awaited there, so synthesis
+      // for sentence N+1 overlaps with sentence N being sent to (and
+      // starting to play on) the client instead of happening strictly
+      // after it. audioQueue holds these promises in emission order;
+      // drainReady() awaits them in that same order (even though the
+      // underlying calls may resolve out of order) so playback order is
+      // never at risk.
+      //
+      // Uses the batch synthesizeSpeech (MP3) here, not the true streaming
+      // streamSynthesizeSentence (OGG_OPUS) — confirmed live that Google's
+      // streaming synthesis produces genuinely lower-fidelity ("raspy")
+      // audio for this Chirp3 HD voice specifically (verified the OGG
+      // container itself was valid — real "OggS" magic bytes — so this is
+      // a real quality difference in Google's pipeline, not a bug in this
+      // code). Still gets the actual latency win (pipelining across
+      // sentences), just via the known-good batch call per sentence
+      // instead of a true duplex stream per sentence.
+      const audioQueue: Promise<{ audioBase64: string; mimeType: string } | null>[] = [];
+      let drainIndex = 0;
+
+      function enqueueSentence(sentenceText: string) {
+        audioQueue.push(
+          synthesizeSpeech(sentenceText)
+            .then((buf) => ({ audioBase64: buf.toString("base64"), mimeType: "audio/mpeg" }))
+            .catch((err) => {
+              console.error("[voice-respond] synthesizeSpeech failed for sentence:", err);
+              return null; // client skips a null chunk rather than the whole turn failing
+            })
+        );
+      }
+
+      async function drainReady() {
+        while (drainIndex < audioQueue.length) {
+          const result = await audioQueue[drainIndex];
+          if (result) {
+            controller.enqueue(sseEvent(encoder, "audio", { index: drainIndex, ...result }));
+          }
+          drainIndex++;
+        }
+      }
 
       (async () => {
         try {
           for (let i = 0; i < MAX_TOOL_ITERATIONS; i++) {
             const callStart = performance.now();
             let sentenceBuffer = "";
-            let iterationContent: Response["output"] = [];
-            let iterationFinishReason: "tool_calls" | "stop" = "stop";
+            let iterationContent: Anthropic.ContentBlock[] = [];
+            let iterationStopReason = "end_turn";
             let iterationError: string | null = null;
-            let iterationUsage: Response["usage"] | undefined;
 
-            for await (const event of streamOpenAIWithTools({
+            for await (const event of streamClaudeWithTools({
               systemPrompt,
               messages,
               tools: TOOL_DEFINITIONS,
-              model: MODEL_AGENTIC,
-              promptCacheRetention: "24h", // see lib/openai-client.ts's own
-                                           // comment on this option — the
-                                           // system prompt's static prefix
-                                           // (STATIC_SYSTEM_PROMPT above) is
-                                           // what actually gets cached
               maxTokens: 2000, // was 300, was 150, was 400 originally — 150 turned out
                                // tight enough to truncate mid-tool-call on some turns
-                               // (finishReason "stop" from hitting max_output_tokens
-                               // instead of "tool_calls", no completed text item,
-                               // finalText came back null). 300 fixed that for every
-                               // tool's short JSON args, but push_to_screen's
-                               // `content` can run to a whole markdown table or
-                               // several paragraphs. 2000 gives real headroom for
-                               // that while still being a hard backstop, not
-                               // unbounded.
+                               // (stop_reason "max_tokens" instead of "tool_use", no
+                               // completed text block, finalText came back null). 300
+                               // fixed that for every tool's short JSON args, but
+                               // push_to_screen's `content` can run to a whole
+                               // markdown table or several paragraphs — the Anthropic
+                               // SDK falls back to input: {} when a tool call's JSON
+                               // gets cut off mid-stream (see
+                               // node_modules/@anthropic-ai/sdk/lib/middleware.js's
+                               // safeJSON(partial_json) ?? block.input), which made
+                               // handlePushToScreen see no `content` at all and skip
+                               // sending a "display" event — same class of bug as the
+                               // 150->300 fix, just for a tool with a much bigger
+                               // payload. 2000 gives real headroom for that while
+                               // still being a hard backstop, not unbounded.
             })) {
               if (event.type === "text_delta") {
                 sentenceBuffer += event.text;
@@ -644,14 +470,13 @@ export async function POST(request: Request) {
                 }
                 sentenceBuffer = remainder;
               } else if (event.type === "done") {
-                iterationContent = event.output;
-                iterationFinishReason = event.finishReason;
-                iterationUsage = event.usage;
+                iterationContent = event.content;
+                iterationStopReason = event.stopReason;
               } else if (event.type === "error") {
                 iterationError = event.error;
               }
-              // tool_use events carry the same items already present in
-              // event.output once "done" fires — no separate handling
+              // tool_use events carry the same blocks already present in
+              // event.content once "done" fires — no separate handling
               // needed here, matches the shape the old askClaudeWithTools
               // caller already consumed via result.content.
             }
@@ -663,21 +488,7 @@ export async function POST(request: Request) {
             }
 
             console.log(
-              `[voice-respond] Claude call ${i + 1}: finishReason=${iterationFinishReason} in ${Math.round(performance.now() - callStart)}ms`
-            );
-            // Prompt-cache verification — staticPromptHash should be
-            // identical across every call in every session (confirms the
-            // "byte-identical prefix" claim STATIC_SYSTEM_PROMPT depends
-            // on); cachedTokens > 0 confirms this specific call actually
-            // hit the cache rather than reprocessing the prefix from
-            // scratch. Expect cachedTokens=0/cacheWriteTokens>0 on a
-            // session's first call (nothing cached yet to hit) and
-            // cachedTokens>0 from the second call onward.
-            console.log(
-              `[voice-respond] Prompt cache: staticPromptHash=${STATIC_SYSTEM_PROMPT_HASH} ` +
-                `cachedTokens=${iterationUsage?.input_tokens_details?.cached_tokens ?? "n/a"} ` +
-                `cacheWriteTokens=${iterationUsage?.input_tokens_details?.cache_write_tokens ?? "n/a"} ` +
-                `inputTokens=${iterationUsage?.input_tokens ?? "n/a"}`
+              `[voice-respond] Claude call ${i + 1}: stopReason=${iterationStopReason} in ${Math.round(performance.now() - callStart)}ms`
             );
 
             // Flush whatever's left in the buffer once this iteration's
@@ -694,40 +505,23 @@ export async function POST(request: Request) {
               await drainReady();
             }
 
-            // iterationContent's items (ResponseOutputMessage /
-            // ResponseFunctionToolCall) structurally satisfy ResponseInputItem's
-            // corresponding members, but TS's ResponseOutputItem union is
-            // broader (reasoning items, MCP calls, etc. this app never
-            // produces) than ResponseInputItem's — cast rather than narrow,
-            // same spread-not-wrapped shape the Responses API expects for
-            // feeding a turn's own output back in as the next input.
-            messages.push(...(iterationContent as unknown as ResponseInputItem[]));
+            messages.push({ role: "assistant", content: iterationContent });
 
-            if (iterationFinishReason !== "tool_calls") {
-              const messageItem = iterationContent.find((item) => item.type === "message");
-              const textBlock =
-                messageItem && messageItem.type === "message"
-                  ? messageItem.content.find((c) => c.type === "output_text")
-                  : null;
-              finalText = textBlock && textBlock.type === "output_text" ? textBlock.text : null;
+            if (iterationStopReason !== "tool_use") {
+              const textBlock = iterationContent.find((b) => b.type === "text");
+              finalText = textBlock && textBlock.type === "text" ? textBlock.text : null;
               break;
             }
 
             const toolUseBlocks = iterationContent.filter(
-              (item): item is ResponseFunctionToolCall => item.type === "function_call"
+              (b): b is Anthropic.ToolUseBlock => b.type === "tool_use"
             );
 
             const toolStart = performance.now();
-            const toolResults: ResponseInputItem.FunctionCallOutput[] = await Promise.all(
+            const toolResults: Anthropic.ToolResultBlockParam[] = await Promise.all(
               toolUseBlocks.map(async (block) => {
                 toolsUsed.push(block.name);
-                let toolInput: unknown = {};
-                try {
-                  toolInput = JSON.parse(block.arguments);
-                } catch (err) {
-                  console.error(`[voice-respond] Failed to parse arguments for ${block.name}:`, err);
-                }
-                const result = await executeTool(block.name, toolInput, sessionId);
+                const result = await executeTool(block.name, block.input, sessionId);
                 if (result.visual) visual = result.visual;
                 // push_to_screen's whole point is showing up before North
                 // finishes speaking — sent as its own SSE event the instant
@@ -749,16 +543,6 @@ export async function POST(request: Request) {
                 if (result.hologram) {
                   controller.enqueue(sseEvent(encoder, "hologram", result.hologram));
                 }
-                // control_ui's generic action name/params pair — same
-                // immediate-delivery timing as display/hologram above, one
-                // event type covering every current and future action
-                // rather than a new event per capability. See
-                // app/sandbox/voice-session-context.tsx for the
-                // client-side listener and app/sandbox/hologram-panel.tsx
-                // for the registry most actions dispatch into.
-                if (result.uiAction) {
-                  controller.enqueue(sseEvent(encoder, "ui_action", result.uiAction));
-                }
                 // Choke-point action logging (see lib/action-log-store.ts) — this is
                 // the single call site every tool execution passes through, so
                 // wrapping it here captures the full #65 activity log without
@@ -776,14 +560,14 @@ export async function POST(request: Request) {
                     () => {}
                   );
                 }
-                return { type: "function_call_output" as const, call_id: block.call_id, output: result.text };
+                return { type: "tool_result" as const, tool_use_id: block.id, content: result.text };
               })
             );
             console.log(
               `[voice-respond] Tool execution (${toolUseBlocks.map((b) => b.name).join(", ")}) in ${Math.round(performance.now() - toolStart)}ms`
             );
 
-            messages.push(...toolResults);
+            messages.push({ role: "user", content: toolResults });
           }
 
           const responseText = finalText ?? "I didn't catch that clearly — mind trying again?";
@@ -804,7 +588,7 @@ export async function POST(request: Request) {
           // without making the caller wait for it.
           after(async () => {
             try {
-              await saveSession(sessionId, updatedTurns, summary);
+              await saveSession(sessionId, updatedTurns);
             } catch (error) {
               console.error("[voice-respond] saveSession failed:", error);
             }
@@ -842,5 +626,11 @@ export async function POST(request: Request) {
     },
   });
 
-  return sseResponse(stream);
+  return new Response(stream, {
+    headers: {
+      "Content-Type": "text/event-stream",
+      "Cache-Control": "no-cache, no-transform",
+      Connection: "keep-alive",
+    },
+  });
 }

@@ -1,15 +1,16 @@
 // Deliberately no "server-only" guard — shared with the esbuild-bundled
 // Cloud Functions runtime (functions/src/synthesis-scan.ts), same reasoning
-// as lib/synthesis-context.ts. This is why lib/openai-client.ts had its own
-// "server-only" guard removed — this file depends on it directly.
-import { askOpenAI, MODEL_AGENTIC } from "./openai-client";
+// as lib/synthesis-context.ts. This is why lib/anthropic-client.ts had its
+// own "server-only" guard removed — this file depends on it directly.
+import { askClaude } from "./anthropic-client";
 import type { SynthesisContext } from "./synthesis-context";
 
 // A reasoning task this open-ended (finding non-obvious connections across
-// heterogeneous sources) benefits from the agentic-tier model rather than
-// the classifier tier — see North_Vector_Synthesis_Engine_Plan.md Section
-// 5.4. Requested explicitly here rather than silently inheriting a default.
-const SYNTHESIS_MODEL = MODEL_AGENTIC;
+// heterogeneous sources) benefits from a stronger model than the shared
+// Haiku default — see North_Vector_Synthesis_Engine_Plan.md Section 5.4.
+// Requested explicitly here rather than silently inheriting whatever the
+// global default happens to be.
+const SYNTHESIS_MODEL = "claude-sonnet-5";
 
 // Rewritten per North_Vector_Synthesis_Engine_Plan.md Section 0.1: the
 // original draft erred toward fewer, high-confidence connections, matching
@@ -156,10 +157,10 @@ export function parseConnections(text: string): SynthesisConnection[] {
 }
 
 export async function runSynthesis(context: SynthesisContext): Promise<SynthesisConnection[]> {
-  const result = await askOpenAI({
+  const result = await askClaude({
     systemPrompt: SYNTHESIS_SYSTEM_PROMPT,
     userMessage: serializeContextForPrompt(context),
-    maxTokens: 1500, // meaningfully larger than any other askOpenAI call in
+    maxTokens: 1500, // meaningfully larger than any other askClaude call in
                       // the codebase — this is doing real cross-source
                       // reasoning, not a one-line verdict
     model: SYNTHESIS_MODEL,

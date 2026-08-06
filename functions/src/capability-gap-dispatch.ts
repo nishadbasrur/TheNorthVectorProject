@@ -33,8 +33,7 @@ export async function dispatchCapabilityDraft(
   gapId: string,
   kind: "capability" | "bug_fix",
   request: string,
-  capability: string,
-  proposedApproach?: string
+  capability: string
 ): Promise<boolean> {
   try {
     const response = await fetch(GITHUB_DISPATCH_URL, {
@@ -46,13 +45,7 @@ export async function dispatchCapabilityDraft(
       },
       body: JSON.stringify({
         ref: "main",
-        // workflow_dispatch inputs must all be strings — proposedApproach
-        // omitted (rather than sent as "") only reads as cleaner in the
-        // Actions UI for manual runs; the workflow's own input default
-        // ("") makes either form equivalent downstream.
-        inputs: proposedApproach
-          ? { gapId, kind, request, capability, proposedApproach }
-          : { gapId, kind, request, capability },
+        inputs: { gapId, kind, request, capability },
       }),
     });
 

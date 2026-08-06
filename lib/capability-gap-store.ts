@@ -64,11 +64,10 @@ const APP_URL = "https://north-vector--the-north-vector-project.us-east4.hosted.
 // North_Vector_Autonomous_Self_Extension_Plan.md for why the further step
 // (North writing and shipping its own new tools with no review) is a
 // separate, much larger decision, not implemented here.
-export async function logCapabilityGap(request: string, capability: string, proposedApproach?: string): Promise<void> {
+export async function logCapabilityGap(request: string, capability: string): Promise<void> {
   await adminDb.collection("capability_gaps").add({
     request,
     capability,
-    ...(proposedApproach ? { proposedApproach } : {}),
     createdAt: FieldValue.serverTimestamp(),
     status: "pending_gap",
   });
@@ -101,11 +100,6 @@ export type CapabilityGap = {
   kind: "capability" | "bug_fix" | "draft_email" | "memory_promotion";
   request: string;
   capability: string;
-  // North's own best guess at how to close the gap, set at note_capability_gap
-  // time — feeds scripts/draft-capability.js as a head start, not a
-  // guarantee. Only set for kind "capability"; null on every doc predating
-  // this field.
-  proposedApproach: string | null;
   status: "pending_gap" | "pending_review" | "approved" | "denied";
   prNumber: number | null;
   prUrl: string | null;
@@ -144,7 +138,6 @@ function parseCapabilityGap(data: FirebaseFirestore.DocumentData): CapabilityGap
             : "capability",
     request: typeof data.request === "string" ? data.request : "",
     capability: typeof data.capability === "string" ? data.capability : "",
-    proposedApproach: typeof data.proposedApproach === "string" ? data.proposedApproach : null,
     status: (data.status as CapabilityGap["status"]) ?? "pending_gap",
     prNumber: typeof data.prNumber === "number" ? data.prNumber : null,
     prUrl: typeof data.prUrl === "string" ? data.prUrl : null,
