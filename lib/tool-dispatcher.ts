@@ -159,8 +159,20 @@ export const TOOL_DEFINITIONS: Anthropic.Tool[] = [
       type: "object",
       properties: {
         title: { type: "string" },
-        start: { type: "string", description: "ISO datetime." },
-        end: { type: "string", description: "ISO datetime." },
+        start: {
+          type: "string",
+          description:
+            "Local wall-clock datetime in Nishad's own timezone (America/New_York), formatted " +
+            "\"YYYY-MM-DDTHH:MM:SS\" with NO UTC offset and NO trailing Z (e.g. \"2026-08-05T21:00:00\" " +
+            "means literally 9:00 PM Eastern — do not convert to UTC first).",
+        },
+        end: {
+          type: "string",
+          description:
+            "Local wall-clock datetime in Nishad's own timezone (America/New_York), formatted " +
+            "\"YYYY-MM-DDTHH:MM:SS\" with NO UTC offset and NO trailing Z (e.g. \"2026-08-05T22:00:00\" " +
+            "means literally 10:00 PM Eastern — do not convert to UTC first).",
+        },
         attendees: {
           type: "array",
           items: { type: "string" },
@@ -181,8 +193,20 @@ export const TOOL_DEFINITIONS: Anthropic.Tool[] = [
       properties: {
         eventId: { type: "string" },
         title: { type: "string" },
-        start: { type: "string", description: "ISO datetime." },
-        end: { type: "string", description: "ISO datetime." },
+        start: {
+          type: "string",
+          description:
+            "Local wall-clock datetime in Nishad's own timezone (America/New_York), formatted " +
+            "\"YYYY-MM-DDTHH:MM:SS\" with NO UTC offset and NO trailing Z (e.g. \"2026-08-05T21:00:00\" " +
+            "means literally 9:00 PM Eastern — do not convert to UTC first).",
+        },
+        end: {
+          type: "string",
+          description:
+            "Local wall-clock datetime in Nishad's own timezone (America/New_York), formatted " +
+            "\"YYYY-MM-DDTHH:MM:SS\" with NO UTC offset and NO trailing Z (e.g. \"2026-08-05T22:00:00\" " +
+            "means literally 10:00 PM Eastern — do not convert to UTC first).",
+        },
       },
       required: ["eventId"],
     },
