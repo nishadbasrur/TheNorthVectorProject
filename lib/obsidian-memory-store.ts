@@ -1,7 +1,7 @@
 import { text as readStreamAsText } from "node:stream/consumers";
 import { drive, auth as googleAuth, type drive_v3 } from "@googleapis/drive";
 import matter from "gray-matter";
-import { askClaude } from "./anthropic-client";
+import { askOpenAI, MODEL_CLASSIFIER } from "./openai-client";
 
 // Deliberately no "server-only" guard — shared with the esbuild-bundled
 // Cloud Functions runtime (functions/src/transcript-batch-scan.ts), same
@@ -117,10 +117,11 @@ const CATEGORY_CLASSIFICATION_SYSTEM_PROMPT =
 // than shared per this codebase's existing convention of each Drive-facing
 // store file being self-contained (see getDriveClient above).
 async function classifyCategory(content: string): Promise<string> {
-  const result = await askClaude({
+  const result = await askOpenAI({
     systemPrompt: CATEGORY_CLASSIFICATION_SYSTEM_PROMPT,
     userMessage: content,
     maxTokens: 20,
+    model: MODEL_CLASSIFIER,
   });
 
   if (!result.ok) {
@@ -288,13 +289,14 @@ const TAG_EXTRACTION_SYSTEM_PROMPT =
 
 // Deliberately small — per the plan's own note, this is "give me 3-5 tags
 // for this sentence," not an elaborate classification system. Uses the
-// shared askClaude default (Haiku), same as every other cheap
-// single-purpose Claude call in this codebase.
+// classifier-tier model, same as every other cheap single-purpose call in
+// this codebase.
 export async function extractTags(content: string): Promise<string[]> {
-  const result = await askClaude({
+  const result = await askOpenAI({
     systemPrompt: TAG_EXTRACTION_SYSTEM_PROMPT,
     userMessage: content,
     maxTokens: 100,
+    model: MODEL_CLASSIFIER,
   });
 
   if (!result.ok) {

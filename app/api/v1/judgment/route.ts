@@ -1,6 +1,6 @@
 import { NextResponse } from "next/server";
 import { requireOwner } from "@/lib/require-owner";
-import { askClaude } from "@/lib/anthropic-client";
+import { askOpenAI, MODEL_AGENTIC } from "@/lib/openai-client";
 import { retrieveMemories } from "@/lib/memory-retrieval";
 import { getPreferences, formatPreferencesForPrompt } from "@/lib/preferences-store";
 import { detectAndStorePreference } from "@/lib/preference-detector";
@@ -44,7 +44,7 @@ export async function POST(request: Request) {
     formatPreferencesForPrompt(preferences);
 
   const [result] = await Promise.all([
-    askClaude({ systemPrompt, userMessage: question, maxTokens: 500 }),
+    askOpenAI({ systemPrompt, userMessage: question, maxTokens: 500, model: MODEL_AGENTIC }),
     detectAndStorePreference(question),
   ]);
 

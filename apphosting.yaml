@@ -87,6 +87,12 @@ env:
     availability:
       - BUILD
       - RUNTIME
+
+  - variable: OPENAI_API_KEY
+    secret: OPENAI_API_KEY
+    availability:
+      - BUILD
+      - RUNTIME
   - variable: GOOGLE_CALENDAR_CLIENT_ID
     secret: GOOGLE_CALENDAR_CLIENT_ID
   - variable: GOOGLE_CALENDAR_CLIENT_SECRET

@@ -39,6 +39,7 @@
     "node_modules",
     "functions",
     "stt-stream-service",
-    "agent-runner-service"
+    "agent-runner-service",
+    "scholarship-service"
   ]
 }

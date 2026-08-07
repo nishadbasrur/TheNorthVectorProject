@@ -21,6 +21,27 @@ const MODEL_FILE_MAP: Record<string, string> = {
   [WAKE_WORD_KEYWORD_WHISPER]: "hey_north_whisper_v0.1.onnx",
 };
 
+// Library default is 0.5 — reported as too conservative ("activates on the
+// slightest hint" was the ask, closer to how Siri behaves). Lowered to fire
+// on weaker/less-confident matches, at the deliberate cost of more false
+// positives. 0.32 is a first-attempt starting value (the fix note's own
+// suggested 0.3-0.35 range), NOT yet confirmed against real "Hey North"
+// utterances with WakeWordEngine's debug score-logging enabled (see the
+// `debug` option below) — that live tuning pass needs an actual human voice
+// into a real microphone, which requires Nishad's own live testing in the
+// sandbox UI. Revisit this constant once real score data comes back.
+// Overridable per-call regardless, so tuning doesn't require touching this
+// file at every call site.
+const DEFAULT_DETECTION_THRESHOLD = 0.32;
+
+// cooldownMs (the library's own 2000ms default, deliberately left
+// unoverridden here) — considered and left as-is. It only governs how long
+// the engine ignores further matches right after a detection fires, so it
+// affects retry latency after a near-miss, not whether a genuine "Hey
+// North" gets missed in the first place; detectionThreshold above is the
+// actual lever for that. Revisit only if real tuning data shows a fast
+// double-attempt getting swallowed by the cooldown window.
+
 type UseWakeWordOptions = {
   // Whether the engine should actively be listening for the wake word right
   // now (true only in the dormant state — see app/sandbox/page.tsx). The
@@ -30,17 +51,39 @@ type UseWakeWordOptions = {
   enabled: boolean;
   onDetect: (event: WakeWordDetectEvent) => void;
   onError?: (error: Error) => void;
+  // How confident a keyword match needs to be (0-1) before it fires —
+  // passed straight through to WakeWordEngine. Omit to use
+  // DEFAULT_DETECTION_THRESHOLD above.
+  detectionThreshold?: number;
+  // Enables WakeWordEngine's own console.debug score logging (one line per
+  // audio chunk per keyword, tagged "[WakeWordEngine] Keyword score") — the
+  // mechanism used to pick DEFAULT_DETECTION_THRESHOLD above. Off by
+  // default; it's a lot of console noise for normal use.
+  debug?: boolean;
 };
 
 export type WakeWordStatus = "loading" | "ready" | "unsupported" | "error";
 
-export function useWakeWord({ enabled, onDetect, onError }: UseWakeWordOptions) {
+export function useWakeWord({
+  enabled,
+  onDetect,
+  onError,
+  detectionThreshold = DEFAULT_DETECTION_THRESHOLD,
+  debug = false,
+}: UseWakeWordOptions) {
   const [status, setStatus] = useState<WakeWordStatus>("loading");
   const engineRef = useRef<WakeWordEngine | null>(null);
   const onDetectRef = useRef(onDetect);
   const onErrorRef = useRef(onError);
   onDetectRef.current = onDetect;
   onErrorRef.current = onError;
+  // Read once at engine-construction time below (the effect this feeds has
+  // an intentionally empty dep array — the engine is created once, not
+  // recreated on every render) via refs, same pattern as onDetect/onError.
+  const detectionThresholdRef = useRef(detectionThreshold);
+  const debugRef = useRef(debug);
+  detectionThresholdRef.current = detectionThreshold;
+  debugRef.current = debug;
 
   useEffect(() => {
     if (typeof window === "undefined") return;
@@ -54,6 +97,8 @@ export function useWakeWord({ enabled, onDetect, onError }: UseWakeWordOptions) 
       modelFiles: MODEL_FILE_MAP,
       baseAssetUrl: "/models",
       ortWasmPath: "/ort/",
+      detectionThreshold: detectionThresholdRef.current,
+      debug: debugRef.current,
     });
     engineRef.current = engine;
 

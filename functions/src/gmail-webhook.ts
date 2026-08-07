@@ -4,7 +4,16 @@ import type { MessagePublishedData } from "firebase-functions/v2/pubsub";
 import { registerGmailWatch, getGmailHistoryDelta } from "../../lib/gmail-client";
 import { getGmailWatchState, saveGmailWatchState, updateGmailHistoryId } from "../../lib/gmail-watch-store";
 import { checkUrgentEmailsRaw } from "../../lib/gmail-urgency";
+import { evaluateWatches } from "../../lib/gmail-watch-evaluator";
+import { createNotification } from "../../lib/notification-store";
 import { sendPushNotification } from "./push";
+
+// Public production URL — same hardcoded-not-sensitive treatment as
+// functions/src/index.ts's own APP_URL constant and
+// lib/capability-gap-store.ts's. Needed here to build the notification
+// deep link (/notifications/{id}) the push payload's `link` field points
+// at — see public/firebase-messaging-sw.js's notificationclick handler.
+const APP_URL = "https://north-vector--the-north-vector-project.us-east4.hosted.app";
 
 // Real-time Gmail push notifications, replacing "on-demand only, never
 // scheduled" with a real trigger — see North_Vector_Real_Time_Triggers_Plan.md
@@ -74,6 +83,36 @@ export async function handleGmailPush(event: CloudEvent<MessagePublishedData<Gma
         `North: ${urgent.length} urgent email${urgent.length === 1 ? "" : "s"}`,
         subjects
       );
+    }
+
+    // Ad-hoc watches (create_watch) — separate concern from the standing
+    // urgency check above (different criteria per watch, own dedup — see
+    // lib/gmail-watch-evaluator.ts), same real-time trigger point. A
+    // no-op Gmail/Claude-call-wise whenever there are no active watches.
+    const watchMatches = await evaluateWatches();
+
+    // Routed through the general notification model (lib/notification-store.ts)
+    // rather than a bare push, same as every future notification producer —
+    // the doc gets written FIRST, then the push references it as the
+    // deep-link target, so a lockscreen tap lands on this match's full
+    // detail (the watch criteria + the actual matched email) instead of
+    // just the app root.
+    for (const match of watchMatches) {
+      const title = `North: ${match.watch.description}`;
+      const summary = `${match.message.subject} — ${match.reason}`;
+      const notificationId = await createNotification({
+        type: "gmail_watch",
+        title,
+        summary,
+        detail:
+          `Watch: ${match.watch.criteria}\n\n` +
+          `From: ${match.message.from}\n` +
+          `Subject: ${match.message.subject}\n\n` +
+          `${match.message.bodyText.slice(0, 2000)}\n\n` +
+          `Why this matched: ${match.reason}`,
+      });
+
+      await sendPushNotification(title, summary, `${APP_URL}/notifications/${notificationId}`);
     }
   } catch (error) {
     logger.error("[gmail-webhook] Failed to process Gmail push:", error);

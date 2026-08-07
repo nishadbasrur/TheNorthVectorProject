@@ -10,13 +10,13 @@
 // Deliberately no "server-only" guard — shared with the esbuild-bundled
 // Cloud Functions runtime (functions/src/weekly-retrospective-scan.ts),
 // same reasoning as lib/weekly-retrospective-engine.ts.
-import { askClaude } from "./anthropic-client";
+import { askOpenAI, MODEL_AGENTIC } from "./openai-client";
 import { loadGeneralMemoriesSince } from "./obsidian-memory-retrieval";
 import { logMemoryPromotionProposal } from "./capability-gap-store";
 
-const PROMOTION_MODEL = "claude-sonnet-5"; // cross-entry pattern-finding, same
-                                             // reasoning tier as the retrospective
-                                             // itself — not a one-line verdict
+const PROMOTION_MODEL = MODEL_AGENTIC; // cross-entry pattern-finding, same
+                                        // reasoning tier as the retrospective
+                                        // itself — not a one-line verdict
 
 // Exported (not just used internally by proposeMemoryPromotions below) so
 // functions/src/weekly-retrospective-scan.ts's Batch API submit/poll path
@@ -93,7 +93,7 @@ export async function proposeMemoryPromotions(): Promise<ProposeMemoryPromotions
     return { ok: true, entriesReviewed: 0, proposalsLogged: 0 };
   }
 
-  const result = await askClaude({
+  const result = await askOpenAI({
     systemPrompt: PROMOTION_SYSTEM_PROMPT,
     userMessage: serializeEntriesForPrompt(entries),
     maxTokens: 1200,

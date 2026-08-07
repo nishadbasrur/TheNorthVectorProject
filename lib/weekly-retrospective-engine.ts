@@ -1,16 +1,16 @@
 // Deliberately no "server-only" guard — shared with the esbuild-bundled
 // Cloud Functions runtime (functions/src/weekly-retrospective-scan.ts), same
-// reasoning as lib/synthesis-engine.ts. Depends on lib/anthropic-client.ts
+// reasoning as lib/synthesis-engine.ts. Depends on lib/openai-client.ts
 // directly for the same reason that file has no "server-only" guard either.
-import { askClaude } from "./anthropic-client";
+import { askOpenAI, MODEL_AGENTIC } from "./openai-client";
 import type { WeeklyRetrospectiveContext } from "./weekly-retrospective-context";
 import type { WeeklyRetrospective } from "./weekly-retrospective-store";
 
-const RETROSPECTIVE_MODEL = "claude-sonnet-5"; // same reasoning as
-                                                 // lib/synthesis-engine.ts's
-                                                 // SYNTHESIS_MODEL — genuine
-                                                 // cross-source reasoning,
-                                                 // not a one-line verdict
+const RETROSPECTIVE_MODEL = MODEL_AGENTIC; // same reasoning as
+                                            // lib/synthesis-engine.ts's
+                                            // SYNTHESIS_MODEL — genuine
+                                            // cross-source reasoning, not a
+                                            // one-line verdict
 
 // Exported (not just used internally by runWeeklyRetrospective below) so
 // functions/src/weekly-retrospective-scan.ts's Batch API submit/poll path
@@ -87,7 +87,7 @@ export function parseRetrospective(text: string, weekId: string): WeeklyRetrospe
 export async function runWeeklyRetrospective(
   context: WeeklyRetrospectiveContext
 ): Promise<WeeklyRetrospective | null> {
-  const result = await askClaude({
+  const result = await askOpenAI({
     systemPrompt: RETROSPECTIVE_SYSTEM_PROMPT,
     userMessage: serializeContextForPrompt(context),
     maxTokens: 800,

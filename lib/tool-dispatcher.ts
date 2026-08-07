@@ -1,6 +1,16 @@
 import "server-only";
-import type Anthropic from "@anthropic-ai/sdk";
-import { createTaskAsAdmin } from "./task-store-admin";
+import {
+  createTaskAsAdmin,
+  getTasksAsAdmin,
+  updateTaskAsAdmin,
+  deleteTaskAsAdmin,
+  moveTaskDateAsAdmin,
+  todayFocusDateAdmin,
+} from "./task-store-admin";
+import { listGoalsAsAdmin } from "./goal-store-admin";
+import type { TaskStatus, TaskPriority, TaskEnergy, TaskDomain, TaskRecord } from "./task-store";
+import type { TaskUpdateFields } from "./task-store-admin";
+import { createWatchAsAdmin, listWatchesAsAdmin, deleteWatchAsAdmin, type WatchRecord } from "./watch-store-admin";
 import {
   getUpcomingEvents,
   createCalendarEvent,
@@ -24,33 +34,135 @@ import { logCapabilityGap, getRecentCapabilityGaps, logDraftEmailGap } from "./c
 import { getRecentIcloudMessages, searchIcloudEmails } from "./icloud-mail-client";
 import { logToolError, getRecentToolErrors } from "./tool-error-log";
 import { logTechnicalError } from "./error-log-store";
-import { askClaudeWithWebSearch } from "./anthropic-client";
+import { askOpenAIWithWebSearch, MODEL_AGENTIC, type ToolDefinition } from "./openai-client";
 import { getRecentTextMessages, searchTextMessages } from "./text-message-store";
 import { requiresConfirmation } from "./tool-tiers";
-import { detectWolframQuery, detectHologramSubject, type HologramSignal } from "./visual-scanner";
+import {
+  detectWolframQuery,
+  detectHologramSubject,
+  type HologramSignal,
+  type HologramStructure,
+  type ReactionSpecies,
+  type ReactionVessel,
+} from "./visual-scanner";
 import { fetchWolframImage } from "./wolfram-client";
+import { fetchPubChemStructure } from "./pubchem-client";
 
 // Single source of truth for what North can do via voice — read directly by
 // Claude as tool schemas, not maintained separately as prose (that
 // duplication, and the drift risk it created, is what
 // lib/capability-manifest.ts used to paper over). See
 // North_Vector_JARVIS_Tool_Calling_Migration_Plan.md Section 5.1.
-export const TOOL_DEFINITIONS: Anthropic.Tool[] = [
+export const TOOL_DEFINITIONS: ToolDefinition[] = [
   {
+    type: "function",
     name: "create_task",
     description:
       "Create a new task/reminder for Nishad. Use when the request is a direct instruction to " +
       "remember or do something later (e.g. \"add task,\" \"remind me to,\" \"I need to...\"), not " +
       "for questions or requests to check on something.",
-    input_schema: {
+    parameters: {
       type: "object",
       properties: {
         title: { type: "string", description: "Short task title, in plain sentence case." },
+        focusDate: {
+          type: "string",
+          description:
+            "Which day's Today's Focus list this task belongs on, as YYYY-MM-DD. Omit to default to " +
+            "today — only pass this when Nishad specifies a different day (e.g. \"remind me tomorrow " +
+            "to...\", \"add a task for Friday\").",
+        },
       },
       required: ["title"],
     },
   },
   {
+    type: "function",
+    name: "list_tasks",
+    description:
+      "Read Nishad's tasks — with no filters, every task across every day. Use this before " +
+      "update_task/delete_task/move_task_date (they need the task id this returns), and any time " +
+      "Nishad asks what's on his plate, what's on today's focus, or references a task by " +
+      "description rather than an id. Read-only.",
+    parameters: {
+      type: "object",
+      properties: {
+        date: {
+          type: "string",
+          description:
+            "Only tasks whose focus day is this YYYY-MM-DD date — e.g. today's date for \"what's on " +
+            "today's focus.\" Omit for every day.",
+        },
+        status: {
+          type: "string",
+          enum: ["scheduled", "active", "completed", "paused", "cancelled"],
+          description: "Only tasks in this status, e.g. \"completed\" for \"what have I finished.\" Omit for every status.",
+        },
+      },
+    },
+  },
+  {
+    type: "function",
+    name: "update_task",
+    description:
+      "Edit an existing task — title, status (including marking it complete or reopening it), " +
+      "priority, or any other field. Requires the task id from list_tasks. Only include the fields " +
+      "actually changing; everything else is left as-is.",
+    parameters: {
+      type: "object",
+      properties: {
+        taskId: { type: "string" },
+        title: { type: "string" },
+        description: { type: "string" },
+        status: { type: "string", enum: ["scheduled", "active", "completed", "paused", "cancelled"] },
+        priority: { type: "string", enum: ["low", "medium", "high", "critical"] },
+        energy: { type: "string", enum: ["low", "medium", "high"] },
+        domain: { type: "string", enum: ["academic", "career", "health", "personal", "north-vector"] },
+        dueDate: { type: "string", description: "External deadline, YYYY-MM-DD. Distinct from focusDate." },
+        notes: { type: "string" },
+        estimatedMinutes: { type: "number" },
+      },
+      required: ["taskId"],
+    },
+  },
+  {
+    type: "function",
+    name: "delete_task",
+    description: "Permanently delete a task. Requires the task id from list_tasks. Executes immediately, no confirmation.",
+    parameters: {
+      type: "object",
+      properties: { taskId: { type: "string" } },
+      required: ["taskId"],
+    },
+  },
+  {
+    type: "function",
+    name: "move_task_date",
+    description:
+      "Move a task to a different day's Today's Focus — the explicit \"move it to another date\" " +
+      "action (e.g. \"push that to tomorrow,\" \"move it to Friday instead\"). Requires the task id " +
+      "from list_tasks. Doesn't touch dueDate, status, or anything else about the task, only which " +
+      "day it's focused on.",
+    parameters: {
+      type: "object",
+      properties: {
+        taskId: { type: "string" },
+        newDate: { type: "string", description: "The new focus day, as YYYY-MM-DD." },
+      },
+      required: ["taskId", "newDate"],
+    },
+  },
+  {
+    type: "function",
+    name: "list_goals",
+    description:
+      "Read Nishad's strategic goals from Weekly Review (title, horizon, status, progress, target " +
+      "date, risk) — use whenever he asks about goals, the Weekly Review page, or progress toward " +
+      "something long-term. Read-only.",
+    parameters: { type: "object", properties: {} },
+  },
+  {
+    type: "function",
     name: "check_email",
     description:
       "Check Gmail. With no query, checks for anything urgent or time-sensitive right now. With a " +
@@ -58,7 +170,7 @@ export const TOOL_DEFINITIONS: Anthropic.Tool[] = [
       "to answer that specific lookup question instead of judging urgency. Only covers the ~25 most " +
       "recent inbox messages — use search_email instead for anything further back. Read-only; use " +
       "send_email/delete_email to act on the inbox.",
-    input_schema: {
+    parameters: {
       type: "object",
       properties: {
         query: {
@@ -70,13 +182,14 @@ export const TOOL_DEFINITIONS: Anthropic.Tool[] = [
     },
   },
   {
+    type: "function",
     name: "search_email",
     description:
       "Search the full inbox history using Gmail's own search syntax — not limited to recent " +
       "messages. Use for anything asking about an email that isn't necessarily recent (e.g. \"find " +
       "that email from a few months ago\", \"emails from GradGuard\"). Supports Gmail operators like " +
       "from:, subject:, older_than:3m, newer_than:1y, has:attachment.",
-    input_schema: {
+    parameters: {
       type: "object",
       properties: {
         query: { type: "string", description: "Gmail search query syntax." },
@@ -85,12 +198,13 @@ export const TOOL_DEFINITIONS: Anthropic.Tool[] = [
     },
   },
   {
+    type: "function",
     name: "send_email",
     description:
       "Draft and send an email on Nishad's behalf. Executes immediately once you decide it's the " +
       "right action — no confirmation step. Use good judgment on tone and content since this sends " +
       "as Nishad, to a real recipient, with no review before it goes out.",
-    input_schema: {
+    parameters: {
       type: "object",
       properties: {
         to: { type: "string", description: "Recipient email address." },
@@ -101,13 +215,14 @@ export const TOOL_DEFINITIONS: Anthropic.Tool[] = [
     },
   },
   {
+    type: "function",
     name: "draft_email",
     description:
       "Save an email as a Gmail draft and offer it for review — never sends. Use instead of " +
       "send_email when YOU notice mid-conversation that Nishad's mentioned meaning to reply to " +
       "someone (not when he directly asks you to send something — that's still send_email). He " +
       "reviews and approves/denies it later in the app; the draft only actually sends if he approves.",
-    input_schema: {
+    parameters: {
       type: "object",
       properties: {
         to: { type: "string", description: "Recipient email address." },
@@ -122,24 +237,75 @@ export const TOOL_DEFINITIONS: Anthropic.Tool[] = [
     },
   },
   {
+    type: "function",
     name: "delete_email",
     description:
       "Move an email to Trash (recoverable for 30 days, not a permanent erase). Requires the " +
       "specific message id — use check_email or search_email first to find it.",
-    input_schema: {
+    parameters: {
       type: "object",
       properties: { messageId: { type: "string" } },
       required: ["messageId"],
     },
   },
   {
+    type: "function",
+    name: "create_watch",
+    description:
+      "Set up an ad-hoc watch on incoming email — every new message is evaluated against this " +
+      "watch's criteria using real language understanding (not keyword matching), and a push " +
+      "notification fires the moment something matches. Use when Nishad asks to be alerted about " +
+      "something specific happening in email that isn't already covered by the standing urgency " +
+      "check (e.g. \"let me know if Chase emails about my ACH transfer,\" \"watch for anything about " +
+      "the Freedom Rise application\"). Not for one-off lookups — use check_email/search_email for " +
+      "those. Executes immediately, no confirmation.",
+    parameters: {
+      type: "object",
+      properties: {
+        criteria: {
+          type: "string",
+          description:
+            "The actual matching rule, written so a classifier can judge a single email against it " +
+            "— e.g. \"An email from Chase about an ACH transfer, or about the Freedom Rise credit " +
+            "card application.\" Be specific enough to avoid false positives.",
+        },
+        description: {
+          type: "string",
+          description:
+            "Short human-readable label for this watch, e.g. \"Chase ACH/Freedom Rise watch\" — " +
+            "shown back when listing active watches and in the push notification itself.",
+        },
+      },
+      required: ["criteria", "description"],
+    },
+  },
+  {
+    type: "function",
+    name: "list_watches",
+    description:
+      "List every active ad-hoc email watch currently running. Use when Nishad asks what North is " +
+      "watching for, or before delete_watch (it needs the watch id this returns). Read-only.",
+    parameters: { type: "object", properties: {} },
+  },
+  {
+    type: "function",
+    name: "delete_watch",
+    description: "Stop an ad-hoc email watch. Requires the watch id from list_watches.",
+    parameters: {
+      type: "object",
+      properties: { watchId: { type: "string" } },
+      required: ["watchId"],
+    },
+  },
+  {
+    type: "function",
     name: "check_calendar",
     description:
       "Check Google Calendar for upcoming events. Defaults to the next 48 hours; pass a narrower or " +
       "wider window if the request implies one (e.g. \"today\" -> 24, \"this week\" -> 168). " +
       "Read-only; use create_calendar_event/update_calendar_event/delete_calendar_event to act on " +
       "the calendar.",
-    input_schema: {
+    parameters: {
       type: "object",
       properties: {
         withinHours: {
@@ -150,12 +316,13 @@ export const TOOL_DEFINITIONS: Anthropic.Tool[] = [
     },
   },
   {
+    type: "function",
     name: "create_calendar_event",
     description:
       "Create a new calendar event on the primary calendar. Executes immediately, no confirmation. " +
       "Other attendees are NOT notified by Google of this change (silent by design) — tell Nishad " +
       "explicitly if anyone else needs to know.",
-    input_schema: {
+    parameters: {
       type: "object",
       properties: {
         title: { type: "string" },
@@ -183,12 +350,13 @@ export const TOOL_DEFINITIONS: Anthropic.Tool[] = [
     },
   },
   {
+    type: "function",
     name: "update_calendar_event",
     description:
       "Modify an existing calendar event's time or title. Requires the event id from check_calendar. " +
       "Other attendees are NOT notified by Google of this change (silent by design) — tell Nishad " +
       "explicitly if anyone else needs to know, e.g. a shared tutoring session that just moved.",
-    input_schema: {
+    parameters: {
       type: "object",
       properties: {
         eventId: { type: "string" },
@@ -212,30 +380,33 @@ export const TOOL_DEFINITIONS: Anthropic.Tool[] = [
     },
   },
   {
+    type: "function",
     name: "delete_calendar_event",
     description:
       "Delete an existing calendar event. Requires the event id from check_calendar. Other attendees " +
       "are NOT notified by Google of this cancellation (silent by design) — tell Nishad explicitly if " +
       "anyone else needs to know.",
-    input_schema: {
+    parameters: {
       type: "object",
       properties: { eventId: { type: "string" } },
       required: ["eventId"],
     },
   },
   {
+    type: "function",
     name: "check_notion",
     description: "Check the shared Notion database (read-only) for items flagged Urgent.",
-    input_schema: { type: "object", properties: {} },
+    parameters: { type: "object", properties: {} },
   },
   {
+    type: "function",
     name: "get_decision_recommendation",
     description:
       "Get a reasoned recommendation for a \"should I...\" / \"which is better\" style decision " +
       "question, from North's decision engine (which remembers and reuses past answers to the same " +
       "question). Use for decision-shaped questions before answering from general reasoning alone — " +
       "the engine may have a specific stored rule or prior answer worth grounding the reply in.",
-    input_schema: {
+    parameters: {
       type: "object",
       properties: {
         question: { type: "string", description: "The decision question, verbatim or lightly cleaned up." },
@@ -244,6 +415,7 @@ export const TOOL_DEFINITIONS: Anthropic.Tool[] = [
     },
   },
   {
+    type: "function",
     name: "get_proactive_updates",
     description:
       "Check for anything worth knowing that's been surfaced by cross-source reasoning — " +
@@ -251,9 +423,10 @@ export const TOOL_DEFINITIONS: Anthropic.Tool[] = [
       "checking a single source alone. Call this for open-ended asks like 'what should I know', " +
       "'anything I should know about', 'catch me up', or 'what's going on' — not for specific " +
       "single-source questions, which have their own tools.",
-    input_schema: { type: "object", properties: {} },
+    parameters: { type: "object", properties: {} },
   },
   {
+    type: "function",
     name: "get_full_briefing",
     description:
       "Give a full, genuinely synthesized 'state of everything' briefing — calendar, email, Notion, " +
@@ -262,9 +435,10 @@ export const TOOL_DEFINITIONS: Anthropic.Tool[] = [
       "('give me the full rundown', 'what's my whole situation right now', 'brief me on everything') " +
       "— not for a quick check-in, which should use get_proactive_updates instead. This is allowed to " +
       "run longer than the usual brevity rule since it was explicitly requested.",
-    input_schema: { type: "object", properties: {} },
+    parameters: { type: "object", properties: {} },
   },
   {
+    type: "function",
     name: "show_map",
     description:
       "Show an interactive map on screen, or adjust the map that's already showing. Use for any " +
@@ -274,7 +448,7 @@ export const TOOL_DEFINITIONS: Anthropic.Tool[] = [
       "by omitting location and setting zoomDelta/zoomLevel, or by giving a new location to recenter " +
       "on. If nothing is currently showing and no location is given, this fails — ask what place to " +
       "show first.",
-    input_schema: {
+    parameters: {
       type: "object",
       properties: {
         location: {
@@ -295,6 +469,7 @@ export const TOOL_DEFINITIONS: Anthropic.Tool[] = [
     },
   },
   {
+    type: "function",
     name: "highlight_building",
     description:
       "Outline/highlight the building or structure at the center of the map that's currently showing " +
@@ -302,28 +477,71 @@ export const TOOL_DEFINITIONS: Anthropic.Tool[] = [
       "outline\", etc. Requires a map already on screen (call show_map first if nothing is showing). " +
       "Not every location has a distinct building footprint in the map data (parks, open areas, " +
       "natural landmarks) — if none is found, say so rather than pretending it worked.",
-    input_schema: { type: "object", properties: {} },
+    parameters: { type: "object", properties: {} },
   },
   {
+    type: "function",
     name: "push_to_screen",
     description:
       "Push rich visual content to the user's screen during a response. Use this when your response " +
       "includes anything worth seeing rather than just hearing — comparisons, structured data, " +
       "schematics, step-by-step breakdowns, reference material, visualizations, code, tables, or " +
       "anything the user might want to read or refer back to while listening. Call this alongside " +
-      "your voice response, not instead of it. Always pass descriptive text describing what to " +
-      "show — never a raw image URL or file path, even for the \"image\" type. For example, pass " +
-      "\"Caffeine molecule (C8H10N4O2) - molecular structure and properties\", not an image URL. " +
-      "The system finds and renders the appropriate visual from that description itself.",
-    input_schema: {
+      "your voice response, not instead of it. " +
+      "CRITICAL — for \"markdown\", \"json\", and \"html\" (the default and most common cases), " +
+      "`content` gets rendered to the screen verbatim, exactly as written — it must be the actual " +
+      "finished material: real table rows, real data points, real numbers, real text, actually " +
+      "sourced from something Nishad told you or a tool actually returned. It must NEVER be a " +
+      "description or summary of what the panel is supposed to contain (e.g. never write \"A table " +
+      "showing job applications\" — write the actual table, with actual rows) — AND it must never be " +
+      "content you invented or guessed to fill the panel, even if it reads as plausible, real-looking " +
+      "data (e.g. a generic 'starter checklist' for something Nishad has no tracked data for is the " +
+      "exact same failure as a one-line description — both are standing in for data you don't " +
+      "actually have, just in different disguises). If you don't have the real data yet, that's a " +
+      "signal to go get it (call the tool that would have it — list_tasks, search_email, etc. — " +
+      "first) or to say so honestly instead of calling this tool at all — never call it with " +
+      "placeholder, descriptive, or invented text standing in for data you don't actually have. " +
+      "Only the \"image\" type is genuinely different: for that one specific case, " +
+      "`content` IS meant to be a short descriptive lookup query (never a raw image URL or file " +
+      "path) — the system resolves that description to an actual image or rendered visual itself. " +
+      "For example, pass \"Caffeine molecule (C8H10N4O2) - molecular structure and properties\", not " +
+      "an image URL or a description of a panel. This image-type lookup behavior does not extend to " +
+      "markdown/json/html — don't reuse \"descriptive text\" phrasing for those. Whenever " +
+      "what you're showing has a precise real-world name or identity — a specific molecule, a " +
+      "specific card product, a specific building, a specific device — always also pass `subject` " +
+      "with that exact name (e.g. \"caffeine\", \"Chase Freedom Rise Visa Signature\", \"Eiffel " +
+      "Tower\"). This is what lets the system render the real thing (an actual molecular structure, " +
+      "etc.) instead of a generic placeholder — omitting it when a real name is available " +
+      "noticeably degrades what gets shown. When describing a CHEMICAL REACTION specifically " +
+      "(one or two reactants forming a single product — e.g. \"what happens when you burn " +
+      "hydrogen in chlorine gas\"), don't describe it in prose in `content` — instead also pass " +
+      "`reaction` with clean, individually-lookupable compound names/formulas for each reactant " +
+      "and the product (e.g. reactants \"hydrogen\", \"chlorine\"; product \"hydrogen chloride\"). " +
+      "The system resolves and animates each species' real structure and the reactants-becoming-" +
+      "product transformation itself — still keep `content` as a short spoken-alongside summary, " +
+      "just don't rely on it to convey the actual chemistry. Only use `reaction` for exactly this " +
+      "shape (1-2 reactants, exactly 1 product) — for anything more complex (multi-step, more " +
+      "reactants/products, equilibria), just describe it normally in `content` instead, since the " +
+      "reaction visualization doesn't support that yet. When the reaction is described as a WORD " +
+      "PROBLEM SCENARIO rather than just the bare chemistry — dissolved in a solvent, in a beaker/" +
+      "flask, heated, under a catalyst, etc. (e.g. \"sodium chloride dissolved in water and heated " +
+      "to reflux\") — also pass `reaction.vessel` with whatever of `solvent`/`conditions` the " +
+      "problem actually specifies. This shows a beaker with the reactants dropping in and going " +
+      "into solution before the reaction plays, instead of the reactants just floating free — a " +
+      "more literal answer to a scenario described this way. Omit `vessel` entirely for a reaction " +
+      "described as pure chemistry with no physical setup (\"what happens when you burn hydrogen " +
+      "in chlorine gas\") — don't invent a vessel/solvent/conditions the problem didn't mention.",
+    parameters: {
       type: "object",
       properties: {
         content: {
           type: "string",
           description:
-            "Descriptive text of what to display — never a raw image URL or file path. The system " +
-            "resolves the actual visual (including fetching a real image where appropriate) from " +
-            "this description.",
+            "For markdown/json/html (the default): the ACTUAL finished content, rendered verbatim — " +
+            "real rows, real values, real text. Never a description or summary of what should be " +
+            "shown (e.g. never \"A table of applications\" — the real table itself, or don't call " +
+            "this tool). For type \"image\" only: a short descriptive lookup query instead — never a " +
+            "raw image URL or file path — which the system resolves to an actual image itself.",
         },
         type: {
           type: "string",
@@ -334,12 +552,139 @@ export const TOOL_DEFINITIONS: Anthropic.Tool[] = [
             "descriptive text in `content` (e.g. a subject to look up), not a URL — the system " +
             "resolves it to an actual image itself. Defaults to markdown if omitted.",
         },
+        subject: {
+          type: "string",
+          description:
+            "The precise real-world name/formula of what's being shown, when it has one — e.g. " +
+            "\"caffeine\", \"C8H10N4O2\", \"Chase Freedom Rise Visa Signature\". Always provide this " +
+            "when showing a specific molecule, card product, building, or device by name, so the " +
+            "system can render the real thing rather than a generic placeholder shape. Omit only " +
+            "when what's being shown genuinely has no specific real-world identity.",
+        },
+        reaction: {
+          type: "object",
+          description:
+            "For a chemical reaction with 1-2 reactants forming exactly 1 product — see this " +
+            "tool's main description. Omit entirely for anything else.",
+          properties: {
+            reactants: {
+              type: "array",
+              minItems: 1,
+              maxItems: 2,
+              items: {
+                type: "object",
+                properties: {
+                  subject: {
+                    type: "string",
+                    description: "Clean, PubChem-lookupable compound name or formula, e.g. \"hydrogen\" or \"H2\".",
+                  },
+                  coefficient: {
+                    type: "number",
+                    description: "Stoichiometric coefficient, if relevant. Not yet used for rendering — reserved for a future phase.",
+                  },
+                },
+                required: ["subject"],
+              },
+            },
+            products: {
+              type: "array",
+              minItems: 1,
+              maxItems: 1,
+              items: {
+                type: "object",
+                properties: {
+                  subject: {
+                    type: "string",
+                    description: "Clean, PubChem-lookupable compound name or formula for the product.",
+                  },
+                  coefficient: {
+                    type: "number",
+                    description: "Stoichiometric coefficient, if relevant. Not yet used for rendering — reserved for a future phase.",
+                  },
+                },
+                required: ["subject"],
+              },
+            },
+            vessel: {
+              type: "object",
+              description:
+                "Only for a reaction described as a word-problem scenario with a physical setup — " +
+                "see this tool's main description. Omit entirely for a bare-chemistry reaction " +
+                "(free-floating reactants, no beaker).",
+              properties: {
+                solvent: {
+                  type: "string",
+                  description: "The solvent the reactants are dissolved/suspended in, if the problem names one, e.g. \"water\".",
+                },
+                conditions: {
+                  type: "string",
+                  description:
+                    "Short reaction-conditions readout as it would appear over a reaction arrow, e.g. " +
+                    "\"Δ, 350°C\", \"catalyst: Pt\", \"reflux\". Free text, shown as-is near the vessel.",
+                },
+              },
+            },
+          },
+          required: ["reactants", "products"],
+        },
         title: { type: "string", description: "Optional title shown at the top of the display panel." },
       },
       required: ["content"],
     },
   },
   {
+    type: "function",
+    name: "control_ui",
+    description:
+      "Directly control something already on the user's screen — dismiss it, toggle a view state, drive a " +
+      "reaction hologram's playback, or switch the app's current view. Fires immediately with no confirmation " +
+      "step — these are all reversible, UI-only actions, not anything that changes data. Currently supported " +
+      "`action` values (keep this list in sync with UI_ACTION_NAMES in lib/tool-dispatcher.ts and the " +
+      "client-side registries in app/sandbox/hologram-panel.tsx and voice-session-context.tsx whenever a new " +
+      "action is added anywhere):\n" +
+      "- close_display: dismiss whatever's currently shown (a push_to_screen display panel or a hologram). No params.\n" +
+      "- toggle_labels: show/hide element-symbol labels on the current hologram, if it has any. No params.\n" +
+      "- show_all: undo isolate — restore full opacity to every part of the current hologram. No params.\n" +
+      "- reaction_play: resume a paused reaction hologram's playback. No params.\n" +
+      "- reaction_pause: pause a playing reaction hologram. No params.\n" +
+      "- reaction_seek: jump a reaction hologram to a specific point. params: { progress: number } — 0 is the " +
+      "very start, 1 is fully finished, 0-1 in between.\n" +
+      "- reaction_speed: set a reaction hologram's playback speed. params: { multiplier: number } — one of " +
+      "0.25, 0.5, 1, 2, 4.\n" +
+      "- navigate: switch the app's current view. params: { target: string } — one of \"north\", \"dashboard\", " +
+      "\"weekly_review\".\n" +
+      "Only call this for something that's genuinely already on screen and controllable this way — e.g. don't " +
+      "call reaction_play when no reaction hologram is showing, and don't invent an action name not listed above.",
+    parameters: {
+      type: "object",
+      properties: {
+        action: {
+          type: "string",
+          enum: [
+            "close_display",
+            "toggle_labels",
+            "show_all",
+            "reaction_play",
+            "reaction_pause",
+            "reaction_seek",
+            "reaction_speed",
+            "navigate",
+          ],
+          description: "Which action to perform — see this tool's description for the full current list.",
+        },
+        params: {
+          type: "object",
+          description:
+            "Action-specific parameters, only for the few actions that need them (reaction_seek, " +
+            "reaction_speed, navigate) — see this tool's description for each one's shape. Omit entirely for " +
+            "every other action.",
+        },
+      },
+      required: ["action"],
+    },
+  },
+  {
+    type: "function",
     name: "note_capability_gap",
     description:
       "Log a request that's genuinely outside your current tools — instead of just declining, this " +
@@ -351,7 +696,7 @@ export const TOOL_DEFINITIONS: Anthropic.Tool[] = [
       "anything answerable from general knowledge, reasoning, or arithmetic alone. Still tell " +
       "Nishad plainly in your spoken reply that you can't do it yet and that you've flagged it — " +
       "this doesn't grant the capability immediately.",
-    input_schema: {
+    parameters: {
       type: "object",
       properties: {
         request: { type: "string", description: "What was asked, verbatim or lightly cleaned up." },
@@ -359,11 +704,20 @@ export const TOOL_DEFINITIONS: Anthropic.Tool[] = [
           type: "string",
           description: "Short description of the missing capability, e.g. \"highlight a building's interior layout on the map\".",
         },
+        proposedApproach: {
+          type: "string",
+          description:
+            "Your own best guess at how this gap could be closed — which integration, API, or " +
+            "credential it would likely need and roughly how it'd work. Feeds the automatic draft " +
+            "pipeline as a head start, not a guarantee — give your honest best guess even if you're " +
+            "not fully sure, rather than leaving this out.",
+        },
       },
       required: ["request", "capability"],
     },
   },
   {
+    type: "function",
     name: "check_bug_status",
     description:
       "Check the status of bugs North has detected and fixes currently being drafted or awaiting " +
@@ -371,9 +725,10 @@ export const TOOL_DEFINITIONS: Anthropic.Tool[] = [
       "/tool-errors and /capability-review pages. Read-only status check, not a fix trigger — bugs " +
       "get detected and drafted automatically on their own. Use when asked about bugs, issues, fixes " +
       "in progress, or what's in the resolution pipeline.",
-    input_schema: { type: "object", properties: {} },
+    parameters: { type: "object", properties: {} },
   },
   {
+    type: "function",
     name: "check_icloud_email",
     description:
       "Check Nishad's iCloud Mail inbox (separate account from Gmail — use this specifically when " +
@@ -381,7 +736,7 @@ export const TOOL_DEFINITIONS: Anthropic.Tool[] = [
       "didn't answer it). With no query, returns the most recent messages. With a query, looks up " +
       "recent messages to answer that specific question. Only covers the ~25 most recent messages — " +
       "use search_icloud_email for anything further back. Read-only.",
-    input_schema: {
+    parameters: {
       type: "object",
       properties: {
         query: {
@@ -392,12 +747,13 @@ export const TOOL_DEFINITIONS: Anthropic.Tool[] = [
     },
   },
   {
+    type: "function",
     name: "search_icloud_email",
     description:
       "Search Nishad's iCloud Mail inbox history for something not in the most recent messages. Less " +
       "expressive than Gmail search (no from:/subject: operators) — plain keyword/phrase matching " +
       "against headers and body.",
-    input_schema: {
+    parameters: {
       type: "object",
       properties: {
         query: { type: "string", description: "Keywords or phrase to search for." },
@@ -406,13 +762,14 @@ export const TOOL_DEFINITIONS: Anthropic.Tool[] = [
     },
   },
   {
+    type: "function",
     name: "check_messages",
     description:
       "Check Nishad's recent text messages (iMessage/SMS, synced from his Mac). With no query, " +
       "returns the most recent messages. With a query, looks up recent messages to answer that " +
       "specific question. Only covers the ~25 most recent messages — use search_messages for " +
       "anything further back. Read-only; there is no tool to send a text yet.",
-    input_schema: {
+    parameters: {
       type: "object",
       properties: {
         query: {
@@ -423,11 +780,12 @@ export const TOOL_DEFINITIONS: Anthropic.Tool[] = [
     },
   },
   {
+    type: "function",
     name: "search_messages",
     description:
       "Search Nishad's text message history for something not in the most recent messages — plain " +
       "keyword/phrase matching against the message text and sender.",
-    input_schema: {
+    parameters: {
       type: "object",
       properties: {
         query: { type: "string", description: "Keywords or phrase to search for." },
@@ -436,13 +794,14 @@ export const TOOL_DEFINITIONS: Anthropic.Tool[] = [
     },
   },
   {
+    type: "function",
     name: "log_technical_error",
     description:
       "Log a backend error, bug, or technical issue to a secure internal review area for later " +
       "diagnosis and repair. Use when Nishad reports something technically broken (an error, a " +
       "crash, a failure, unexpected behavior) that engineering should look at — not for a general " +
       "missing feature (use note_capability_gap) and not for a personal to-do (use create_task).",
-    input_schema: {
+    parameters: {
       type: "object",
       properties: {
         description: {
@@ -462,6 +821,7 @@ export const TOOL_DEFINITIONS: Anthropic.Tool[] = [
     },
   },
   {
+    type: "function",
     name: "research",
     description:
       "Look up anything needing current or external information, using live web search — weather, " +
@@ -472,7 +832,7 @@ export const TOOL_DEFINITIONS: Anthropic.Tool[] = [
       "Don't use this for anything involving Nishad's own accounts/data (email, calendar, tasks, " +
       "Notion — those have their own tools) or for pure arithmetic/reasoning you can already do " +
       "directly without external information.",
-    input_schema: {
+    parameters: {
       type: "object",
       properties: {
         query: { type: "string", description: "What to look up or research, in plain language." },
@@ -481,6 +841,7 @@ export const TOOL_DEFINITIONS: Anthropic.Tool[] = [
     },
   },
   {
+    type: "function",
     name: "run_agent_task",
     description:
       "Spin up an autonomous coding agent (Claude Agent SDK) to carry out a real software task — " +
@@ -492,7 +853,7 @@ export const TOOL_DEFINITIONS: Anthropic.Tool[] = [
       "start anything. Read that description to the user, and only call this again with " +
       "confirmed: true after they clearly say yes out loud in their next reply. Never set " +
       "confirmed: true on the first call.",
-    input_schema: {
+    parameters: {
       type: "object",
       properties: {
         task: {
@@ -531,8 +892,17 @@ function reportToolError(toolName: string, error: unknown, input: unknown): void
   void logToolError(toolName, error, input).catch(() => {});
 }
 
-async function handleCreateTask(input: { title: string }): Promise<string> {
+const TASK_DATE_PATTERN = /^\d{4}-\d{2}-\d{2}$/;
+const TASK_STATUSES: TaskStatus[] = ["scheduled", "active", "completed", "paused", "cancelled"];
+const TASK_PRIORITIES: TaskPriority[] = ["low", "medium", "high", "critical"];
+const TASK_ENERGIES: TaskEnergy[] = ["low", "medium", "high"];
+const TASK_DOMAINS: TaskDomain[] = ["academic", "career", "health", "personal", "north-vector"];
+
+async function handleCreateTask(input: { title: string; focusDate?: string }): Promise<string> {
   try {
+    const focusDate =
+      input.focusDate && TASK_DATE_PATTERN.test(input.focusDate) ? input.focusDate : todayFocusDateAdmin();
+
     await createTaskAsAdmin({
       title: input.title,
       description: "",
@@ -540,11 +910,135 @@ async function handleCreateTask(input: { title: string }): Promise<string> {
       priority: "medium",
       energy: "medium",
       domain: "personal",
+      focusDate,
     });
-    return `Created task: "${input.title}".`;
+    return `Created task: "${input.title}" for ${focusDate}.`;
   } catch (error) {
     reportToolError("create_task", error, input);
     return "Task creation failed — tell Nishad to try again.";
+  }
+}
+
+function formatTaskLine(task: TaskRecord): string {
+  const parts = [`priority: ${task.priority}`, `focus: ${task.focusDate}`];
+  if (task.dueDate) parts.push(`due: ${task.dueDate}`);
+  return `[${task.id}] ${task.title} — ${task.status} (${parts.join(", ")})`;
+}
+
+// The read access North was completely missing before this — see this
+// tool's schema description. Every taskId embedded in the output text is
+// deliberate: update_task/delete_task/move_task_date all need one, and
+// this is the only place Claude ever sees them.
+async function handleListTasks(input: { date?: string; status?: string }): Promise<string> {
+  try {
+    const status = input.status && TASK_STATUSES.includes(input.status as TaskStatus) ? (input.status as TaskStatus) : undefined;
+    const tasks = await getTasksAsAdmin({ focusDate: input.date, status });
+
+    if (tasks.length === 0) {
+      return "No tasks match that.";
+    }
+
+    return `${tasks.length} task${tasks.length === 1 ? "" : "s"}:\n${tasks.map(formatTaskLine).join("\n")}`;
+  } catch (error) {
+    reportToolError("list_tasks", error, input);
+    return "Couldn't read tasks just now — tell Nishad to try again.";
+  }
+}
+
+async function handleUpdateTask(input: {
+  taskId?: string;
+  title?: string;
+  description?: string;
+  status?: string;
+  priority?: string;
+  energy?: string;
+  domain?: string;
+  dueDate?: string;
+  notes?: string;
+  estimatedMinutes?: number;
+}): Promise<string> {
+  try {
+    if (!input.taskId) {
+      return "No task id given — call list_tasks first to find the one to edit.";
+    }
+
+    const fields: TaskUpdateFields = {};
+    if (input.title !== undefined) fields.title = input.title;
+    if (input.description !== undefined) fields.description = input.description;
+    if (input.status !== undefined && TASK_STATUSES.includes(input.status as TaskStatus)) {
+      fields.status = input.status as TaskStatus;
+    }
+    if (input.priority !== undefined && TASK_PRIORITIES.includes(input.priority as TaskPriority)) {
+      fields.priority = input.priority as TaskPriority;
+    }
+    if (input.energy !== undefined && TASK_ENERGIES.includes(input.energy as TaskEnergy)) {
+      fields.energy = input.energy as TaskEnergy;
+    }
+    if (input.domain !== undefined && TASK_DOMAINS.includes(input.domain as TaskDomain)) {
+      fields.domain = input.domain as TaskDomain;
+    }
+    if (input.dueDate !== undefined) fields.dueDate = input.dueDate;
+    if (input.notes !== undefined) fields.notes = input.notes;
+    if (input.estimatedMinutes !== undefined) fields.estimatedMinutes = input.estimatedMinutes;
+
+    await updateTaskAsAdmin(input.taskId, fields);
+    return "Updated that task.";
+  } catch (error) {
+    reportToolError("update_task", error, input);
+    return "Updating that task failed — tell Nishad to try again.";
+  }
+}
+
+async function handleDeleteTask(input: { taskId?: string }): Promise<string> {
+  try {
+    if (!input.taskId) {
+      return "No task id given — call list_tasks first to find the one to delete.";
+    }
+    await deleteTaskAsAdmin(input.taskId);
+    return "Deleted that task.";
+  } catch (error) {
+    reportToolError("delete_task", error, input);
+    return "Deleting that task failed — tell Nishad to try again.";
+  }
+}
+
+async function handleMoveTaskDate(input: { taskId?: string; newDate?: string }): Promise<string> {
+  try {
+    if (!input.taskId || !input.newDate) {
+      return "Need both a task id and a new date — call list_tasks first if the id is missing.";
+    }
+    if (!TASK_DATE_PATTERN.test(input.newDate)) {
+      return `"${input.newDate}" isn't a valid date (expected YYYY-MM-DD) — nothing was moved.`;
+    }
+
+    await moveTaskDateAsAdmin(input.taskId, input.newDate);
+    return `Moved that task to ${input.newDate}.`;
+  } catch (error) {
+    reportToolError("move_task_date", error, input);
+    return "Moving that task failed — tell Nishad to try again.";
+  }
+}
+
+async function handleListGoals(): Promise<string> {
+  try {
+    const goals = await listGoalsAsAdmin();
+
+    if (goals.length === 0) {
+      return "No goals recorded yet.";
+    }
+
+    const formatted = goals
+      .map(
+        (g) =>
+          `[${g.id}] ${g.title} — ${g.status}, ${g.horizon}-term, ${g.progress}% (risk: ${g.risk})` +
+          (g.targetDate ? `, target ${g.targetDate}` : "")
+      )
+      .join("\n");
+
+    return `${goals.length} goal${goals.length === 1 ? "" : "s"}:\n${formatted}`;
+  } catch (error) {
+    reportToolError("list_goals", error, {});
+    return "Couldn't read goals just now — tell Nishad to try again.";
   }
 }
 
@@ -660,6 +1154,56 @@ async function handleDeleteEmail(input: { messageId: string }): Promise<string> 
   } catch (error) {
     reportToolError("delete_email", error, input);
     return "Deleting the email failed — tell Nishad to try again.";
+  }
+}
+
+async function handleCreateWatch(input: { criteria?: string; description?: string }): Promise<string> {
+  try {
+    const criteria = input.criteria?.trim();
+    const description = input.description?.trim();
+
+    if (!criteria || !description) {
+      return "Need both criteria and a description to set up a watch.";
+    }
+
+    await createWatchAsAdmin({ criteria, description });
+    return `Watching for: ${description}.`;
+  } catch (error) {
+    reportToolError("create_watch", error, input);
+    return "Couldn't set up that watch — tell Nishad to try again.";
+  }
+}
+
+function formatWatchLine(watch: WatchRecord): string {
+  return `[${watch.id}] ${watch.description} — "${watch.criteria}"`;
+}
+
+async function handleListWatches(): Promise<string> {
+  try {
+    const watches = await listWatchesAsAdmin();
+
+    if (watches.length === 0) {
+      return "No active watches right now.";
+    }
+
+    return `${watches.length} active watch${watches.length === 1 ? "" : "es"}:\n${watches.map(formatWatchLine).join("\n")}`;
+  } catch (error) {
+    reportToolError("list_watches", error, {});
+    return "Couldn't read watches just now — tell Nishad to try again.";
+  }
+}
+
+async function handleDeleteWatch(input: { watchId?: string }): Promise<string> {
+  try {
+    if (!input.watchId) {
+      return "No watch id given — call list_watches first to find the one to stop.";
+    }
+
+    await deleteWatchAsAdmin(input.watchId);
+    return "Stopped that watch.";
+  } catch (error) {
+    reportToolError("delete_watch", error, input);
+    return "Stopping that watch failed — tell Nishad to try again.";
   }
 }
 
@@ -890,10 +1434,65 @@ function isDisplayContentType(value: unknown): value is DisplayContentType {
   return (DISPLAY_TYPES as readonly string[]).includes(value as string);
 }
 
+// Fired by control_ui (see that tool's definition above) — one generic
+// action name/params pair rather than a bespoke SSE event/handler per
+// capability, same immediate-delivery timing as display/hologram above
+// (see app/api/v1/voice/respond/route.ts). Dispatched client-side
+// through a name->handler registry (see app/sandbox/hologram-panel.tsx's
+// UiAction type/registry and voice-session-context.tsx's SSE listeners)
+// rather than a switch per action — adding a new controllable thing is
+// "write one handler function, add one registry entry," not a new
+// tool/schema/event/handler chain each time.
+export type UiAction = { action: string; params?: Record<string, unknown> };
+
+// Keep in sync with control_ui's schema `action` enum above — this is
+// what handleControlUi actually validates against, so a typo or stale
+// entry in the schema description wouldn't be caught by anything else.
+const UI_ACTION_NAMES = new Set([
+  "close_display",
+  "toggle_labels",
+  "show_all",
+  "reaction_play",
+  "reaction_pause",
+  "reaction_seek",
+  "reaction_speed",
+  "navigate",
+]);
+
+async function handleControlUi(input: { action?: string; params?: Record<string, unknown> }): Promise<{
+  text: string;
+  uiAction?: UiAction;
+}> {
+  try {
+    const action = input.action?.trim();
+    if (!action || !UI_ACTION_NAMES.has(action)) {
+      console.log(`[control_ui] Unknown or missing action: ${JSON.stringify(input.action)}`);
+      return { text: `"${input.action}" isn't a recognized UI action — nothing was done.` };
+    }
+
+    console.log(`[control_ui] action=${action} params=${JSON.stringify(input.params ?? {})}`);
+    return {
+      text: "Done.",
+      uiAction: { action, ...(input.params ? { params: input.params } : {}) },
+    };
+  } catch (error) {
+    reportToolError("control_ui", error, input);
+    return { text: "Couldn't control the screen just now — tell Nishad to try again." };
+  }
+}
+
+type ReactionSpeciesInput = { subject?: string; coefficient?: number };
+
 async function handlePushToScreen(input: {
   content?: string;
   type?: string;
   title?: string;
+  subject?: string;
+  reaction?: {
+    reactants?: ReactionSpeciesInput[];
+    products?: ReactionSpeciesInput[];
+    vessel?: ReactionVessel;
+  };
 }): Promise<{ text: string; display?: DisplayContent; hologram?: HologramSignal }> {
   try {
     if (!input.content || input.content.trim().length === 0) {
@@ -903,20 +1502,111 @@ async function handlePushToScreen(input: {
     const type: DisplayContentType = isDisplayContentType(input.type) ? input.type : "markdown";
 
     console.log(`[push_to_screen] Content received (${input.content.length} chars): ${input.content.slice(0, 200)}`);
+    if (input.subject) console.log(`[push_to_screen] Subject: ${input.subject}`);
 
-    // Tier 2 upgrade, checked before Wolfram — a physical/visual subject
-    // (molecule, product, building, card) is strictly better served by the
-    // Three.js hologram takeover than by a flat Wolfram image or a markdown
-    // panel, so this must win the race for any content that matches both
-    // detectHologramSubject and detectWolframQuery (e.g. "molecule" also
-    // satisfies the chemical-formula/atomic-weight Wolfram signals below).
-    // Wolfram is left in place only for genuinely numeric/data content
-    // (equations, unit conversions, nutrition, stats) that has no physical
-    // form to render.
+    // Reaction hologram — checked first, ahead of even the single-molecule
+    // hologram upgrade below, since it's the most specific/richest match
+    // when it applies at all. Phase A only: exactly 1-2 reactants and
+    // exactly 1 product (see this tool's schema description) — anything
+    // outside that shape is left alone here and falls through to the
+    // normal content-based detection below, on the theory that Claude
+    // either didn't mean to invoke reaction mode or asked for something
+    // (multi-step, more species) this phase doesn't support yet.
+    const reactantInputs = input.reaction?.reactants ?? [];
+    const productInputs = input.reaction?.products ?? [];
+    const reactionShapeValid =
+      reactantInputs.length >= 1 &&
+      reactantInputs.length <= 2 &&
+      productInputs.length === 1 &&
+      reactantInputs.every((r) => !!r.subject?.trim()) &&
+      productInputs.every((p) => !!p.subject?.trim());
+
+    console.log(
+      `[push_to_screen] reaction field: ${input.reaction ? (reactionShapeValid ? "valid shape" : "present but unsupported shape — falling through") : "absent"}`
+    );
+
+    if (reactionShapeValid) {
+      const resolveSpecies = async (species: ReactionSpeciesInput): Promise<ReactionSpecies> => {
+        const subject = species.subject!.trim();
+        console.log(`[push_to_screen] Fetching PubChem structure for reaction species "${subject}"`);
+        const structure = await fetchPubChemStructure(subject);
+        if (structure) {
+          console.log(`[push_to_screen] "${subject}" resolved — ${structure.atoms.length} atoms, ${structure.bonds.length} bonds`);
+        } else {
+          console.log(`[push_to_screen] "${subject}" did not resolve — that species falls back to the generic placeholder shape.`);
+        }
+        return { label: subject, ...(structure ? { structure } : {}) };
+      };
+
+      // Resolved in parallel — these are independent lookups, no reason to
+      // make one species wait on another the way handlePushToScreen's
+      // caller already waits on this whole call.
+      const [reactants, products] = await Promise.all([
+        Promise.all(reactantInputs.map(resolveSpecies)),
+        Promise.all(productInputs.map(resolveSpecies)),
+      ]);
+
+      const label = `${reactants.map((r) => r.label).join(" + ")} → ${products.map((p) => p.label).join(" + ")}`;
+
+      // Only carried through when at least one field is actually present —
+      // an empty {} vessel would still switch hologram-panel.tsx into the
+      // beaker scenario (see hasVessel there), which should only happen
+      // when the word problem actually described a physical setup, not
+      // whenever Claude happens to pass an empty `reaction.vessel` object.
+      const vesselInput = input.reaction?.vessel;
+      const solvent = vesselInput?.solvent?.trim();
+      const conditions = vesselInput?.conditions?.trim();
+      const vessel: ReactionVessel | undefined =
+        solvent || conditions ? { ...(solvent ? { solvent } : {}), ...(conditions ? { conditions } : {}) } : undefined;
+      console.log(`[push_to_screen] vessel: ${vessel ? JSON.stringify(vessel) : "absent"}`);
+
+      return {
+        text: "Pushed to the screen.",
+        hologram: { objectType: "reaction", label, reactants, products, ...(vessel ? { vessel } : {}) },
+      };
+    }
+
+    // Hologram upgrade — checked BEFORE the Wolfram check below, and takes
+    // priority over it. A push_to_screen call about a physical thing (a
+    // card, molecule, building, device — see detectHologramSubject) gets
+    // Tier 2's full-screen 3D takeover, which is a richer answer than
+    // either a markdown panel or a flat Wolfram lookup image for content
+    // that's fundamentally about a shape/object, not just data. This
+    // matters concretely for molecules: a formula like "C8H10N4O2" also
+    // matches detectWolframQuery's chemical-formula signal, so without
+    // this running first, Wolfram would win and this task's whole point
+    // (a real, PubChem-sourced 3D structure instead of a generic
+    // placeholder) would never fire.
     const hologramSignal = detectHologramSubject(input.content);
-    console.log(`[push_to_screen] detectHologramSubject: ${hologramSignal ? `hit (${hologramSignal.objectType})` : "miss"}`);
+    console.log(`[push_to_screen] detectHologramSubject: ${hologramSignal ? hologramSignal.objectType : "miss"}`);
     if (hologramSignal) {
-      return { text: "Pushed to the screen.", hologram: hologramSignal };
+      // Prefer the tool's own `subject` over the matched trigger keyword
+      // (e.g. "molecule") as the hologram's label — `subject` is the
+      // precise real-world name Claude was asked to supply (see this
+      // tool's schema description), and it's also the only thing PubChem
+      // can actually look up below.
+      const label = input.subject?.trim() || hologramSignal.label;
+      let structure: HologramStructure | undefined;
+
+      if (hologramSignal.objectType === "molecule" && input.subject?.trim()) {
+        console.log(`[push_to_screen] Fetching PubChem structure for "${input.subject.trim()}"`);
+        const pubchemStructure = await fetchPubChemStructure(input.subject.trim());
+        if (pubchemStructure) {
+          console.log(
+            `[push_to_screen] PubChem structure resolved — ${pubchemStructure.atoms.length} atoms, ${pubchemStructure.bonds.length} bonds`
+          );
+          structure = pubchemStructure;
+        } else {
+          console.log(
+            "[push_to_screen] PubChem structure lookup returned null — hologram falls back to the generic molecule placeholder. See [pubchem-client] logs above for the reason."
+          );
+        }
+      }
+
+      return {
+        text: "Pushed to the screen.",
+        hologram: { objectType: hologramSignal.objectType, label, ...(structure ? { structure } : {}) },
+      };
     }
 
     // Wolfram upgrade — checked at the one real call site where
@@ -925,14 +1615,13 @@ async function handlePushToScreen(input: {
     // app/api/v1/voice/respond/route.ts, ran after the stream's "done"
     // event — always too late, since push_to_screen's own "display" event
     // fires the instant its tool call resolves, well before "done"). A
-    // math/science/data push_to_screen call (equations, unit
-    // conversions, nutrition, stats, chemical formulas — see
-    // detectWolframQuery) gets a real Wolfram Alpha image instead of a
-    // markdown panel, since that's a strictly better answer for this
-    // content. Falls straight back to the original content on any
-    // Wolfram miss (no interpretation, network failure, missing key) — a
-    // false-positive match or a Wolfram outage should never make
-    // push_to_screen fail outright.
+    // math/science/data push_to_screen call (equations, unit conversions,
+    // nutrition, stats, chemical formulas — see detectWolframQuery) gets a
+    // real Wolfram Alpha image instead of a markdown panel, since that's a
+    // strictly better answer for this content. Falls straight back to the
+    // original content on any Wolfram miss (no interpretation, network
+    // failure, missing key) — a false-positive match or a Wolfram outage
+    // should never make push_to_screen fail outright.
     const wolframQuery = detectWolframQuery(input.content);
     console.log(`[push_to_screen] detectWolframQuery: ${wolframQuery ? "hit" : "miss"}`);
     if (wolframQuery) {
@@ -956,8 +1645,61 @@ async function handlePushToScreen(input: {
       );
     }
 
+    // Defensive fallback guard — reached whenever both the hologram and
+    // Wolfram upgrades above miss on this content but Claude still asked
+    // for type: "image". DisplayPanel renders "image" as a literal
+    // `<img src={content}>`, so if `content` is plain descriptive text
+    // (not an actual URL — the normal case reaching here, per this tool's
+    // own schema instructing Claude to never pass a raw URL), the browser
+    // tries to GET the description text itself as a path and gets a 404.
+    // Confirmed live: "Potassium ferrocyanide ... - molecular structure
+    // and chemical properties" with type: "image" produced exactly that —
+    // a broken image request for the url-encoded description. Both
+    // upgrade misses that got content here are separately worth fixing
+    // (see detectHologramSubject's word-stem/plural gaps above), but this
+    // guard is the actual backstop: ANY content that reaches this
+    // fallback with type "image" and isn't a real URL/data URL renders
+    // broken, regardless of why the upgrades missed it, so it's forced to
+    // markdown instead — readable text beats a guaranteed-broken image.
+    const looksLikeUrl = /^(https?:|data:)/i.test(input.content.trim());
+    const resolvedType: DisplayContentType = type === "image" && !looksLikeUrl ? "markdown" : type;
+    if (type === "image" && !looksLikeUrl) {
+      console.log(
+        `[push_to_screen] type "image" requested but content isn't a URL — forcing to markdown. Content: ${input.content.slice(0, 200)}`
+      );
+    }
+
+    // Backstop for the "content describes the panel instead of being the
+    // panel" failure mode (see this tool's own schema description) — a
+    // prompt-only fix has a real failure rate, same lesson already learned
+    // from the raw-image-URL bug above, so this is a hard check, not just
+    // guidance. Matched against the START of the content: real data (a
+    // markdown table, a JSON object, an actual paragraph) doesn't
+    // typically open with "a dashboard showing..." the way a self-
+    // describing placeholder does. Only applies once content has resolved
+    // to markdown/json/html (never "image" — that type's content is a
+    // legitimate lookup query, not data, by design). Imperfect as a hard
+    // rule — a real answer could coincidentally start this way — so this
+    // declines with an honest, actionable message rather than silently
+    // dropping the call.
+    const looksLikeSelfDescription =
+      resolvedType !== "image" &&
+      /^\s*(this is |here('s| is) )?(a|an|the)\s+(dashboard|page|panel|table|chart|graph|visuali[sz]ation|view|screen|widget|tracker|summary)\s+(showing|displaying|for|that (shows|displays|tracks)|of|to (track|show|display))/i.test(
+        input.content
+      );
+    if (looksLikeSelfDescription) {
+      console.warn(
+        `[push_to_screen] Content looks like a description of the panel rather than real data — declining. Content: ${input.content.slice(0, 200)}`
+      );
+      return {
+        text:
+          "I don't actually have real data for that yet — I'll go look it up or tell Nishad honestly " +
+          "there's nothing tracked, rather than push an empty panel.",
+      };
+    }
+
     const display: DisplayContent = {
-      type,
+      type: resolvedType,
       content: input.content,
       ...(input.title ? { title: input.title } : {}),
     };
@@ -969,9 +1711,13 @@ async function handlePushToScreen(input: {
   }
 }
 
-async function handleNoteCapabilityGap(input: { request: string; capability: string }): Promise<string> {
+async function handleNoteCapabilityGap(input: {
+  request: string;
+  capability: string;
+  proposedApproach?: string;
+}): Promise<string> {
   try {
-    await logCapabilityGap(input.request, input.capability);
+    await logCapabilityGap(input.request, input.capability, input.proposedApproach);
     return "Flagged for Nishad to review and build later.";
   } catch (error) {
     reportToolError("note_capability_gap", error, input);
@@ -1168,11 +1914,12 @@ const RESEARCH_SYSTEM_PROMPT =
 // which is a distinct concern from "answer this one question right now."
 async function handleResearch(input: { query: string }): Promise<string> {
   try {
-    const result = await askClaudeWithWebSearch({
+    const result = await askOpenAIWithWebSearch({
       systemPrompt: RESEARCH_SYSTEM_PROMPT,
       userMessage: input.query,
       maxTokens: 800,
       maxSearches: 2,
+      model: MODEL_AGENTIC,
     });
 
     if (!result.ok) {
@@ -1292,25 +2039,58 @@ async function handleRunAgentTask(input: { task: string; targetRepo?: string; co
   }
 }
 
-// Returns { text, visual, display, hologram } uniformly — text is what goes
-// back to Claude as the tool_result content, visual is only ever set by
-// show_map/highlight_building, and display/hologram are only ever set by
-// push_to_screen (mutually exclusive — see handlePushToScreen); all are
-// lifted by app/api/v1/voice/respond/route.ts into what the frontend
-// actually renders (visual via the final "done" event, display/hologram via
-// their own SSE event fired the moment the tool call resolves — see that
-// route for why these use different delivery timing than visual). sessionId
-// is unused by every handler except show_map/highlight_building (the only
-// ones with "current visual" state to read/write), but threading it
-// through executeTool uniformly is simpler than a special case per caller.
+// Returns { text, visual, display, hologram, uiAction } uniformly — text is
+// what goes back to Claude as the tool_result content, visual is only ever
+// set by show_map/highlight_building, display/hologram are only ever set by
+// push_to_screen (mutually exclusive — see handlePushToScreen, which
+// returns at most one of the two), and uiAction is only ever set by
+// control_ui. All are lifted by app/api/v1/voice/respond/route.ts into what
+// the frontend actually renders (visual via the final "done" event,
+// display/hologram/uiAction via their own SSE events fired the moment the
+// tool call resolves — see that route for why these use different delivery
+// timing than visual). sessionId is unused by every handler except
+// show_map/highlight_building (the only ones with "current visual" state to
+// read/write), but threading it through executeTool uniformly is simpler
+// than a special case per caller.
 export async function executeTool(
   name: string,
   input: unknown,
   sessionId: string
-): Promise<{ text: string; visual?: VisualState; display?: DisplayContent; hologram?: HologramSignal }> {
+): Promise<{
+  text: string;
+  visual?: VisualState;
+  display?: DisplayContent;
+  hologram?: HologramSignal;
+  uiAction?: UiAction;
+}> {
   switch (name) {
     case "create_task":
-      return { text: await handleCreateTask(input as { title: string }) };
+      return { text: await handleCreateTask(input as { title: string; focusDate?: string }) };
+    case "list_tasks":
+      return { text: await handleListTasks(input as { date?: string; status?: string }) };
+    case "update_task":
+      return {
+        text: await handleUpdateTask(
+          input as {
+            taskId?: string;
+            title?: string;
+            description?: string;
+            status?: string;
+            priority?: string;
+            energy?: string;
+            domain?: string;
+            dueDate?: string;
+            notes?: string;
+            estimatedMinutes?: number;
+          }
+        ),
+      };
+    case "delete_task":
+      return { text: await handleDeleteTask(input as { taskId?: string }) };
+    case "move_task_date":
+      return { text: await handleMoveTaskDate(input as { taskId?: string; newDate?: string }) };
+    case "list_goals":
+      return { text: await handleListGoals() };
     case "check_email":
       return { text: await handleCheckEmail(input as { query?: string }) };
     case "search_email":
@@ -1323,6 +2103,12 @@ export async function executeTool(
       };
     case "delete_email":
       return { text: await handleDeleteEmail(input as { messageId: string }) };
+    case "create_watch":
+      return { text: await handleCreateWatch(input as { criteria?: string; description?: string }) };
+    case "list_watches":
+      return { text: await handleListWatches() };
+    case "delete_watch":
+      return { text: await handleDeleteWatch(input as { watchId?: string }) };
     case "check_calendar":
       return { text: await handleCheckCalendar(input as { withinHours?: number }) };
     case "create_calendar_event":
@@ -1352,7 +2138,21 @@ export async function executeTool(
     case "highlight_building":
       return handleHighlightBuilding(sessionId);
     case "push_to_screen":
-      return handlePushToScreen(input as { content?: string; type?: string; title?: string });
+      return handlePushToScreen(
+        input as {
+          content?: string;
+          type?: string;
+          title?: string;
+          subject?: string;
+          reaction?: {
+            reactants?: ReactionSpeciesInput[];
+            products?: ReactionSpeciesInput[];
+            vessel?: ReactionVessel;
+          };
+        }
+      );
+    case "control_ui":
+      return handleControlUi(input as { action?: string; params?: Record<string, unknown> });
     case "note_capability_gap":
       return { text: await handleNoteCapabilityGap(input as { request: string; capability: string }) };
     case "check_bug_status":
