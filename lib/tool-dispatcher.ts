@@ -304,9 +304,9 @@ export const TOOL_DEFINITIONS: ToolDefinition[] = [
       "Check Google Calendar for upcoming events. Defaults to the next 48 hours; pass a narrower or " +
       "wider window if the request implies one (e.g. \"today\" -> 24, \"this week\" -> 168). " +
       "Read-only; use create_calendar_event/update_calendar_event/delete_calendar_event to act on " +
-      "the calendar. The result includes a trailing \"[event refs: Title=<real-id>; ...]\" block — " +
-      "that's not part of the spoken summary, it's the real event ids to use for a follow-up " +
-      "update_calendar_event/delete_calendar_event call.",
+      "the calendar. The result includes a trailing \"[event refs: Title=<real-id> (<original-date>); " +
+      "...]\" block — that's not part of the spoken summary, it's the real event ids AND each event's " +
+      "own original date, both needed for a follow-up update_calendar_event/delete_calendar_event call.",
     parameters: {
       type: "object",
       properties: {
@@ -360,6 +360,10 @@ export const TOOL_DEFINITIONS: ToolDefinition[] = [
       "plausible-looking id (\"cal_1\", \"evt_1\", etc. are always wrong and will fail). If a recent " +
       "check_calendar result with that event's real id isn't already in context, call check_calendar " +
       "first to get it, then call this. " +
+      "If Nishad gives only a TIME with no date (\"move it to 4pm\"), the date in start/end must " +
+      "default to that event's OWN original date — the \"(<original-date>)\" pulled straight from the " +
+      "same check_calendar ref block the id came from, never guessed or defaulted to today/tomorrow. " +
+      "Only use a different date if Nishad explicitly names one (\"move it to 4pm Thursday\"). " +
       "Other attendees are NOT notified by Google of this change (silent by design) — tell Nishad " +
       "explicitly if anyone else needs to know, e.g. a shared tutoring session that just moved.",
     parameters: {
@@ -375,14 +379,16 @@ export const TOOL_DEFINITIONS: ToolDefinition[] = [
           description:
             "Local wall-clock datetime in Nishad's own timezone (America/New_York), formatted " +
             "\"YYYY-MM-DDTHH:MM:SS\" with NO UTC offset and NO trailing Z (e.g. \"2026-08-05T21:00:00\" " +
-            "means literally 9:00 PM Eastern — do not convert to UTC first).",
+            "means literally 9:00 PM Eastern — do not convert to UTC first). If Nishad named only a " +
+            "time, reuse this event's own original date from the check_calendar ref block — don't guess.",
         },
         end: {
           type: "string",
           description:
             "Local wall-clock datetime in Nishad's own timezone (America/New_York), formatted " +
             "\"YYYY-MM-DDTHH:MM:SS\" with NO UTC offset and NO trailing Z (e.g. \"2026-08-05T22:00:00\" " +
-            "means literally 10:00 PM Eastern — do not convert to UTC first).",
+            "means literally 10:00 PM Eastern — do not convert to UTC first). If Nishad named only a " +
+            "time, reuse this event's own original date from the check_calendar ref block — don't guess.",
         },
       },
       required: ["eventId"],
@@ -1119,9 +1125,25 @@ function backToBackNote(events: UpcomingEvent[]): string {
 // tool-result string: it becomes part of what the model reads as context,
 // but only the model's own subsequent generated reply is ever run through
 // TTS, never the raw tool result, so this never gets read aloud.
+// Same home-timezone convention as google-calendar-client.ts's own
+// (private) EVENT_TIME_ZONE — "en-CA" is just a convenient locale that
+// happens to format as YYYY-MM-DD, not an actual Canada-specific choice.
+const EVENT_REF_TIME_ZONE = "America/New_York";
+function eventDateKey(date: Date): string {
+  return new Intl.DateTimeFormat("en-CA", { timeZone: EVENT_REF_TIME_ZONE, year: "numeric", month: "2-digit", day: "2-digit" }).format(
+    date
+  );
+}
+
+// Includes each event's own date (not just its id) — summarizeUpcomingEvents'
+// spoken text gives only a time ("at 3:00 PM"), never a date, so without
+// this a bare "move it to 4pm" (no date mentioned) left the model with
+// literally no grounded date to default to and it guessed one, often wrong.
+// Pairing the id with the real date here lets update_calendar_event's own
+// guidance (below) tell the model to just reuse it instead of guessing.
 function eventRefsBlock(events: UpcomingEvent[]): string {
   if (events.length === 0) return "";
-  const refs = events.map((e) => `${e.title}=${e.id}`).join("; ");
+  const refs = events.map((e) => `${e.title}=${e.id} (${eventDateKey(e.start)})`).join("; ");
   return `\n[event refs: ${refs}]`;
 }
 
