@@ -1,5 +1,5 @@
 import "server-only";
-import { askClaude } from "@/lib/anthropic-client";
+import { askOpenAI, MODEL_CLASSIFIER } from "@/lib/openai-client";
 import { getPreferences, setPreference } from "@/lib/preferences-store";
 
 // Cheap rule-based pre-filter — only pay for an extraction call when the
@@ -71,10 +71,11 @@ export async function detectAndStorePreference(userMessage: string): Promise<voi
     const existing = await getPreferences();
     const existingKeys = existing.map((p) => p.key);
 
-    const result = await askClaude({
+    const result = await askOpenAI({
       systemPrompt: buildExtractionPrompt(existingKeys),
       userMessage,
       maxTokens: 100,
+      model: MODEL_CLASSIFIER,
     });
 
     if (!result.ok) return;

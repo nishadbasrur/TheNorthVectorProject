@@ -8,6 +8,7 @@ type CapabilityGap = {
   kind: "capability" | "bug_fix" | "draft_email" | "memory_promotion";
   request: string;
   capability: string;
+  proposedApproach: string | null;
   status: "pending_gap" | "pending_review" | "approved" | "denied";
   prNumber: number | null;
   prUrl: string | null;
@@ -245,6 +246,15 @@ export default function CapabilityReviewPage({ params }: { params: Promise<{ gap
                 {gap.kind === "bug_fix" ? "Error" : "Missing capability"}
               </div>
               <div>{gap.capability}</div>
+
+              {gap.proposedApproach && (
+                <>
+                  <div className="section-heading" style={{ marginTop: 12 }}>
+                    North's proposed approach
+                  </div>
+                  <div>{gap.proposedApproach}</div>
+                </>
+              )}
 
               {gap.summary && (
                 <>

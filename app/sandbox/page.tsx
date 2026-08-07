@@ -90,16 +90,26 @@ export default function SandboxPage() {
     setDisplay,
     hologram,
     setHologram,
+    uiActionQueue,
     handleMicTap,
   } = useVoiceSession();
 
-  const takeoverClass = visual ? "hud-page-map-active" : hologram ? "hud-page-hologram-active" : "";
+  const takeoverClass = visual
+    ? "hud-page-map-active"
+    : hologram
+      ? "hud-page-hologram-active"
+      : display
+        ? "hud-page-display-active"
+        : "";
 
   return (
     <AppShell>
       <div className={`hud-page ${takeoverClass}`}>
         {visual && <HudMap visual={visual} onClose={() => setVisual(null)} />}
-        {hologram && <HologramPanel hologram={hologram} onClose={() => setHologram(null)} />}
+        {hologram && (
+          <HologramPanel hologram={hologram} onClose={() => setHologram(null)} uiActionQueue={uiActionQueue} />
+        )}
+        {display && <DisplayPanel display={display} onClose={() => setDisplay(null)} />}
 
         <div className="hud-ruler">
           {Array.from({ length: 48 }, (_, i) => (
@@ -209,8 +219,6 @@ export default function SandboxPage() {
               {showTranscript ? "Hide details" : "Details"}
             </button>
           </div>
-
-          {display && <DisplayPanel display={display} onClose={() => setDisplay(null)} />}
         </div>
 
         {/* Baked in at build time via next.config.mjs's env block, not read

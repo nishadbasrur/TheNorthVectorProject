@@ -1,13 +1,25 @@
 "use client";
 
 import { createContext, useCallback, useContext, useRef, useState, type ReactNode } from "react";
+import { useRouter } from "next/navigation";
 import type { WakeWordDetectEvent } from "openwakeword-wasm-browser";
 import { auth } from "@/lib/firebase";
 import { isPrivateAudioOutputConnected } from "@/lib/audio-output-detector";
 import { useWakeWord, WAKE_WORD_KEYWORD_WHISPER } from "./use-wake-word";
 import type { MapVisual } from "./hud-map";
 import { isDisplayContent, type DisplayContent } from "./display-panel";
-import { isHologramVisual, type HologramVisual } from "./hologram-panel";
+import { isHologramVisual, type HologramVisual, isUiAction, type UiAction } from "./hologram-panel";
+
+// control_ui's "navigate" action targets — kept in sync with both
+// lib/tool-dispatcher.ts's control_ui tool schema (which target strings
+// are valid) and components/layout/app-shell.tsx's own nav hrefs (the
+// actual routes). An unrecognized target is just ignored rather than
+// navigating anywhere — see handleUiActionPayload below.
+const UI_ACTION_NAVIGATE_TARGETS: Record<string, string> = {
+  north: "/sandbox",
+  dashboard: "/dashboard",
+  weekly_review: "/weekly-review",
+};
 
 // TEMPORARY — lets Nishad grab a real ID token from the browser console for
 // manual curl testing of owner-gated endpoints (e.g. triggerSynthesisScan),
@@ -293,7 +305,8 @@ async function askNorth(
   text: string,
   sessionId: string,
   onDisplay?: (display: DisplayContent) => void,
-  onHologram?: (hologram: HologramVisual) => void
+  onHologram?: (hologram: HologramVisual) => void,
+  onUiAction?: (uiAction: Omit<UiAction, "seq">) => void
 ): Promise<VoiceRespondResult> {
   const response = await postVoiceRespond(text, sessionId);
 
@@ -316,6 +329,11 @@ async function askNorth(
     if (event === "hologram" && isHologramVisual(data)) {
       onHologram?.(data);
     }
+    // control_ui's generic action name/params pair — see
+    // handleUiActionPayload below for what actually happens with it.
+    if (event === "ui_action" && isUiAction(data)) {
+      onUiAction?.(data);
+    }
   }
 
   throw new Error("Voice stream ended without a final response.");
@@ -336,6 +354,12 @@ type VoiceSessionValue = {
   setDisplay: (display: DisplayContent | null) => void;
   hologram: HologramVisual | null;
   setHologram: (hologram: HologramVisual | null) => void;
+  // Hologram-scoped control_ui actions only (close_display/navigate are
+  // handled directly below in handleUiActionPayload, never surfaced
+  // here) — see hologram-panel.tsx's own uiActionQueue prop/effect for
+  // the consumer, and handleUiActionPayload's own comment for why this
+  // is a queue rather than a single nullable slot.
+  uiActionQueue: UiAction[];
   handleMicTap: () => void;
 };
 
@@ -405,6 +429,50 @@ export function VoiceSessionProvider({ children }: { children: ReactNode }) {
     if (next) setVisualState(null);
     setHologramState(next);
   }, []);
+
+  // control_ui's generic action name/params pair — see lib/tool-
+  // dispatcher.ts's control_ui tool and hologram-panel.tsx's UiAction
+  // type/registry for the full contract. Two of the actions
+  // (close_display/navigate) are handled directly here, since this
+  // provider already owns setDisplay/setHologram and is the only place
+  // with a router — everything else just gets appended to a queue and
+  // forwarded through context for hologram-panel.tsx's own effect to
+  // drain. A QUEUE, not a single nullable slot — parseSSEStream can
+  // yield more than one event from a single already-buffered chunk read
+  // (e.g. two control_ui tool calls in the same response resolve close
+  // together and land in the same network read), and React 18's
+  // automatic batching can coalesce multiple setState calls made across
+  // those same-microtask-burst yields into one re-render. A single
+  // `setUiAction(newValue)` would silently lose every action but the
+  // last one in that case; appending via the functional updater form
+  // doesn't, since each call composes onto the true latest queue
+  // regardless of how many renders actually happen. Confirmed live: two
+  // actions dispatched with zero delay between them (see this file's own
+  // history) lost the first one under a single-slot design and didn't
+  // under this one.
+  const router = useRouter();
+  const uiActionSeqRef = useRef(0);
+  const [uiActionQueue, setUiActionQueue] = useState<UiAction[]>([]);
+
+  const handleUiActionPayload = useCallback(
+    (payload: Omit<UiAction, "seq">) => {
+      if (payload.action === "close_display") {
+        setDisplay(null);
+        setHologram(null);
+        return;
+      }
+      if (payload.action === "navigate") {
+        const target = typeof payload.params?.target === "string" ? payload.params.target : "";
+        const href = UI_ACTION_NAVIGATE_TARGETS[target];
+        if (href) router.push(href);
+        return;
+      }
+      uiActionSeqRef.current += 1;
+      const next: UiAction = { action: payload.action, params: payload.params, seq: uiActionSeqRef.current };
+      setUiActionQueue((prev) => [...prev, next]);
+    },
+    [router, setHologram]
+  );
 
   // One session per app visit (this provider mounts once at the root
   // layout and never remounts on navigation — see the module comment
@@ -815,6 +883,10 @@ export function VoiceSessionProvider({ children }: { children: ReactNode }) {
             // app/api/v1/voice/respond/route.ts), so this always lands
             // after finalMeta is already set above.
             if (isHologramVisual(data)) setHologram(data);
+          } else if (event === "ui_action") {
+            // control_ui's generic action name/params pair — see
+            // handleUiActionPayload above for what actually happens with it.
+            if (isUiAction(data)) handleUiActionPayload(data);
           }
         }
       } finally {
@@ -828,7 +900,7 @@ export function VoiceSessionProvider({ children }: { children: ReactNode }) {
 
       return finalMeta;
     },
-    [startBargeInMonitor, stopBargeInMonitor, updateStatus, setVisual, setHologram]
+    [startBargeInMonitor, stopBargeInMonitor, updateStatus, setVisual, setHologram, handleUiActionPayload]
   );
 
   const handleTranscript = useCallback(
@@ -846,7 +918,7 @@ export function VoiceSessionProvider({ children }: { children: ReactNode }) {
           // its routing below, not sentence-by-sentence audio — askNorth
           // drains the same SSE stream askNorthAndSpeakStream plays
           // progressively, it just discards the "audio" events.
-          const result = await askNorth(text, sessionIdRef.current, setDisplay, setHologram);
+          const result = await askNorth(text, sessionIdRef.current, setDisplay, setHologram, handleUiActionPayload);
           setResponseText(result.responseText);
           setToolsUsed(result.toolsUsed);
           if (result.visual) setVisual(result.visual); // only ever set, never cleared by a non-map turn — see hud-map close button / goDormant for the ways it goes away
@@ -1225,6 +1297,11 @@ export function VoiceSessionProvider({ children }: { children: ReactNode }) {
     enabled: mode === "dormant" && micArmed,
     onDetect: handleWakeWordDetected,
     onError: (error) => console.warn("[Sandbox] Wake-word engine error:", error),
+    // Opt-in via ?wakeword-debug=1 — turns on WakeWordEngine's per-chunk
+    // console.debug score logging (see app/sandbox/use-wake-word.ts), the
+    // mechanism for tuning DEFAULT_DETECTION_THRESHOLD against real "Hey
+    // North" utterances. Off by default; too noisy for normal use.
+    debug: typeof window !== "undefined" && new URLSearchParams(window.location.search).has("wakeword-debug"),
   });
 
   const handleMicTap = useCallback(() => {
@@ -1295,6 +1372,7 @@ export function VoiceSessionProvider({ children }: { children: ReactNode }) {
     setDisplay,
     hologram: hologramState,
     setHologram,
+    uiActionQueue,
     handleMicTap,
   };
 

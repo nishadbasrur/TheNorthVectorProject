@@ -68,6 +68,10 @@ export async function getRecentIcloudMessages(maxResults = 25): Promise<InboxMes
           from: envelope?.from?.[0]?.address ?? "(unknown sender)",
           date: envelope?.date ? new Date(envelope.date).toISOString() : "",
           bodyText: extractBodyText(message.bodyParts?.get("TEXT")),
+          // Not wired up for IMAP here (only Gmail's watch evaluator uses
+          // this signal today) — false is the correct "unknown/not
+          // applicable" default, not a false negative for any real check.
+          hasListUnsubscribe: false,
         });
       }
 
@@ -99,6 +103,10 @@ export async function searchIcloudEmails(query: string, maxResults = 10): Promis
           from: envelope?.from?.[0]?.address ?? "(unknown sender)",
           date: envelope?.date ? new Date(envelope.date).toISOString() : "",
           bodyText: extractBodyText(message.bodyParts?.get("TEXT")),
+          // Not wired up for IMAP here (only Gmail's watch evaluator uses
+          // this signal today) — false is the correct "unknown/not
+          // applicable" default, not a false negative for any real check.
+          hasListUnsubscribe: false,
         });
       }
 
