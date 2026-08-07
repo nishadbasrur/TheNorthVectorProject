@@ -304,7 +304,9 @@ export const TOOL_DEFINITIONS: ToolDefinition[] = [
       "Check Google Calendar for upcoming events. Defaults to the next 48 hours; pass a narrower or " +
       "wider window if the request implies one (e.g. \"today\" -> 24, \"this week\" -> 168). " +
       "Read-only; use create_calendar_event/update_calendar_event/delete_calendar_event to act on " +
-      "the calendar.",
+      "the calendar. The result includes a trailing \"[event refs: Title=<real-id>; ...]\" block — " +
+      "that's not part of the spoken summary, it's the real event ids to use for a follow-up " +
+      "update_calendar_event/delete_calendar_event call.",
     parameters: {
       type: "object",
       properties: {
@@ -353,13 +355,20 @@ export const TOOL_DEFINITIONS: ToolDefinition[] = [
     type: "function",
     name: "update_calendar_event",
     description:
-      "Modify an existing calendar event's time or title. Requires the event id from check_calendar. " +
+      "Modify an existing calendar event's time or title. Requires the REAL event id — the one from " +
+      "the \"[event refs: ...]\" block in a recent check_calendar result, never a guessed or " +
+      "plausible-looking id (\"cal_1\", \"evt_1\", etc. are always wrong and will fail). If a recent " +
+      "check_calendar result with that event's real id isn't already in context, call check_calendar " +
+      "first to get it, then call this. " +
       "Other attendees are NOT notified by Google of this change (silent by design) — tell Nishad " +
       "explicitly if anyone else needs to know, e.g. a shared tutoring session that just moved.",
     parameters: {
       type: "object",
       properties: {
-        eventId: { type: "string" },
+        eventId: {
+          type: "string",
+          description: "The real event id from a check_calendar result's \"[event refs: ...]\" block — never fabricated.",
+        },
         title: { type: "string" },
         start: {
           type: "string",
@@ -383,12 +392,21 @@ export const TOOL_DEFINITIONS: ToolDefinition[] = [
     type: "function",
     name: "delete_calendar_event",
     description:
-      "Delete an existing calendar event. Requires the event id from check_calendar. Other attendees " +
-      "are NOT notified by Google of this cancellation (silent by design) — tell Nishad explicitly if " +
-      "anyone else needs to know.",
+      "Delete an existing calendar event. Requires the REAL event id — the one from the " +
+      "\"[event refs: ...]\" block in a recent check_calendar result, never a guessed or " +
+      "plausible-looking id (\"cal_1\", \"evt_1\", etc. are always wrong and will fail). If a recent " +
+      "check_calendar result with that event's real id isn't already in context, call check_calendar " +
+      "first to get it, then call this. " +
+      "Other attendees are NOT notified by Google of this cancellation (silent by design) — tell Nishad " +
+      "explicitly if anyone else needs to know.",
     parameters: {
       type: "object",
-      properties: { eventId: { type: "string" } },
+      properties: {
+        eventId: {
+          type: "string",
+          description: "The real event id from a check_calendar result's \"[event refs: ...]\" block — never fabricated.",
+        },
+      },
       required: ["eventId"],
     },
   },
@@ -1090,11 +1108,28 @@ function backToBackNote(events: UpcomingEvent[]): string {
   return ` Heads up: ${descriptions.join("; ")}.`;
 }
 
+// Real Google Calendar event IDs (e.g. "hu2qbec6aopjctb11bftb7576s") never
+// go in the spoken summary itself — summarizeUpcomingEvents' output is
+// meant to be said aloud, and reading an ID like that out loud would be
+// nonsense. But without seeing the real ID anywhere, the model has nothing
+// to reference on a later update_calendar_event/delete_calendar_event call
+// and fabricates a plausible-looking placeholder ("cal_1", "evt_1") instead
+// — which always fails against the real API. This appends a compact,
+// clearly-separated reference block AFTER the spoken text, in the same
+// tool-result string: it becomes part of what the model reads as context,
+// but only the model's own subsequent generated reply is ever run through
+// TTS, never the raw tool result, so this never gets read aloud.
+function eventRefsBlock(events: UpcomingEvent[]): string {
+  if (events.length === 0) return "";
+  const refs = events.map((e) => `${e.title}=${e.id}`).join("; ");
+  return `\n[event refs: ${refs}]`;
+}
+
 async function handleCheckCalendar(input: { withinHours?: number }): Promise<string> {
   try {
     const withinHours = input.withinHours ?? 48;
     const events = await getUpcomingEvents(withinHours);
-    return summarizeUpcomingEvents(events, withinHours) + backToBackNote(events);
+    return summarizeUpcomingEvents(events, withinHours) + backToBackNote(events) + eventRefsBlock(events);
   } catch (error) {
     reportToolError("check_calendar", error, input);
     return "Calendar check failed — tell Nishad to try again in a bit.";
