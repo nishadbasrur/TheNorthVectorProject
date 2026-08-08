@@ -62,7 +62,7 @@ jobs:
       - name: Draft
         id: draft
         env:
-          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
           GAP_ID: ${{ inputs.gapId }}
           CAPABILITY_REQUEST: ${{ inputs.request }}
           CAPABILITY_DESCRIPTION: ${{ inputs.capability }}
