@@ -46,8 +46,11 @@ const SEND_UPDATES = "none" as const;
 // zone definition for start time", the actual root cause of the repeated
 // create_calendar_event failures logged 2026-07-16). Single-user app,
 // Nishad's own calendar is always Eastern, so this is hardcoded rather than
-// inferred per-request.
-const EVENT_TIME_ZONE = "America/New_York";
+// inferred per-request. Exported so every OTHER place that needs to render a
+// Date in Nishad's own timezone (lib/calendar-summary.ts's spoken times,
+// lib/tool-dispatcher.ts's event-refs dates) shares this one source of
+// truth instead of each hardcoding "America/New_York" separately.
+export const EVENT_TIME_ZONE = "America/New_York";
 
 export type UpcomingEvent = {
   id: string;
