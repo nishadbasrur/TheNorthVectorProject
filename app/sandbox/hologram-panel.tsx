@@ -255,6 +255,37 @@ const BOND_RADIUS_SINGLE = 0.03;
 const BOND_RADIUS_MULTI = 0.02;
 const MULTI_BOND_STRAND_OFFSET = 0.045;
 
+// PubChem's flat 2D fallback (used when no real 3D SDF conformer is
+// available) can stack multiple ligands at identical coordinates on
+// coordination complexes — confirmed live on potassium ferrocyanide, where
+// several CN- ligands' atoms all landed at the same (x, y, z). Any bond
+// between a pair of atoms that end up coincident has zero length: no
+// direction to orient the cylinder along, and a zero-height
+// CylinderGeometry besides. Rather than silently dropping that bond (real
+// bonding data PubChem did report), nudge one endpoint a tiny, deterministic
+// amount so the cylinder has something real to orient along. Small relative
+// to TARGET_MAX_DISTANCE (1.3) — visually a bond stub, not a distortion of
+// the actual geometry — and deterministic per bond so a re-render is
+// pixel-stable, not jittery.
+const ZERO_DISTANCE_NUDGE_MAGNITUDE = 0.04;
+
+// Derives a stable pseudo-random direction from a bond's own identity
+// (its two atom indices plus its position in the bonds array) rather than
+// Math.random() — same bond always nudges the same way, and different
+// zero-distance bonds fan out in different directions instead of all
+// nudging identically (which would just move the whole stack to a second
+// shared coincident point).
+function deterministicNudge(bondIndex: number, atomIndexA: number, atomIndexB: number): THREE.Vector3 {
+  const seed = bondIndex * 131 + atomIndexA * 31 + atomIndexB * 17;
+  const theta = (seed % 360) * (Math.PI / 180);
+  const phi = (((seed * 7) % 180) + 1) * (Math.PI / 180); // +1 avoids phi === 0 (a degenerate pole)
+  return new THREE.Vector3(
+    ZERO_DISTANCE_NUDGE_MAGNITUDE * Math.sin(phi) * Math.cos(theta),
+    ZERO_DISTANCE_NUDGE_MAGNITUDE * Math.cos(phi),
+    ZERO_DISTANCE_NUDGE_MAGNITUDE * Math.sin(phi) * Math.sin(theta)
+  );
+}
+
 // Any vector not parallel to `dir` works as a reference to cross with to
 // get a perpendicular — falls back to a different reference when `dir`
 // itself is nearly parallel to the usual one, so the cross product never
@@ -370,16 +401,27 @@ function buildMoleculeFromStructure(structure: HologramStructure): THREE.Group |
   });
 
   if (Array.isArray(bonds)) {
-    for (const bond of bonds) {
+    bonds.forEach((bond, bondIndex) => {
       const from = positions[bond.a];
       const to = positions[bond.b];
-      if (!from || !to) continue; // malformed/out-of-range bond index — skip rather than crash the whole render
+      if (!from || !to) return; // malformed/out-of-range bond index — skip rather than crash the whole render
 
-      const dx = to.x - from.x;
-      const dy = to.y - from.y;
-      const dz = to.z - from.z;
-      const distance = Math.sqrt(dx ** 2 + dy ** 2 + dz ** 2);
-      if (distance === 0) continue;
+      let dx = to.x - from.x;
+      let dy = to.y - from.y;
+      let dz = to.z - from.z;
+      let distance = Math.sqrt(dx ** 2 + dy ** 2 + dz ** 2);
+
+      if (distance === 0) {
+        // Nudges the bond's own local `to` copy only — never the real
+        // positions[] entry, since the same atom index can appear in
+        // multiple bonds and permanently moving it would cascade into
+        // every other bond touching it, not just this zero-distance one.
+        const nudge = deterministicNudge(bondIndex, bond.a, bond.b);
+        dx += nudge.x;
+        dy += nudge.y;
+        dz += nudge.z;
+        distance = Math.sqrt(dx ** 2 + dy ** 2 + dz ** 2);
+      }
 
       const direction = new THREE.Vector3(dx, dy, dz).normalize();
 
@@ -409,7 +451,7 @@ function buildMoleculeFromStructure(structure: HologramStructure): THREE.Group |
           group.add(buildBondStrand(strandMid, direction, distance, BOND_RADIUS_MULTI));
         }
       }
-    }
+    });
   }
 
   return group;
