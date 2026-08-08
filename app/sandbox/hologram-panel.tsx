@@ -1115,6 +1115,34 @@ const VELOCITY_SAMPLE_COUNT = 5;
 // void with no reference for where it sits in the whole molecule.
 const ISOLATE_FADE_OPACITY = 0.06;
 
+// --- Zoom (trackpad wheel + mobile pinch) ---
+// Every hologram type here (molecules capped at radius ~1.3, the card's
+// ~2-unit diagonal, the building's widest tier at 1.6, the vessel's 0.78
+// radius, a multi-reactant reaction's spread) comfortably fits within this
+// range around the default distance (~4.55, camera's own starting
+// position.length()) — close enough to actually inspect detail, far
+// enough out that "zoomed out" still reads as the object shrinking, not
+// vanishing. Hand-tuned starting points, same "expect real-world tuning"
+// treatment as DRAG_SENSITIVITY above.
+const ZOOM_MIN_DISTANCE = 1.5;
+const ZOOM_MAX_DISTANCE = 12;
+// Distance change per unit of a trackpad wheel event's deltaY. Trackpad
+// two-finger scroll deltaY per gesture tends to run smaller than a
+// notched mouse wheel's (~100/notch) — this is sized for that, not for a
+// traditional mouse wheel.
+const ZOOM_WHEEL_SENSITIVITY = 0.01;
+// Distance change per pixel of pinch-distance delta (finger-to-finger
+// screen distance, frame to frame).
+const ZOOM_PINCH_SENSITIVITY = 0.01;
+// Per-frame interpolation factor easing cameraDistanceRef toward
+// cameraTargetDistanceRef (a standard exponential-ease-to-target, the same
+// shape three.js's own OrbitControls uses for its damping) — a wheel tick
+// or pinch delta nudges the TARGET, never the camera directly, so zoom
+// arrives smoothly over a few frames instead of snapping, consistent with
+// how a released drag's momentum plays out over time rather than
+// instantly relocating the object.
+const ZOOM_DAMPING_FACTOR = 0.15;
+
 type SceneUserData = { kind?: "atom" | "bond" | "model"; element?: string; index?: number };
 
 export function HologramPanel({
@@ -1151,6 +1179,19 @@ export function HologramPanel({
   const pointerDownPosRef = useRef<{ x: number; y: number } | null>(null);
   const lastPointerRef = useRef<{ x: number; y: number } | null>(null);
   const velocitySamplesRef = useRef<{ x: number; y: number }[]>([]);
+
+  // --- Zoom (trackpad wheel + mobile pinch) ---
+  // cameraDirectionRef is the FIXED unit vector from the origin through the
+  // camera's initial position — the object rotates in this scene, not the
+  // camera, so "zoom" is just moving the camera along this one unchanging
+  // ray (a dolly), never re-aimed. camera.lookAt(0, 0, 0) is only called
+  // once at setup for exactly this reason: the orientation it produces
+  // stays correct at any distance along the same ray through the origin.
+  const cameraDirectionRef = useRef(new THREE.Vector3(0, 0, 1));
+  const cameraDistanceRef = useRef(0); // current, eased-toward-target value the animate() loop actually applies to camera.position every frame
+  const cameraTargetDistanceRef = useRef(0); // where wheel/pinch nudge — animate() eases cameraDistanceRef toward this, never jumps straight to it
+  const isPinchingRef = useRef(false); // true for the duration of a 2-finger touch — gates the pointer-event drag-to-orbit handlers below off, so a pinch's two independent per-finger pointer events don't also spin the object
+  const pinchDistanceRef = useRef<number | null>(null); // last frame's finger-to-finger screen distance, for a delta on the next touchmove
 
   // --- Click-to-isolate (Phase 1c) ---
   const interactiveMeshesRef = useRef<THREE.Mesh[]>([]); // just the "atom"/"bond" tagged meshes — what isolate/show-all act on
@@ -1405,6 +1446,15 @@ export function HologramPanel({
     camera.position.set(0, 0.6, 4.5);
     camera.lookAt(0, 0, 0);
 
+    // Captured AFTER position.set/lookAt above — this direction and this
+    // starting distance are what every zoom interaction below dollies
+    // along/from for this mount of the panel (a fresh hologram, e.g.
+    // switching molecules, gets a fresh default zoom, not whatever the
+    // previous hologram was left at).
+    cameraDirectionRef.current = camera.position.clone().normalize();
+    cameraDistanceRef.current = camera.position.length();
+    cameraTargetDistanceRef.current = camera.position.length();
+
     // alpha: true — the canvas itself stays transparent so the page's own
     // dark HUD background (and the fade overlay below) shows through,
     // matching hud-map-overlay's layered look rather than a flat black box.
@@ -1574,6 +1624,12 @@ export function HologramPanel({
     }
 
     function handlePointerDown(e: PointerEvent) {
+      // A 2-finger touch fires its own pointerdown per finger, independent
+      // of the touchstart/touchmove pinch handling below — without this
+      // guard, the second finger landing would restart orbit-drag state
+      // (new pointerDownPosRef/lastPointerRef) on top of an active pinch,
+      // and its pointermove deltas would spin the object while pinching.
+      if (isPinchingRef.current) return;
       isDraggingRef.current = true;
       pointerDownPosRef.current = { x: e.clientX, y: e.clientY };
       lastPointerRef.current = { x: e.clientX, y: e.clientY };
@@ -1583,6 +1639,7 @@ export function HologramPanel({
     }
 
     function handlePointerMove(e: PointerEvent) {
+      if (isPinchingRef.current) return;
       if (!isDraggingRef.current || !lastPointerRef.current) return;
       const dx = e.clientX - lastPointerRef.current.x;
       const dy = e.clientY - lastPointerRef.current.y;
@@ -1632,6 +1689,65 @@ export function HologramPanel({
     renderer.domElement.addEventListener("pointerdown", handlePointerDown);
     renderer.domElement.addEventListener("pointermove", handlePointerMove);
     renderer.domElement.addEventListener("pointerup", handlePointerUp);
+
+    // --- Zoom: trackpad wheel (desktop) ---
+    // The standard `wheel` event with deltaY is what a trackpad's 2-finger
+    // vertical scroll/drag reports (same event a mouse wheel fires,
+    // distinguished only by typically-smaller deltaY per gesture — this
+    // doesn't special-case one vs. the other, both just dolly the camera).
+    // negative deltaY (scroll up / drag up) zooms in, positive zooms out —
+    // moves the TARGET only; animate() eases the camera toward it.
+    function handleWheel(e: WheelEvent) {
+      e.preventDefault(); // otherwise the browser scrolls/zooms the page itself
+      const next = cameraTargetDistanceRef.current + e.deltaY * ZOOM_WHEEL_SENSITIVITY;
+      cameraTargetDistanceRef.current = THREE.MathUtils.clamp(next, ZOOM_MIN_DISTANCE, ZOOM_MAX_DISTANCE);
+    }
+    // passive: false — required for preventDefault to actually take effect
+    // on a wheel listener (browsers default wheel listeners to passive).
+    renderer.domElement.addEventListener("wheel", handleWheel, { passive: false });
+
+    // --- Zoom: pinch (mobile) ---
+    // Standard touchstart/touchmove distance-delta handling, kept as real
+    // TouchEvent listeners (not folded into the PointerEvent handlers
+    // above) since pinch is inherently a 2-contact-point gesture and
+    // PointerEvent only ever describes one contact point per event.
+    function touchDistance(touches: TouchList): number {
+      const dx = touches[0].clientX - touches[1].clientX;
+      const dy = touches[0].clientY - touches[1].clientY;
+      return Math.hypot(dx, dy);
+    }
+
+    function handleTouchStart(e: TouchEvent) {
+      if (e.touches.length !== 2) return;
+      isPinchingRef.current = true;
+      isDraggingRef.current = false; // cut off any single-finger orbit-drag already in progress from the first finger landing slightly before the second
+      pinchDistanceRef.current = touchDistance(e.touches);
+    }
+
+    function handleTouchMove(e: TouchEvent) {
+      if (!isPinchingRef.current || e.touches.length !== 2) return;
+      e.preventDefault(); // touchAction: "none" on the canvas already discourages the browser's own pinch-zoom/scroll, this is the belt-and-suspenders backstop
+      const distance = touchDistance(e.touches);
+      const delta = distance - (pinchDistanceRef.current ?? distance);
+      pinchDistanceRef.current = distance;
+
+      // Pinch OUT (fingers spreading, distance increasing, positive delta)
+      // zooms IN — same sign convention as the wheel handler above
+      // (decreasing camera distance), so delta SUBTRACTS from the target.
+      const next = cameraTargetDistanceRef.current - delta * ZOOM_PINCH_SENSITIVITY;
+      cameraTargetDistanceRef.current = THREE.MathUtils.clamp(next, ZOOM_MIN_DISTANCE, ZOOM_MAX_DISTANCE);
+    }
+
+    function handleTouchEnd(e: TouchEvent) {
+      if (e.touches.length >= 2) return; // still pinching with the remaining/other fingers
+      isPinchingRef.current = false;
+      pinchDistanceRef.current = null;
+    }
+
+    renderer.domElement.addEventListener("touchstart", handleTouchStart, { passive: true });
+    renderer.domElement.addEventListener("touchmove", handleTouchMove, { passive: false });
+    renderer.domElement.addEventListener("touchend", handleTouchEnd, { passive: true });
+    renderer.domElement.addEventListener("touchcancel", handleTouchEnd, { passive: true });
 
     let animationActive = true;
 
@@ -1720,6 +1836,15 @@ export function HologramPanel({
         }
       }
 
+      // Zoom easing — every frame, regardless of drag/pause/pinch state
+      // (same "always running" treatment as the reaction playback above),
+      // so a wheel/pinch nudge mid-drag or mid-pause still animates
+      // smoothly rather than only updating on the next unrelated
+      // interaction. A no-op once cameraDistanceRef has converged to
+      // within floating-point noise of the target.
+      cameraDistanceRef.current += (cameraTargetDistanceRef.current - cameraDistanceRef.current) * ZOOM_DAMPING_FACTOR;
+      camera.position.copy(cameraDirectionRef.current).multiplyScalar(cameraDistanceRef.current);
+
       renderer.render(scene, camera);
       labelRenderer.render(scene, camera);
       frameRef.current = requestAnimationFrame(animate);
@@ -1742,6 +1867,11 @@ export function HologramPanel({
       renderer.domElement.removeEventListener("pointerdown", handlePointerDown);
       renderer.domElement.removeEventListener("pointermove", handlePointerMove);
       renderer.domElement.removeEventListener("pointerup", handlePointerUp);
+      renderer.domElement.removeEventListener("wheel", handleWheel);
+      renderer.domElement.removeEventListener("touchstart", handleTouchStart);
+      renderer.domElement.removeEventListener("touchmove", handleTouchMove);
+      renderer.domElement.removeEventListener("touchend", handleTouchEnd);
+      renderer.domElement.removeEventListener("touchcancel", handleTouchEnd);
       labelObjectsRef.current = [];
       interactiveMeshesRef.current = [];
 
