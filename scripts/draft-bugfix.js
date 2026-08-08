@@ -18,9 +18,17 @@
 
 const fs = require("fs");
 const path = require("path");
-const Anthropic = require("@anthropic-ai/sdk");
+const OpenAI = require("openai");
 
 const REPO_ROOT = path.join(__dirname, "..");
+
+// Same model as lib/openai-client.ts's MODEL_AGENTIC — duplicated as a
+// literal here (not imported) because this is a plain CommonJS script run
+// directly via `node scripts/draft-bugfix.js` in CI, with no
+// TS-transpilation step available to pull in a .ts module. No hidden
+// default, same discipline as the main app: every call site names its
+// model explicitly.
+const MODEL_AGENTIC = "gpt-5.4-mini";
 
 // Kept in sync with FIXABLE_TOOLS in functions/src/index.ts — that set only
 // gates whether a fix is even attempted (and avoids a dead-end review-page
@@ -50,7 +58,7 @@ const TOOL_TO_FILE = {
   // typecheck/build/review catches an ineffective fix (or the model itself
   // reports infeasible), never an unsafe one, since the single-file
   // constraint still holds regardless of which file was picked.
-  research: "lib/anthropic-client.ts", // the actual web-search API call/parsing
+  research: "lib/openai-client.ts", // askOpenAIWithWebSearch — the actual web-search API call/parsing (moved here from the now-deleted lib/anthropic-client.ts by the Claude->OpenAI migration, commit 380c400)
   check_bug_status: "lib/capability-gap-store.ts", // more complex of its two data sources
   get_proactive_updates: "lib/synthesis-engine.ts", // the reasoning pass itself, of its three files
 };
@@ -58,7 +66,7 @@ const TOOL_TO_FILE = {
 const GAP_ID = process.env.GAP_ID || "";
 const TOOL_NAME = process.env.TOOL_NAME || "";
 const ERROR_MESSAGE = process.env.ERROR_MESSAGE || "";
-const ANTHROPIC_API_KEY = process.env.ANTHROPIC_API_KEY;
+const OPENAI_API_KEY = process.env.OPENAI_API_KEY;
 
 function setOutput(name, value) {
   if (process.env.GITHUB_OUTPUT) {
@@ -76,7 +84,7 @@ function stop(reason) {
 }
 
 async function main() {
-  if (!ANTHROPIC_API_KEY) stop("Missing ANTHROPIC_API_KEY.");
+  if (!OPENAI_API_KEY) stop("Missing OPENAI_API_KEY.");
   if (!GAP_ID || !TOOL_NAME || !ERROR_MESSAGE) stop("Missing gap payload (GAP_ID/TOOL_NAME/ERROR_MESSAGE).");
 
   const targetFile = TOOL_TO_FILE[TOOL_NAME];
@@ -87,7 +95,7 @@ async function main() {
 
   const existingSource = fs.readFileSync(targetPath, "utf-8");
 
-  const client = new Anthropic({ apiKey: ANTHROPIC_API_KEY });
+  const client = new OpenAI({ apiKey: OPENAI_API_KEY });
 
   const prompt = [
     "You are fixing a real, observed bug in North Vector, a personal voice assistant — not adding a",
@@ -124,18 +132,22 @@ async function main() {
     "}",
   ].join("\n");
 
-  const response = await client.messages.create({
-    model: "claude-sonnet-5",
-    max_tokens: 8000,
-    messages: [{ role: "user", content: prompt }],
+  // max_output_tokens: 8000 is far above the 16-token floor where OpenAI's
+  // Responses API rejects a request outright (the bug already found and
+  // fixed at the real call sites in lib/openai-client.ts) — a whole
+  // rewritten file's content genuinely needs the headroom, so no
+  // truncation risk either.
+  const response = await client.responses.create({
+    model: MODEL_AGENTIC,
+    input: prompt,
+    max_output_tokens: 8000,
   });
 
-  const textBlock = response.content.find((b) => b.type === "text");
-  if (!textBlock) stop("No text response from the model.");
+  if (!response.output_text) stop("No text response from the model.");
 
   let draft;
   try {
-    const jsonMatch = textBlock.text.match(/\{[\s\S]*\}/);
+    const jsonMatch = response.output_text.match(/\{[\s\S]*\}/);
     draft = JSON.parse(jsonMatch[0]);
   } catch (error) {
     stop(`Could not parse model response as JSON: ${error.message}`);

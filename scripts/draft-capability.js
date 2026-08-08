@@ -13,16 +13,24 @@
 
 const fs = require("fs");
 const path = require("path");
-const Anthropic = require("@anthropic-ai/sdk");
+const OpenAI = require("openai");
 
 const REPO_ROOT = path.join(__dirname, "..");
 const TOOL_DISPATCHER_PATH = path.join(REPO_ROOT, "lib/tool-dispatcher.ts");
+
+// Same model as lib/openai-client.ts's MODEL_AGENTIC — duplicated as a
+// literal here (not imported) because this is a plain CommonJS script run
+// directly via `node scripts/draft-capability.js` in CI, with no
+// TS-transpilation step available to pull in a .ts module. No hidden
+// default, same discipline as the main app: every call site names its
+// model explicitly.
+const MODEL_AGENTIC = "gpt-5.4-mini";
 
 const GAP_ID = process.env.GAP_ID || "";
 const CAPABILITY_REQUEST = process.env.CAPABILITY_REQUEST || "";
 const CAPABILITY_DESCRIPTION = process.env.CAPABILITY_DESCRIPTION || "";
 const CAPABILITY_PROPOSED_APPROACH = process.env.CAPABILITY_PROPOSED_APPROACH || "";
-const ANTHROPIC_API_KEY = process.env.ANTHROPIC_API_KEY;
+const OPENAI_API_KEY = process.env.OPENAI_API_KEY;
 
 function setOutput(name, value) {
   if (process.env.GITHUB_OUTPUT) {
@@ -48,13 +56,13 @@ function requireUniqueAnchor(source, anchor, label) {
 }
 
 async function main() {
-  if (!ANTHROPIC_API_KEY) stop("Missing ANTHROPIC_API_KEY.");
+  if (!OPENAI_API_KEY) stop("Missing OPENAI_API_KEY.");
   if (!GAP_ID || !CAPABILITY_REQUEST || !CAPABILITY_DESCRIPTION) stop("Missing gap payload (GAP_ID/CAPABILITY_REQUEST/CAPABILITY_DESCRIPTION).");
 
   const existingSource = fs.readFileSync(TOOL_DISPATCHER_PATH, "utf-8");
   const existingToolNames = Array.from(existingSource.matchAll(/name:\s*"([a-z_]+)"/g)).map((m) => m[1]);
 
-  const client = new Anthropic({ apiKey: ANTHROPIC_API_KEY });
+  const client = new OpenAI({ apiKey: OPENAI_API_KEY });
 
   const prompt = [
     "You are drafting exactly one new voice tool for North Vector, a personal voice assistant.",
@@ -106,18 +114,22 @@ async function main() {
     "}",
   ].join("\n");
 
-  const response = await client.messages.create({
-    model: "claude-sonnet-5",
-    max_tokens: 8000,
-    messages: [{ role: "user", content: prompt }],
+  // max_output_tokens: 8000 is far above the 16-token floor where OpenAI's
+  // Responses API rejects a request outright (the bug already found and
+  // fixed at the real call sites in lib/openai-client.ts) — this script's
+  // whole draft (tool definition + handler + switch case + any new files)
+  // genuinely needs the headroom, so no truncation risk either.
+  const response = await client.responses.create({
+    model: MODEL_AGENTIC,
+    input: prompt,
+    max_output_tokens: 8000,
   });
 
-  const textBlock = response.content.find((b) => b.type === "text");
-  if (!textBlock) stop("No text response from the model.");
+  if (!response.output_text) stop("No text response from the model.");
 
   let draft;
   try {
-    const jsonMatch = textBlock.text.match(/\{[\s\S]*\}/);
+    const jsonMatch = response.output_text.match(/\{[\s\S]*\}/);
     draft = JSON.parse(jsonMatch[0]);
   } catch (error) {
     stop(`Could not parse model response as JSON: ${error.message}`);
@@ -147,9 +159,18 @@ async function main() {
   }
 
   // --- Apply insertions (scope fence, part 2: only these three fixed splice points, ever) ---
-  const LAST_IMPORT_ANCHOR = 'import { logCapabilityGap } from "./capability-gap-store";';
+  // Re-synced against tool-dispatcher.ts's real current content — both of
+  // these had silently drifted from ordinary, unrelated code growth
+  // (capability-gap-store's import gained two more named exports;
+  // executeTool's return-shape comment grew display/hologram/uiAction)
+  // and were failing every real run with "structure has drifted" before
+  // ever reaching the model-output insertion step. Found via this fix's
+  // own required live-test of the real drafting flow, not the OpenAI
+  // migration itself — but worth fixing here since the whole point of
+  // that live-test was confirming the pipeline actually runs end to end.
+  const LAST_IMPORT_ANCHOR = 'import { logCapabilityGap, getRecentCapabilityGaps, logDraftEmailGap } from "./capability-gap-store";';
   const TOOL_DEFINITIONS_CLOSE_ANCHOR = "];\n\n// Every handler catches its own errors";
-  const EXECUTE_TOOL_ANCHOR = "// Returns { text, visual } uniformly";
+  const EXECUTE_TOOL_ANCHOR = "// Returns { text, visual, display, hologram, uiAction } uniformly";
   const SWITCH_DEFAULT_ANCHOR = '    default:\n      return { text: `Unknown tool: ${name}` };';
 
   requireUniqueAnchor(existingSource, LAST_IMPORT_ANCHOR, "last import");
@@ -165,12 +186,18 @@ async function main() {
 
   updated = updated.replace(
     TOOL_DEFINITIONS_CLOSE_ANCHOR,
-    `  ${draft.toolDefinitionCode.trim()}\n];\n\n// Every handler catches its own errors`
+    `  ${draft.toolDefinitionCode.trim()}\n${TOOL_DEFINITIONS_CLOSE_ANCHOR}`
   );
 
   updated = updated.replace(
     EXECUTE_TOOL_ANCHOR,
-    `${draft.handlerCode.trim()}\n\n// Returns { text, visual } uniformly`
+    // Re-insert via the same EXECUTE_TOOL_ANCHOR constant, not a second
+    // hardcoded copy of the comment text — the previous version duplicated
+    // it literally here too, so when the real comment grew
+    // (display/hologram/uiAction), this copy silently stayed stale and a
+    // successful splice would have quietly reverted the real file's
+    // comment back to the old wording. One source of truth now.
+    `${draft.handlerCode.trim()}\n\n${EXECUTE_TOOL_ANCHOR}`
   );
 
   updated = updated.replace(
