@@ -1,11 +1,12 @@
 "use client";
 
-import { createContext, useCallback, useContext, useRef, useState, type ReactNode } from "react";
+import { createContext, useCallback, useContext, useEffect, useRef, useState, type ReactNode } from "react";
 import { useRouter } from "next/navigation";
 import type { WakeWordDetectEvent } from "openwakeword-wasm-browser";
 import { auth } from "@/lib/firebase";
 import { isPrivateAudioOutputConnected } from "@/lib/audio-output-detector";
-import { useWakeWord, WAKE_WORD_KEYWORD_WHISPER } from "./use-wake-word";
+import { useWakeWord, WAKE_WORD_KEYWORD, WAKE_WORD_KEYWORD_WHISPER, DEFAULT_DETECTION_THRESHOLD } from "./use-wake-word";
+import { WakeWordDebugOverlay } from "./wake-word-debug-overlay";
 import type { MapVisual } from "./hud-map";
 import { isDisplayContent, type DisplayContent } from "./display-panel";
 import { isHologramVisual, type HologramVisual, isUiAction, type UiAction } from "./hologram-panel";
@@ -387,6 +388,17 @@ export function useVoiceSession(): VoiceSessionValue {
 // here, above the page level, so none of it depends on which route is
 // currently mounted.
 export function VoiceSessionProvider({ children }: { children: ReactNode }) {
+  // Gates the wake-word debug overlay's render (see the return statement
+  // below) so its presence in the tree is IDENTICAL between server render
+  // and the client's first render (both false — window doesn't exist on
+  // the server, so there's nothing to mismatch), only revealing it in a
+  // client-only update after hydration completes. Standard fix for "a
+  // window-derived value used directly in JSX output causes a hydration
+  // mismatch" — distinct from wakeWordDebugEnabled itself below, which is
+  // safe to compute synchronously since it only ever feeds an effect.
+  const [hasMounted, setHasMounted] = useState(false);
+  useEffect(() => setHasMounted(true), []);
+
   const [status, setStatus] = useState<Status>("idle");
   const [mode, setMode] = useState<Mode>("dormant");
   const [micArmed, setMicArmed] = useState(false);
@@ -1283,9 +1295,9 @@ export function VoiceSessionProvider({ children }: { children: ReactNode }) {
       if (modeRef.current !== "dormant") return; // ignore late events mid-transition
       setMode("active");
       setErrorMessage(null);
-      // Phase B, once WAKE_WORD_KEYWORD_WHISPER is added to the active
-      // keywords list in use-wake-word.ts — until then this branch just
-      // never fires from a real detection (see that file's comment).
+      // Phase B — WAKE_WORD_KEYWORD_WHISPER is active alongside the normal
+      // keyword in use-wake-word.ts's engine config, so this really does
+      // fire from a real whispered detection now, not just in theory.
       isWhisperModeRef.current = event.keyword === WAKE_WORD_KEYWORD_WHISPER;
       resetInactivityTimer();
       startListeningRef.current();
@@ -1293,15 +1305,29 @@ export function VoiceSessionProvider({ children }: { children: ReactNode }) {
     [resetInactivityTimer]
   );
 
+  // Opt-in via ?wakeword-debug (any value, e.g. ?wakeword-debug=1) — turns
+  // on WakeWordEngine's per-chunk console.debug score logging (see
+  // app/sandbox/use-wake-word.ts) AND the live on-screen readout below
+  // (wake-word-debug-overlay.tsx) that turns that same logging into
+  // something actually usable during a real test pass, rather than raw
+  // console spam. Off by default; too noisy/intrusive for normal use.
+  //
+  // Computed synchronously (not via useState+useEffect) — useWakeWord's own
+  // engine-construction effect (empty dep array, runs once) reads this via
+  // a ref captured during THIS render, so it needs to already be correct on
+  // the very first client render, not one render behind. Safe to read
+  // window directly here for that value: it only ever feeds an effect
+  // (useWakeWord internals), never the render output itself, so a
+  // server/client difference in the value never shows up as a hydration
+  // mismatch. The OVERLAY below is different — it's real JSX output, so it
+  // needs the separate hasMounted-gated flag underneath instead.
+  const wakeWordDebugEnabled = typeof window !== "undefined" && new URLSearchParams(window.location.search).has("wakeword-debug");
+
   const { status: wakeWordStatus } = useWakeWord({
     enabled: mode === "dormant" && micArmed,
     onDetect: handleWakeWordDetected,
     onError: (error) => console.warn("[Sandbox] Wake-word engine error:", error),
-    // Opt-in via ?wakeword-debug=1 — turns on WakeWordEngine's per-chunk
-    // console.debug score logging (see app/sandbox/use-wake-word.ts), the
-    // mechanism for tuning DEFAULT_DETECTION_THRESHOLD against real "Hey
-    // North" utterances. Off by default; too noisy for normal use.
-    debug: typeof window !== "undefined" && new URLSearchParams(window.location.search).has("wakeword-debug"),
+    debug: wakeWordDebugEnabled,
   });
 
   const handleMicTap = useCallback(() => {
@@ -1376,5 +1402,12 @@ export function VoiceSessionProvider({ children }: { children: ReactNode }) {
     handleMicTap,
   };
 
-  return <VoiceSessionContext.Provider value={value}>{children}</VoiceSessionContext.Provider>;
+  return (
+    <VoiceSessionContext.Provider value={value}>
+      {children}
+      {hasMounted && wakeWordDebugEnabled && (
+        <WakeWordDebugOverlay keywords={[WAKE_WORD_KEYWORD, WAKE_WORD_KEYWORD_WHISPER]} threshold={DEFAULT_DETECTION_THRESHOLD} />
+      )}
+    </VoiceSessionContext.Provider>
+  );
 }

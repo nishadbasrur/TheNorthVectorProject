@@ -6,8 +6,10 @@ import { WakeWordEngine, type WakeWordDetectEvent } from "openwakeword-wasm-brow
 // Custom-trained wake word — synthetic speech + augmentation via the Colab
 // notebook documented in
 // 10-Implementation/Notes/North_Vector_Hey_North_Wake_Word_Training_Walkthrough.md.
-// assets/wake-word/hey_north_v0.1.onnx is the real trained model (13,814
-// bytes), not a placeholder — see that directory's README.
+// assets/wake-word/hey_north_v0.1.onnx is the real trained model (214,400
+// bytes, after fc77135 re-merged PyTorch's split graph+weights export into
+// one self-contained file), not a placeholder — see that directory's
+// README.
 export const WAKE_WORD_KEYWORD = "hey_north";
 
 // Whisper support, Phase B — a second, separately-trained model for a
@@ -32,7 +34,7 @@ const MODEL_FILE_MAP: Record<string, string> = {
 // sandbox UI. Revisit this constant once real score data comes back.
 // Overridable per-call regardless, so tuning doesn't require touching this
 // file at every call site.
-const DEFAULT_DETECTION_THRESHOLD = 0.32;
+export const DEFAULT_DETECTION_THRESHOLD = 0.32;
 
 // cooldownMs (the library's own 2000ms default, deliberately left
 // unoverridden here) — considered and left as-is. It only governs how long
