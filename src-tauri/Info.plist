@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<!-- Merged into the generated app bundle's Info.plist by Tauri's macOS
+	     bundler. Presence of this key is what makes getUserMedia() trigger
+	     the system-level TCC mic prompt (System Settings > Privacy &
+	     Security > Microphone) instead of Safari's per-site prompt. -->
+	<key>NSMicrophoneUsageDescription</key>
+	<string>North Vector listens for the "Hey North" wake word and your voice commands in the Voice Sandbox.</string>
+</dict>
+</plist>

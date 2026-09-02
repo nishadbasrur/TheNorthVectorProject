@@ -4,6 +4,11 @@ node_modules
 tsconfig.tsbuildinfo
 .DS_Store
 
+# Tauri macOS wrapper — Rust build artifacts and generated capability
+# schemas, not the src-tauri source itself.
+src-tauri/target/
+src-tauri/gen/
+
 .agents/
 skills-lock.json
 

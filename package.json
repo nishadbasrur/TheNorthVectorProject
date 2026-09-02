@@ -3,6 +3,7 @@
   "version": "0.1.0",
   "private": true,
   "scripts": {
+    "postinstall": "patch-package",
     "predev": "node scripts/copy-wake-word-assets.js",
     "dev": "next dev",
     "prebuild": "node scripts/copy-wake-word-assets.js",
@@ -13,7 +14,10 @@
     "test": "vitest run",
     "check": "npm run typecheck && npm run lint && npm run test && npm run build",
     "typecheck:all": "npm run typecheck && npm --prefix functions run typecheck",
-    "build:all": "npm run build && npm --prefix functions run build"
+    "build:all": "npm run build && npm --prefix functions run build",
+    "tauri": "tauri",
+    "tauri:dev": "concurrently -k -n next,tauri \"npm:dev\" \"tauri dev\"",
+    "tauri:build": "tauri build"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.110.0",
@@ -24,6 +28,8 @@
     "@googleapis/drive": "^20.2.0",
     "@googleapis/gmail": "^17.0.0",
     "@notionhq/client": "^5.22.0",
+    "@tauri-apps/api": "^2.11.1",
+    "@tauri-apps/plugin-opener": "^2.5.4",
     "dompurify": "^3.4.12",
     "firebase": "^12.14.0",
     "firebase-admin": "^14.1.0",
@@ -48,14 +54,17 @@
   "devDependencies": {
     "@eslint/js": "^9.39.4",
     "@tailwindcss/postcss": "^4.3.1",
+    "@tauri-apps/cli": "^2.11.4",
     "@types/leaflet": "^1.9.21",
     "@types/node": "latest",
     "@types/react": "latest",
     "@types/react-dom": "latest",
     "@types/three": "^0.185.1",
     "autoprefixer": "latest",
+    "concurrently": "^10.0.4",
     "eslint": "latest",
     "eslint-config-next": "latest",
+    "patch-package": "^8.0.1",
     "postcss": "latest",
     "tailwindcss": "latest",
     "typescript": "latest",
