@@ -139,11 +139,19 @@ const googleCalendarClientId = defineSecret("GOOGLE_CALENDAR_CLIENT_ID");
 const googleCalendarClientSecret = defineSecret("GOOGLE_CALENDAR_CLIENT_SECRET");
 const googleCalendarRefreshToken = defineSecret("GOOGLE_CALENDAR_REFRESH_TOKEN");
 const notionApiToken = defineSecret("NOTION_API_TOKEN");
+// iCloud Calendar (CalDAV, lib/icloud-calendar-client.ts via
+// lib/merged-calendar-client.ts) — every scheduled job that reads calendar
+// data now reads both sources, so both secrets need to be declared
+// alongside the Google Calendar ones on the exact same functions.
+const icloudEmailAddress = defineSecret("ICLOUD_EMAIL_ADDRESS");
+const icloudCalendarAppPassword = defineSecret("ICLOUD_CALENDAR_APP_PASSWORD");
 
 const urgencyScanSecrets = [
   googleCalendarClientId,
   googleCalendarClientSecret,
   googleCalendarRefreshToken,
+  icloudEmailAddress,
+  icloudCalendarAppPassword,
   notionApiToken,
 ];
 
@@ -268,6 +276,8 @@ const synthesisScanSecrets = [
   googleCalendarClientId,
   googleCalendarClientSecret,
   googleCalendarRefreshToken,
+  icloudEmailAddress,
+  icloudCalendarAppPassword,
   notionApiToken,
   gmailRefreshToken,
   openaiApiKey,
@@ -280,7 +290,14 @@ const synthesisScanSecrets = [
 // as urgencyScan/triggerUrgencyScan above, for real live-testing without
 // waiting on the schedule.
 
-const hourlyCheckinSecrets = [googleCalendarClientId, googleCalendarClientSecret, googleCalendarRefreshToken, openaiApiKey];
+const hourlyCheckinSecrets = [
+  googleCalendarClientId,
+  googleCalendarClientSecret,
+  googleCalendarRefreshToken,
+  icloudEmailAddress,
+  icloudCalendarAppPassword,
+  openaiApiKey,
+];
 
 export const hourlyCheckin = onSchedule(
   { schedule: "every 60 minutes", secrets: hourlyCheckinSecrets },
@@ -322,7 +339,13 @@ export const triggerTaskReminderScan = onRequest({ invoker: "public" }, async (r
   }
 });
 
-const classEndScanSecrets = [googleCalendarClientId, googleCalendarClientSecret, googleCalendarRefreshToken];
+const classEndScanSecrets = [
+  googleCalendarClientId,
+  googleCalendarClientSecret,
+  googleCalendarRefreshToken,
+  icloudEmailAddress,
+  icloudCalendarAppPassword,
+];
 
 export const classEndScan = onSchedule(
   { schedule: "every 10 minutes", secrets: classEndScanSecrets },
@@ -429,6 +452,8 @@ const weeklyRetrospectiveSecrets = [
   googleCalendarClientId,
   googleCalendarClientSecret,
   googleCalendarRefreshToken,
+  icloudEmailAddress,
+  icloudCalendarAppPassword,
   openaiApiKey,
 ];
 

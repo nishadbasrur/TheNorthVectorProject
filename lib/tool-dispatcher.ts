@@ -12,13 +12,13 @@ import type { TaskStatus, TaskPriority, TaskEnergy, TaskDomain, TaskRecord } fro
 import type { TaskUpdateFields } from "./task-store-admin";
 import { createWatchAsAdmin, listWatchesAsAdmin, deleteWatchAsAdmin, type WatchRecord } from "./watch-store-admin";
 import {
-  getUpcomingEvents,
   createCalendarEvent,
   updateCalendarEvent,
   deleteCalendarEvent,
   eventsBackToBack,
   type UpcomingEvent,
 } from "./google-calendar-client";
+import { getMergedUpcomingEvents } from "./merged-calendar-client";
 import { summarizeUpcomingEvents } from "./calendar-summary";
 import { getUrgentItems } from "./notion-client";
 import { checkUrgentEmails } from "./gmail-urgency";
@@ -1150,7 +1150,7 @@ function eventRefsBlock(events: UpcomingEvent[]): string {
 async function handleCheckCalendar(input: { withinHours?: number }): Promise<string> {
   try {
     const withinHours = input.withinHours ?? 48;
-    const events = await getUpcomingEvents(withinHours);
+    const events = await getMergedUpcomingEvents(withinHours);
     return summarizeUpcomingEvents(events, withinHours) + backToBackNote(events) + eventRefsBlock(events);
   } catch (error) {
     reportToolError("check_calendar", error, input);
@@ -1279,12 +1279,29 @@ async function handleCreateCalendarEvent(input: {
   }
 }
 
+// check_calendar's event refs (see eventRefsBlock below) now include
+// iCloud-sourced events too (lib/icloud-calendar-client.ts's
+// `icloud:${uid}` id prefix), but createCalendarEvent/updateCalendarEvent/
+// deleteCalendarEvent only ever know how to talk to Google — iCloud is
+// read-only, per the fix note's explicit scope. Without this check, the
+// model could plausibly pass an icloud:-prefixed id straight into Google's
+// events.patch/events.delete, which would fail with a confusing raw API
+// error (or, worse in principle, silently target the wrong Google event if
+// some future id scheme ever collided) rather than a clear, honest answer.
+function icloudEventIdError(eventId: string): string | null {
+  if (!eventId.startsWith("icloud:")) return null;
+  return "That one's on your iCloud calendar — I can only edit Google Calendar events right now, not iCloud ones.";
+}
+
 async function handleUpdateCalendarEvent(input: {
   eventId: string;
   title?: string;
   start?: string;
   end?: string;
 }): Promise<string> {
+  const icloudError = icloudEventIdError(input.eventId);
+  if (icloudError) return icloudError;
+
   try {
     const event = await updateCalendarEvent(input);
     return `Updated "${event.title}" on the calendar.`;
@@ -1295,6 +1312,9 @@ async function handleUpdateCalendarEvent(input: {
 }
 
 async function handleDeleteCalendarEvent(input: { eventId: string }): Promise<string> {
+  const icloudError = icloudEventIdError(input.eventId);
+  if (icloudError) return icloudError;
+
   try {
     await deleteCalendarEvent(input.eventId);
     return "Deleted that calendar event.";

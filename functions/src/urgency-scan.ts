@@ -1,5 +1,6 @@
 import { logger } from "firebase-functions";
-import { getUpcomingEvents, eventsStartingSoon, eventsBackToBack } from "../../lib/google-calendar-client";
+import { eventsStartingSoon, eventsBackToBack } from "../../lib/google-calendar-client";
+import { getMergedUpcomingEvents } from "../../lib/merged-calendar-client";
 import { getUrgentItems } from "../../lib/notion-client";
 import { sendPushNotification } from "./push";
 import { alreadyAlerted, recordAlert } from "./alert-state";
@@ -26,7 +27,7 @@ export async function runUrgencyScan(): Promise<UrgencyScanSummary> {
     backToBackAlertsSent: 0,
   };
 
-  const upcomingEvents = await getUpcomingEvents(48);
+  const upcomingEvents = await getMergedUpcomingEvents(48);
   const soonEvents = eventsStartingSoon(upcomingEvents, 15);
   summary.calendarEventsChecked = soonEvents.length;
 
