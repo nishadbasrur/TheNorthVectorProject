@@ -58,6 +58,15 @@ async function getIcloudCalendars(): Promise<{ client: DAVClient; calendars: DAV
     await client.login();
     const calendars = await client.fetchCalendars();
 
+    // Explicit success log — the failure paths were already logged, but a
+    // clean run produced zero output at all, which is indistinguishable
+    // from "this code never ran." Logging the calendar names/count here
+    // is what makes login+discovery actually verifiable from production
+    // logs instead of inferred from silence.
+    console.log(
+      `[icloud-calendar-client] Logged in as "${username}" — discovered ${calendars.length} calendar(s): ${calendars.map((c) => c.displayName).join(", ")}`
+    );
+
     cachedClient = client;
     cachedCalendars = calendars;
     return { client, calendars };
@@ -123,7 +132,11 @@ async function fetchIcloudEvents(start: Date, end: Date): Promise<UpcomingEvent[
     calendars.map(async (calendar) => {
       try {
         const objects = await client.fetchCalendarObjects({ calendar, timeRange });
-        return objects.flatMap((object) => parseIcsEvents(object.data, start));
+        const events = objects.flatMap((object) => parseIcsEvents(object.data, start));
+        console.log(
+          `[icloud-calendar-client] "${calendar.displayName}" (${timeRange.start} to ${timeRange.end}): ${objects.length} object(s) -> ${events.length} event(s)${events.length > 0 ? ": " + events.map((e) => `"${e.title}"`).join(", ") : ""}`
+        );
+        return events;
       } catch (error) {
         console.warn(`[icloud-calendar-client] Failed to fetch events from calendar "${calendar.displayName}":`, error);
         return [];
@@ -131,7 +144,9 @@ async function fetchIcloudEvents(start: Date, end: Date): Promise<UpcomingEvent[
     })
   );
 
-  return perCalendar.flat();
+  const total = perCalendar.flat();
+  console.log(`[icloud-calendar-client] Total across ${calendars.length} calendar(s): ${total.length} event(s).`);
+  return total;
 }
 
 export async function getUpcomingICloudEvents(withinHours = 48): Promise<UpcomingEvent[]> {
