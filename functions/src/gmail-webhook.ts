@@ -7,6 +7,7 @@ import { checkUrgentEmailsRaw } from "../../lib/gmail-urgency";
 import { evaluateWatches } from "../../lib/gmail-watch-evaluator";
 import { createNotification } from "../../lib/notification-store";
 import { sendPushNotification } from "./push";
+import { enqueueSpontaneousSpeech } from "../../lib/spontaneous-speech-queue";
 
 // Public production URL — same hardcoded-not-sensitive treatment as
 // functions/src/index.ts's own APP_URL constant and
@@ -83,6 +84,17 @@ export async function handleGmailPush(event: CloudEvent<MessagePublishedData<Gma
         `North: ${urgent.length} urgent email${urgent.length === 1 ? "" : "s"}`,
         subjects
       );
+
+      // Spontaneous speech, alongside (not instead of) the push above —
+      // this is trigger source #1 of the always-on spontaneous-speech
+      // feature (see app/api/v1/voice/spontaneous-stream/route.ts). No
+      // sender name available on UrgentEmailResult (lib/gmail-urgency.ts —
+      // {id, subject, reason} only), so phrasing stays subject-only.
+      const spokenText =
+        urgent.length === 1
+          ? `You've got an urgent email: ${urgent[0].subject}.`
+          : `You've got ${urgent.length} urgent emails: ${subjects}.`;
+      await enqueueSpontaneousSpeech({ text: spokenText, urgency: "urgent", source: "gmail-urgent" });
     }
 
     // Ad-hoc watches (create_watch) — separate concern from the standing

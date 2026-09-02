@@ -107,6 +107,37 @@ service cloud.firestore {
       allow write: if false;
     }
 
+    // spontaneous_speech_queue is the pub/sub queue behind North's
+    // always-on spontaneous speech (see
+    // app/api/v1/voice/spontaneous-stream/route.ts, which drains it, and
+    // lib/spontaneous-speech-queue.ts, which every trigger source writes
+    // to). Only server code (Admin SDK) reads/writes it in practice — the
+    // SSE route is the sole real reader.
+    match /spontaneous_speech_queue/{document=**} {
+      allow read: if isOwner();
+      allow write: if false;
+    }
+
+    // spontaneous_speech_state holds the shared routine-speech cooldown
+    // timestamp (lib/spontaneous-speech-queue.ts) that keeps hourly
+    // check-ins, task reminders, and class-end nudges from stacking into a
+    // flood. Only the Admin SDK writes it.
+    match /spontaneous_speech_state/{document=**} {
+      allow read: if isOwner();
+      allow write: if false;
+    }
+
+    // client_presence/main is the "is the Tauri app's spontaneous-speech
+    // connection currently open" liveness doc — see
+    // app/api/v1/voice/spontaneous-stream/route.ts (writer) and
+    // lib/spontaneous-speech-queue.ts's isClientPresent() (reader, used by
+    // the hourly check-in scan to skip hours the Mac was asleep). Only the
+    // Admin SDK writes it.
+    match /client_presence/{document=**} {
+      allow read: if isOwner();
+      allow write: if false;
+    }
+
     // gmail_surfaced de-duplicates the on-demand Gmail urgency check (see
     // lib/gmail-urgency.ts, invoked by the voice tool dispatcher's
     // check_email tool) — one doc per evaluated message id with a

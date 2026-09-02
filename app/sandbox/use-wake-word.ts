@@ -6,8 +6,10 @@ import { WakeWordEngine, type WakeWordDetectEvent } from "openwakeword-wasm-brow
 // Custom-trained wake word — synthetic speech + augmentation via the Colab
 // notebook documented in
 // 10-Implementation/Notes/North_Vector_Hey_North_Wake_Word_Training_Walkthrough.md.
-// assets/wake-word/hey_north_v0.1.onnx is the real trained model (13,814
-// bytes), not a placeholder — see that directory's README.
+// assets/wake-word/hey_north_v0.1.onnx is the real trained model (214,400
+// bytes, after fc77135 re-merged PyTorch's split graph+weights export into
+// one self-contained file), not a placeholder — see that directory's
+// README.
 export const WAKE_WORD_KEYWORD = "hey_north";
 
 // Whisper support, Phase B — a second, separately-trained model for a
@@ -32,7 +34,7 @@ const MODEL_FILE_MAP: Record<string, string> = {
 // sandbox UI. Revisit this constant once real score data comes back.
 // Overridable per-call regardless, so tuning doesn't require touching this
 // file at every call site.
-const DEFAULT_DETECTION_THRESHOLD = 0.32;
+export const DEFAULT_DETECTION_THRESHOLD = 0.32;
 
 // cooldownMs (the library's own 2000ms default, deliberately left
 // unoverridden here) — considered and left as-is. It only governs how long
@@ -93,7 +95,22 @@ export function useWakeWord({
     }
 
     const engine = new WakeWordEngine({
-      keywords: [WAKE_WORD_KEYWORD, WAKE_WORD_KEYWORD_WHISPER],
+      // "hey_mycroft" added only in debug mode — a controlled-experiment
+      // control group, not a real active keyword. hey_north was trained
+      // entirely on synthetic Piper TTS speech (see
+      // 10-Implementation/Notes/North_Vector_Hey_North_Wake_Word_Training_Walkthrough.md);
+      // hey_mycroft is openWakeWord's own stock pretrained model, presumably
+      // validated against real recorded speech by its original authors.
+      // Both run through the exact same engine/pipeline code — so if
+      // hey_mycroft scores real, real human speech consistently while
+      // hey_north keeps scattering, that isolates the problem to hey_north's
+      // training data rather than this code. If hey_mycroft is JUST as
+      // erratic, that points back at the shared pipeline instead. Says
+      // nothing on its own about mic/domain (see the built-in-vs-Bluetooth
+      // mic test already run for that axis) — this isolates model vs. code.
+      keywords: debugRef.current
+        ? [WAKE_WORD_KEYWORD, WAKE_WORD_KEYWORD_WHISPER, "hey_mycroft"]
+        : [WAKE_WORD_KEYWORD, WAKE_WORD_KEYWORD_WHISPER],
       modelFiles: MODEL_FILE_MAP,
       baseAssetUrl: "/models",
       ortWasmPath: "/ort/",

@@ -2,6 +2,7 @@ import { NextResponse, after } from "next/server";
 import { createHash } from "node:crypto";
 import type { Response, ResponseFunctionToolCall, ResponseInputItem } from "openai/resources/responses/responses";
 import { requireOwner } from "@/lib/require-owner";
+import { sseEvent, sseResponse } from "@/lib/sse-helpers";
 import { streamOpenAIWithTools, MODEL_AGENTIC } from "@/lib/openai-client";
 import { synthesizeSpeech } from "@/lib/google-tts";
 import { getPreferences, formatPreferencesForPrompt } from "@/lib/preferences-store";
@@ -380,24 +381,6 @@ function extractCompleteSentences(buffer: string): { complete: string[]; remaind
   }
 
   return { complete, remainder: buffer.slice(lastEnd) };
-}
-
-// SSE framing helper — one JSON payload per named event, blank-line
-// terminated per the SSE spec.
-function sseEvent(encoder: TextEncoder, event: string, data: unknown): Uint8Array {
-  return encoder.encode(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`);
-}
-
-// Explicit globalThis.Response — this file also imports OpenAI's own
-// `Response` type (the Responses API object), so the bare name is shadowed.
-function sseResponse(stream: ReadableStream<Uint8Array>): globalThis.Response {
-  return new Response(stream, {
-    headers: {
-      "Content-Type": "text/event-stream",
-      "Cache-Control": "no-cache, no-transform",
-      Connection: "keep-alive",
-    },
-  });
 }
 
 // Sentence-level synthesis pipeline, shared by both the real tool-calling
