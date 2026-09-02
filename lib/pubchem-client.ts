@@ -9,6 +9,34 @@ import "server-only";
 // "server-only" guard here is safe.
 const PUBCHEM_BASE_URL = "https://pubchem.ncbi.nlm.nih.gov/rest/pug";
 
+// NCBI's own usage policy for PUG REST/E-utilities asks API consumers to
+// self-identify via a descriptive User-Agent (or tool/email params) —
+// requests with none are exactly what their anti-abuse layer is tuned to
+// throttle/reject, and Cloud Run's shared/ephemeral egress IPs are a
+// classic trigger for it. Confirmed live: every single production request
+// (bare `fetch()`, no headers) failed with a 503 from PubChem across many
+// attempts over 11+ hours, while the identical request from a residential
+// IP with a normal browser/curl User-Agent succeeded every time — not a
+// transient blip, a systematic rejection of unidentified traffic from this
+// server's network path specifically.
+const PUBCHEM_REQUEST_HEADERS = {
+  "User-Agent": "NorthVector/1.0 (personal voice assistant hologram feature; contact: nishadbasrur@gmail.com)",
+};
+
+// One retry after a short delay — cheap insurance against genuine
+// transient NCBI-side load (a real, occasionally-documented occurrence
+// independent of the identification issue above), not a fix for a hard
+// block on its own.
+const RETRY_DELAY_MS = 800;
+
+async function fetchWithRetry(url: string): Promise<Response> {
+  const first = await fetch(url, { headers: PUBCHEM_REQUEST_HEADERS });
+  if (first.ok) return first;
+  console.warn(`[pubchem-client] Request to ${url} returned ${first.status} — retrying once after ${RETRY_DELAY_MS}ms.`);
+  await new Promise((resolve) => setTimeout(resolve, RETRY_DELAY_MS));
+  return fetch(url, { headers: PUBCHEM_REQUEST_HEADERS });
+}
+
 export type PubChemAtom = { element: string; x: number; y: number; z: number };
 export type PubChemBond = { a: number; b: number; order: number };
 export type PubChemStructure = { atoms: PubChemAtom[]; bonds: PubChemBond[] };
@@ -16,9 +44,10 @@ export type PubChemStructure = { atoms: PubChemAtom[]; bonds: PubChemBond[] };
 async function resolveCid(name: string): Promise<number | null> {
   try {
     const url = `${PUBCHEM_BASE_URL}/compound/name/${encodeURIComponent(name)}/cids/JSON`;
-    const response = await fetch(url);
+    const response = await fetchWithRetry(url);
     if (!response.ok) {
-      console.warn(`[pubchem-client] CID lookup returned ${response.status} for "${name}"`);
+      const body = await response.text().catch(() => "(no body)");
+      console.warn(`[pubchem-client] CID lookup returned ${response.status} for "${name}": ${body.slice(0, 300)}`);
       return null;
     }
     const data = (await response.json()) as { IdentifierList?: { CID?: number[] } };
@@ -33,8 +62,12 @@ async function resolveCid(name: string): Promise<number | null> {
 async function fetchSdf(cid: number, recordType: "3d" | "2d"): Promise<string | null> {
   try {
     const url = `${PUBCHEM_BASE_URL}/compound/cid/${cid}/record/SDF?record_type=${recordType}`;
-    const response = await fetch(url);
-    if (!response.ok) return null;
+    const response = await fetchWithRetry(url);
+    if (!response.ok) {
+      const body = await response.text().catch(() => "(no body)");
+      console.warn(`[pubchem-client] SDF fetch returned ${response.status} for CID ${cid} (${recordType}): ${body.slice(0, 300)}`);
+      return null;
+    }
     return await response.text();
   } catch (error) {
     console.error(`[pubchem-client] SDF fetch failed for CID ${cid} (${recordType}):`, error);
