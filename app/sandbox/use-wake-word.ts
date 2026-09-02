@@ -95,7 +95,22 @@ export function useWakeWord({
     }
 
     const engine = new WakeWordEngine({
-      keywords: [WAKE_WORD_KEYWORD, WAKE_WORD_KEYWORD_WHISPER],
+      // "hey_mycroft" added only in debug mode — a controlled-experiment
+      // control group, not a real active keyword. hey_north was trained
+      // entirely on synthetic Piper TTS speech (see
+      // 10-Implementation/Notes/North_Vector_Hey_North_Wake_Word_Training_Walkthrough.md);
+      // hey_mycroft is openWakeWord's own stock pretrained model, presumably
+      // validated against real recorded speech by its original authors.
+      // Both run through the exact same engine/pipeline code — so if
+      // hey_mycroft scores real, real human speech consistently while
+      // hey_north keeps scattering, that isolates the problem to hey_north's
+      // training data rather than this code. If hey_mycroft is JUST as
+      // erratic, that points back at the shared pipeline instead. Says
+      // nothing on its own about mic/domain (see the built-in-vs-Bluetooth
+      // mic test already run for that axis) — this isolates model vs. code.
+      keywords: debugRef.current
+        ? [WAKE_WORD_KEYWORD, WAKE_WORD_KEYWORD_WHISPER, "hey_mycroft"]
+        : [WAKE_WORD_KEYWORD, WAKE_WORD_KEYWORD_WHISPER],
       modelFiles: MODEL_FILE_MAP,
       baseAssetUrl: "/models",
       ortWasmPath: "/ort/",
