@@ -107,6 +107,15 @@ service cloud.firestore {
       allow write: if false;
     }
 
+    // molecule_structure_cache holds successful PubChem lookups
+    // (lib/pubchem-client.ts) keyed by normalized compound name — public
+    // molecular geometry, not sensitive, but writes only ever happen
+    // server-side (Admin SDK) after a real successful fetch.
+    match /molecule_structure_cache/{document=**} {
+      allow read: if isOwner();
+      allow write: if false;
+    }
+
     // spontaneous_speech_queue is the pub/sub queue behind North's
     // always-on spontaneous speech (see
     // app/api/v1/voice/spontaneous-stream/route.ts, which drains it, and
