@@ -13,7 +13,8 @@
 // "no runtime import."
 import { getFirestore } from "firebase-admin/firestore";
 import { ensureFirebaseApp } from "./ensure-firebase-app";
-import { getUpcomingEvents, type UpcomingEvent } from "./google-calendar-client";
+import { type UpcomingEvent } from "./google-calendar-client";
+import { getMergedUpcomingEvents } from "./merged-calendar-client";
 import { getRecentInboxMessages, type InboxMessage } from "./gmail-client";
 import { getUrgentItems, type UrgentNotionItem } from "./notion-client";
 import { getRecentTextMessages, type StoredTextMessage } from "./text-message-store";
@@ -140,7 +141,7 @@ export async function assembleSynthesisContext(): Promise<SynthesisContext> {
 
   const [calendarEvents, inboxMessages, notionUrgentItems, textMessages, activeTasks, activeGoals, preferences] =
     await Promise.all([
-      getUpcomingEvents(72), // wider window than the 48h on-demand default —
+      getMergedUpcomingEvents(72), // wider window than the 48h on-demand default —
                               // synthesis looks for developing patterns, not
                               // just imminent events
       getRecentInboxMessages(25),

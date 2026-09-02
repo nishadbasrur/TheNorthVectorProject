@@ -1,6 +1,6 @@
 import { getFirestore } from "firebase-admin/firestore";
 import { logger } from "firebase-functions";
-import { getUpcomingEvents } from "../../lib/google-calendar-client";
+import { getMergedUpcomingEvents } from "../../lib/merged-calendar-client";
 import { generateHourlyCheckinText } from "../../lib/checkin-briefing";
 import { enqueueSpontaneousSpeech, isClientPresent } from "../../lib/spontaneous-speech-queue";
 
@@ -16,7 +16,7 @@ const HOUR_MS = 60 * 60 * 1000;
 
 // How near "near-term" means for deciding whether there's anything worth
 // speaking up about this hour — matches the calendar fetch window below
-// (getUpcomingEvents(24)) so a task and an event are held to the same bar.
+// (getMergedUpcomingEvents(24)) so a task and an event are held to the same bar.
 // A task due next semester existing in Firestore shouldn't make every
 // single hour "notable."
 const NOTABLE_WINDOW_HOURS = 24;
@@ -50,7 +50,7 @@ export async function runHourlyCheckinScan(): Promise<HourlyCheckinScanResult> {
     .filter((task) => task.status !== "completed" && task.status !== "cancelled" && task.dueDate)
     .sort((a, b) => (a.dueDate! < b.dueDate! ? -1 : 1))[0];
 
-  const upcomingEvents = await getUpcomingEvents(NOTABLE_WINDOW_HOURS);
+  const upcomingEvents = await getMergedUpcomingEvents(NOTABLE_WINDOW_HOURS);
   const nextEvent = upcomingEvents[0];
 
   const taskIsNearTerm =

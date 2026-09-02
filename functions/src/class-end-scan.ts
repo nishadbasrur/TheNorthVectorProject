@@ -1,5 +1,6 @@
 import { logger } from "firebase-functions";
-import { getEventsInRange, eventsRecentlyEnded, CLASS_EVENT_TITLE_PATTERN } from "../../lib/google-calendar-client";
+import { eventsRecentlyEnded, CLASS_EVENT_TITLE_PATTERN } from "../../lib/google-calendar-client";
+import { getMergedEventsInRange } from "../../lib/merged-calendar-client";
 import { alreadyAlerted, recordAlert } from "./alert-state";
 import { enqueueSpontaneousSpeech } from "../../lib/spontaneous-speech-queue";
 
@@ -24,7 +25,7 @@ export async function runClassEndScan(): Promise<ClassEndScanResult> {
   const now = new Date();
   const rangeStart = new Date(now.getTime() - LOOKBACK_MINUTES * 60 * 1000);
 
-  const events = await getEventsInRange(rangeStart, now);
+  const events = await getMergedEventsInRange(rangeStart, now);
   const classEvents = events.filter((event) => CLASS_EVENT_TITLE_PATTERN.test(event.title));
   const endedClasses = eventsRecentlyEnded(classEvents, RECENTLY_ENDED_WITHIN_MINUTES);
 

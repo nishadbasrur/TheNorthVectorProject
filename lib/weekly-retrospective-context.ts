@@ -5,7 +5,8 @@
 // constraint lib/synthesis-context.ts documents at the top of its own file.
 import { getFirestore } from "firebase-admin/firestore";
 import { ensureFirebaseApp } from "./ensure-firebase-app";
-import { getEventsInRange, type UpcomingEvent } from "./google-calendar-client";
+import { type UpcomingEvent } from "./google-calendar-client";
+import { getMergedEventsInRange } from "./merged-calendar-client";
 import { getRetrospective, weekIdFor } from "./weekly-retrospective-store";
 
 export type WeeklyTaskSummary = { id: string; title: string };
@@ -42,7 +43,7 @@ export async function assembleWeeklyRetrospectiveContext(): Promise<WeeklyRetros
   const [tasksSnapshot, goalsSnapshot, calendarEventsThisWeek, priorRetro] = await Promise.all([
     db.collection("tasks").get(),
     db.collection("goals").get(),
-    getEventsInRange(weekStart, weekEnd),
+    getMergedEventsInRange(weekStart, weekEnd),
     getRetrospective(weekIdFor(weekStart)), // last week's saved doc, if any
   ]);
 
