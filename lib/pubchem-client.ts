@@ -1,4 +1,6 @@
 import "server-only";
+import { adminDb } from "./firebase-admin";
+import { FieldValue } from "firebase-admin/firestore";
 
 // Feeds real molecular geometry into Tier 2's hologram takeover (see
 // lib/tool-dispatcher.ts's handlePushToScreen and
@@ -420,19 +422,87 @@ function promoteTo3DGeometry(structure: PubChemStructure): PubChemStructure {
   return { atoms: newAtoms, bonds: structure.bonds };
 }
 
-// Resolves a compound name to real 3D geometry — name -> CID -> SDF (3D
-// conformer, falling back to 2D if PubChem has no 3D conformer for this
-// compound, which happens for some ionic/salt/very simple compounds) ->
-// parsed {atoms, bonds}, with 2D-only records additionally promoted to an
-// idealized coordination geometry (see promoteTo3DGeometry above) so an
-// inorganic complex's real shape shows up even without a lab-measured 3D
-// conformer. Fail-soft throughout, same pattern as
-// lib/wolfram-client.ts's fetchWolframImage: never throws, any failure
-// (name not recognized, no structure available, malformed SDF) returns
-// null. A hologram falling back to its generic placeholder shape is an
-// expected, non-exceptional outcome here, not a bug that should break
-// push_to_screen.
+// --- Structure cache -------------------------------------------------
+//
+// PubChem intermittently rate-limits requests from this app's shared
+// Cloud Run egress IP (PUGREST.ServerBusy — see the retry-backoff comment
+// on fetchWithRetry above), sometimes for sustained multi-minute windows,
+// not just momentary blips. A Cloud NAT static IP would fix that at the
+// network level but costs real money and infra upkeep (~$5-8/month,
+// deferred for now). This is the free mitigation: molecular structure
+// data is static — caffeine's shape doesn't change — so once a lookup
+// succeeds, cache it permanently. Doesn't help a first-ever lookup during
+// a bad PubChem window, but eliminates repeat exposure for anything
+// already resolved once, which is the realistic common case (the same
+// handful of molecules get asked for repeatedly).
+const MOLECULE_CACHE_COLLECTION = "molecule_structure_cache";
+
+// Lowercase + trim so "Caffeine"/"caffeine"/"CAFFEINE" all hit the same
+// entry. Firestore document ids can't contain "/" — replaced defensively
+// even though no realistic compound name would include one.
+function cacheKeyFor(name: string): string {
+  return name.trim().toLowerCase().replace(/\//g, "_");
+}
+
+async function getCachedStructure(name: string): Promise<PubChemStructure | null> {
+  try {
+    const doc = await adminDb.collection(MOLECULE_CACHE_COLLECTION).doc(cacheKeyFor(name)).get();
+    if (!doc.exists) return null;
+
+    const data = doc.data();
+    const atoms = data?.atoms as PubChemAtom[] | undefined;
+    const bonds = data?.bonds as PubChemBond[] | undefined;
+    if (!Array.isArray(atoms) || !Array.isArray(bonds)) return null;
+
+    console.log(`[pubchem-client] Cache hit for "${name}" — skipping PubChem entirely.`);
+    return { atoms, bonds };
+  } catch (error) {
+    // Cache read failing is never fatal — falls through to the real
+    // PubChem lookup exactly as if there were no cache at all.
+    console.warn(`[pubchem-client] Cache read failed for "${name}":`, error);
+    return null;
+  }
+}
+
+async function setCachedStructure(name: string, cid: number, structure: PubChemStructure): Promise<void> {
+  try {
+    await adminDb
+      .collection(MOLECULE_CACHE_COLLECTION)
+      .doc(cacheKeyFor(name))
+      .set({
+        compoundName: name,
+        cid,
+        atoms: structure.atoms,
+        bonds: structure.bonds,
+        cachedAt: FieldValue.serverTimestamp(),
+      });
+  } catch (error) {
+    // A failed cache WRITE must never fail the lookup itself — the caller
+    // already has a good structure to show either way, this is purely an
+    // optimization for next time.
+    console.warn(`[pubchem-client] Cache write failed for "${name}":`, error);
+  }
+}
+
+// Resolves a compound name to real 3D geometry — cache first (see above),
+// then on a miss: name -> CID -> SDF (3D conformer, falling back to 2D if
+// PubChem has no 3D conformer for this compound, which happens for some
+// ionic/salt/very simple compounds) -> parsed {atoms, bonds}, with 2D-only
+// records additionally promoted to an idealized coordination geometry
+// (see promoteTo3DGeometry above) so an inorganic complex's real shape
+// shows up even without a lab-measured 3D conformer. Fail-soft throughout,
+// same pattern as lib/wolfram-client.ts's fetchWolframImage: never throws,
+// any failure (name not recognized, no structure available, malformed
+// SDF) returns null. A hologram falling back to its generic placeholder
+// shape is an expected, non-exceptional outcome here, not a bug that
+// should break push_to_screen. A successful result is cached before
+// returning; a failure is never cached (so a bad PubChem window doesn't
+// permanently poison a real molecule — the next attempt just retries
+// PubChem again, same as today).
 export async function fetchPubChemStructure(name: string): Promise<PubChemStructure | null> {
+  const cached = await getCachedStructure(name);
+  if (cached) return cached;
+
   const cid = await resolveCid(name);
   if (!cid) {
     console.warn(`[pubchem-client] No CID found for "${name}"`);
@@ -464,5 +534,7 @@ export async function fetchPubChemStructure(name: string): Promise<PubChemStruct
     `[pubchem-client] Resolved "${name}" -> CID ${cid}, ${usedRecordType} structure, ` +
       `${structure.atoms.length} atoms, ${structure.bonds.length} bonds`
   );
+
+  await setCachedStructure(name, cid, structure);
   return structure;
 }
