@@ -10,31 +10,59 @@ import "server-only";
 const PUBCHEM_BASE_URL = "https://pubchem.ncbi.nlm.nih.gov/rest/pug";
 
 // NCBI's own usage policy for PUG REST/E-utilities asks API consumers to
-// self-identify via a descriptive User-Agent (or tool/email params) —
-// requests with none are exactly what their anti-abuse layer is tuned to
-// throttle/reject, and Cloud Run's shared/ephemeral egress IPs are a
-// classic trigger for it. Confirmed live: every single production request
-// (bare `fetch()`, no headers) failed with a 503 from PubChem across many
-// attempts over 11+ hours, while the identical request from a residential
-// IP with a normal browser/curl User-Agent succeeded every time — not a
-// transient blip, a systematic rejection of unidentified traffic from this
-// server's network path specifically.
+// self-identify via a descriptive User-Agent (or tool/email params). Real
+// effect confirmed, but only partial: before this header, every production
+// request failed with a 503 across 11+ hours straight (100%, no
+// exceptions). After it, real caffeine structures DID load successfully at
+// least once — but a subsequent identical request ~15 minutes later, and
+// several more after that, failed again with the same 503 (full body
+// captured — see below). So the header genuinely helped, it just isn't a
+// complete fix on its own; whatever's still failing is intermittent, not
+// the "always" it was before.
 const PUBCHEM_REQUEST_HEADERS = {
   "User-Agent": "NorthVector/1.0 (personal voice assistant hologram feature; contact: nishadbasrur@gmail.com)",
 };
 
-// One retry after a short delay — cheap insurance against genuine
-// transient NCBI-side load (a real, occasionally-documented occurrence
-// independent of the identification issue above), not a fix for a hard
-// block on its own.
-const RETRY_DELAY_MS = 800;
+// The actual 503 body, captured live 2026-09-02:
+//   { "Fault": { "Code": "PUGREST.ServerBusy", "Message": "Too many requests or server too busy" } }
+// This is PubChem's own documented rate-limit/load-shedding response (a
+// real structured fault from their PUG REST layer), not a generic edge/WAF
+// block page — consistent with either genuine PubChem-side load, or
+// Cloud Run's shared/ephemeral egress IP pushing NCBI's documented 5
+// req/s-per-IP limit over budget from OTHER Google Cloud tenants' traffic
+// sharing that same IP, unrelated to this app's own (tiny) request volume.
+// Can't fully distinguish those two from server-side logs alone — if
+// intermittent ServerBusy responses persist even with this longer/smarter
+// retry, the real fix is likely a dedicated static egress IP (Cloud NAT),
+// which would isolate this app's own rate-limit budget from other
+// tenants' traffic on the shared IP. That's a bigger infra change,
+// deliberately not done here without an explicit go-ahead.
+//
+// Retries up to 2 more times (3 attempts total) with increasing delay —
+// 800ms clearly wasn't enough breathing room for a "busy" state to clear
+// (confirmed live: the retry itself also got the identical ServerBusy
+// fault, same request, 800ms later). 1.5s then 3.5s gives real recovery
+// time while keeping worst-case added latency for a voice interaction
+// bounded (~5s), not unlimited.
+const RETRY_DELAYS_MS = [1500, 3500];
 
 async function fetchWithRetry(url: string): Promise<Response> {
-  const first = await fetch(url, { headers: PUBCHEM_REQUEST_HEADERS });
-  if (first.ok) return first;
-  console.warn(`[pubchem-client] Request to ${url} returned ${first.status} — retrying once after ${RETRY_DELAY_MS}ms.`);
-  await new Promise((resolve) => setTimeout(resolve, RETRY_DELAY_MS));
-  return fetch(url, { headers: PUBCHEM_REQUEST_HEADERS });
+  let response = await fetch(url, { headers: PUBCHEM_REQUEST_HEADERS });
+
+  for (const delayMs of RETRY_DELAYS_MS) {
+    if (response.ok) return response;
+    const body = await response
+      .clone()
+      .text()
+      .catch(() => "(no body)");
+    console.warn(
+      `[pubchem-client] Request to ${url} returned ${response.status} (${body.slice(0, 150)}) — retrying after ${delayMs}ms.`
+    );
+    await new Promise((resolve) => setTimeout(resolve, delayMs));
+    response = await fetch(url, { headers: PUBCHEM_REQUEST_HEADERS });
+  }
+
+  return response;
 }
 
 export type PubChemAtom = { element: string; x: number; y: number; z: number };
