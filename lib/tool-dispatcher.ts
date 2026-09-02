@@ -1538,6 +1538,47 @@ async function handleControlUi(input: { action?: string; params?: Record<string,
   }
 }
 
+// Backstop for the "model omitted `subject`" failure mode, same lesson/
+// pattern as this file's own looksLikeSelfDescription check above (37a3b28):
+// `subject` is only prose-instructed ("Always provide this when...", see
+// push_to_screen's schema description), not schema-required — only
+// `content` is in `required`. A compliant call is not guaranteed, and an
+// omitted subject means the whole PubChem lookup below never runs at all,
+// silently landing on the generic placeholder shape regardless of how
+// well-known the actual molecule is (confirmed live: PubChem itself
+// resolves "caffeine" perfectly — CID 2519, real 3D structure — so a
+// caffeine hologram rendering as a placeholder is this gap, not a PubChem
+// failure). Derives a plausible compound name straight from `content`
+// instead of giving up, using the exact phrasing this tool's own docs
+// recommend for image-type lookups (e.g. "Caffeine molecule (C8H10N4O2) -
+// molecular structure and properties" -> "Caffeine"). Best-effort only — a
+// genuine miss here just falls through to the existing placeholder path,
+// no worse than before this existed.
+function deriveMoleculeSubjectFallback(content: string): string | null {
+  const withoutParenthetical = content.replace(/\([^)]*\)/g, " ").trim();
+
+  // Two orderings actually seen in natural phrasing: the name leads
+  // ("Caffeine molecule...", "Aspirin compound structure") or trails after
+  // "structure of"/"molecular structure of" ("The molecular structure of
+  // glucose"). Tried in this order since the leading form is what this
+  // tool's own docs literally recommend, but the trailing form is common
+  // enough in free-form phrasing to be worth a real check rather than
+  // silently mis-extracting a leading article like "The".
+  const trailing = withoutParenthetical.match(
+    /(?:molecular structure|chemical structure|structure|molecule|compound)\s+of\s+([a-z0-9'’\- ]+?)\s*[.,;:!?]?\s*$/i
+  );
+  if (trailing) {
+    const candidate = trailing[1].trim();
+    if (candidate.length > 0 && candidate.length < 80) return candidate;
+  }
+
+  const leading = withoutParenthetical.match(
+    /^\s*([a-z0-9'’\-\s]+?)\s*(?:molecules?|molecular\b|compounds?\b|chemical structures?)/i
+  );
+  const candidate = (leading ? leading[1] : withoutParenthetical.split(/[-—,]/)[0]).trim().replace(/[-—,]+$/, "").trim();
+  return candidate.length > 0 && candidate.length < 80 ? candidate : null;
+}
+
 type ReactionSpeciesInput = { subject?: string; coefficient?: number };
 
 async function handlePushToScreen(input: {
@@ -1637,28 +1678,44 @@ async function handlePushToScreen(input: {
     const hologramSignal = detectHologramSubject(input.content);
     console.log(`[push_to_screen] detectHologramSubject: ${hologramSignal ? hologramSignal.objectType : "miss"}`);
     if (hologramSignal) {
-      // Prefer the tool's own `subject` over the matched trigger keyword
-      // (e.g. "molecule") as the hologram's label — `subject` is the
-      // precise real-world name Claude was asked to supply (see this
-      // tool's schema description), and it's also the only thing PubChem
-      // can actually look up below.
-      const label = input.subject?.trim() || hologramSignal.label;
       let structure: HologramStructure | undefined;
+      // Prefer the tool's own `subject`; fall back to deriving one from
+      // `content` when the model omitted it (see deriveMoleculeSubjectFallback
+      // above) — only meaningful for molecules, since that's PubChem's only
+      // lookup key; other object types keep using the matched trigger
+      // keyword (e.g. "card") as their label exactly as before.
+      let resolvedSubject = input.subject?.trim();
 
-      if (hologramSignal.objectType === "molecule" && input.subject?.trim()) {
-        console.log(`[push_to_screen] Fetching PubChem structure for "${input.subject.trim()}"`);
-        const pubchemStructure = await fetchPubChemStructure(input.subject.trim());
-        if (pubchemStructure) {
-          console.log(
-            `[push_to_screen] PubChem structure resolved — ${pubchemStructure.atoms.length} atoms, ${pubchemStructure.bonds.length} bonds`
-          );
-          structure = pubchemStructure;
+      if (hologramSignal.objectType === "molecule") {
+        if (!resolvedSubject) {
+          const derived = deriveMoleculeSubjectFallback(input.content);
+          if (derived) {
+            console.log(`[push_to_screen] No subject provided — derived "${derived}" from content instead.`);
+            resolvedSubject = derived;
+          }
+        }
+
+        if (resolvedSubject) {
+          console.log(`[push_to_screen] Fetching PubChem structure for "${resolvedSubject}"`);
+          const pubchemStructure = await fetchPubChemStructure(resolvedSubject);
+          if (pubchemStructure) {
+            console.log(
+              `[push_to_screen] PubChem structure resolved — ${pubchemStructure.atoms.length} atoms, ${pubchemStructure.bonds.length} bonds`
+            );
+            structure = pubchemStructure;
+          } else {
+            console.log(
+              "[push_to_screen] PubChem structure lookup returned null — hologram falls back to the generic molecule placeholder. See [pubchem-client] logs above for the reason."
+            );
+          }
         } else {
           console.log(
-            "[push_to_screen] PubChem structure lookup returned null — hologram falls back to the generic molecule placeholder. See [pubchem-client] logs above for the reason."
+            "[push_to_screen] No subject provided and none could be derived from content — hologram falls back to the generic molecule placeholder."
           );
         }
       }
+
+      const label = resolvedSubject || hologramSignal.label;
 
       return {
         text: "Pushed to the screen.",
