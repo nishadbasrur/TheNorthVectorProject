@@ -137,6 +137,33 @@ export function eventsBackToBack(events: UpcomingEvent[], minGapMinutes = 15): B
   return pairs;
 }
 
+// Events whose end time falls in the last `withinMinutes` — i.e. already
+// over, but recently. Used by the class-end spontaneous-speech trigger
+// (functions/src/class-end-scan.ts). Deliberately the mirror image of
+// eventsStartingSoon above (future window) rather than a variant of it —
+// getUpcomingEvents' timeMin is always "now" (confirmed by reading it), so
+// it can never return an already-ended event; callers needing this must
+// fetch via getEventsInRange with a past start time instead.
+export function eventsRecentlyEnded(events: UpcomingEvent[], withinMinutes = 10): UpcomingEvent[] {
+  const now = Date.now();
+  const cutoff = now - withinMinutes * 60 * 1000;
+
+  return events.filter((event) => {
+    if (!event.end) return false;
+    const endMs = event.end.getTime();
+    return endMs <= now && endMs >= cutoff;
+  });
+}
+
+// Matches this university's actual class-event title convention — confirmed
+// against real examples ("BIOL 1107 - 020\nLecture", "CHEM 1127Q - 013\nLecture",
+// "UNIV 1810 - 059\nSeminar", "BIOL 1107 - 023L\nLaboratory"): a 2-4 letter
+// department code, a 3-4 digit course number with an optional trailing
+// letter (e.g. "1127Q"), a dash, and a section number with an optional
+// trailing letter (e.g. "023L"). No calendar-client changes needed beyond
+// this — title is already fetched by every event-listing function above.
+export const CLASS_EVENT_TITLE_PATTERN = /^[A-Z]{2,4}\s?\d{3,4}[A-Z]?\s*-\s*\d{2,4}[A-Z]?/;
+
 // #86's weekly retrospective needs a past week's events — getUpcomingEvents
 // above is future-only (timeMin is always "now"), so this takes an explicit
 // range instead.

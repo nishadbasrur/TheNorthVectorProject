@@ -101,6 +101,20 @@ const WHISPER_TEXT_READ_DELAY_MS = 20000;
 const SILENCE_DURATION_MS = 1400;
 const NO_SPEECH_GIVEUP_MS = 8000;
 const INACTIVITY_TIMEOUT_MS = 75000; // real inactivity -> back to DORMANT
+// getUserMedia() is normally near-instant once permission is already
+// granted. Without a bound on it, a call that never settles (neither
+// resolves nor rejects) leaves startListening's `await` pending forever —
+// status stuck at "idle" ("One moment…") with mode still "active", no error
+// shown, nothing to look at. Confirmed as a real (not hypothetical) failure
+// mode of the native Tauri/WKWebView wrapper: the auto-relisten call after a
+// spoken response — not tied to a fresh, direct user tap the way the
+// original "Tap to enable voice" gesture was — hangs there in practice,
+// where the same call in Safari-the-browser resolves normally. Root cause
+// still unconfirmed (WKWebView's capture-session lifecycle vs. some
+// gesture-adjacency requirement Safari doesn't enforce as strictly), so this
+// is a bound, deliberately not a fix — but it turns an indefinite, silent
+// hang into a visible, recoverable error instead.
+const GET_USER_MEDIA_TIMEOUT_MS = 8000;
 // Higher bar than SPEECH_RMS_THRESHOLD — without headphones, TTS audio
 // bleeding into the mic (imperfect echo cancellation) needs a firmer floor
 // than normal speech detection to avoid the system barging in on itself.
@@ -175,6 +189,53 @@ function createSilentAudioUrl(): string {
   return URL.createObjectURL(blob);
 }
 
+// Brief two-tone chime played before routine (not urgent) spontaneous
+// speech, when audio is going out over open speakers rather than a
+// private/Bluetooth device — see drainSpontaneousQueue below. Synthesized
+// directly via an oscillator rather than a shipped audio asset; a couple
+// short sine-wave beeps is all a "heads up, something's coming" cue needs.
+function playChime(): Promise<void> {
+  return new Promise((resolve) => {
+    try {
+      const AudioContextCtor =
+        window.AudioContext ?? (window as unknown as { webkitAudioContext: typeof AudioContext }).webkitAudioContext;
+      const context = new AudioContextCtor();
+      const now = context.currentTime;
+      const tones = [
+        { freq: 880, start: 0 },
+        { freq: 1320, start: 0.12 },
+      ];
+      let remaining = tones.length;
+
+      for (const tone of tones) {
+        const oscillator = context.createOscillator();
+        const gain = context.createGain();
+        oscillator.type = "sine";
+        oscillator.frequency.value = tone.freq;
+
+        const startAt = now + tone.start;
+        gain.gain.setValueAtTime(0.0001, startAt);
+        gain.gain.exponentialRampToValueAtTime(0.12, startAt + 0.02);
+        gain.gain.exponentialRampToValueAtTime(0.0001, startAt + 0.11);
+
+        oscillator.connect(gain);
+        gain.connect(context.destination);
+        oscillator.start(startAt);
+        oscillator.stop(startAt + 0.12);
+        oscillator.onended = () => {
+          remaining -= 1;
+          if (remaining === 0) {
+            context.close().catch(() => {});
+            resolve();
+          }
+        };
+      }
+    } catch {
+      resolve(); // a failed chime shouldn't block the actual speech behind it
+    }
+  });
+}
+
 // Same clamp/scale math the old batch WAV-encoding path used (16-bit
 // LINEAR16, see lib/google-stt.ts for why this format over browser-native
 // MediaRecorder — inconsistent codec support across browsers, most notably
@@ -204,6 +265,10 @@ function rms(data: Float32Array): number {
 }
 
 type VoiceRespondResult = { responseText: string; toolsUsed: string[]; visual: MapVisual | null };
+
+// One item pulled off app/api/v1/voice/spontaneous-stream's SSE feed — see
+// drainSpontaneousQueue below for how these actually get spoken.
+type SpontaneousSpeechEvent = { id: string; text: string; urgency: "urgent" | "routine"; source: string };
 
 function isMapVisual(value: unknown): value is MapVisual {
   const v = value as Record<string, unknown> | null | undefined;
@@ -520,6 +585,13 @@ export function VoiceSessionProvider({ children }: { children: ReactNode }) {
   const processorRef = useRef<ScriptProcessorNode | null>(null);
   const hasSpeechRef = useRef(false);
 
+  // Spontaneous-speech channel state — see connectSpontaneousStream and
+  // drainSpontaneousQueue below.
+  const spontaneousQueueRef = useRef<SpontaneousSpeechEvent[]>([]);
+  const spontaneousAbortRef = useRef<AbortController | null>(null);
+  const spontaneousReconnectAttemptRef = useRef(0);
+  const spontaneousReconnectTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
   // Streaming STT — see stt-stream-service/ (a standalone Cloud Run
   // WebSocket service, not part of this Next.js app's own deploy; Firebase
   // Functions v2's onRequest can't expose a raw WebSocket 'upgrade' hook,
@@ -787,6 +859,119 @@ export function VoiceSessionProvider({ children }: { children: ReactNode }) {
     [startBargeInMonitor, stopBargeInMonitor, updateStatus]
   );
 
+  // Plays the next queued spontaneous-speech item, but ONLY once the app is
+  // genuinely at rest — mode "dormant" AND status "idle", not even the
+  // brief between-turn gap of an active session. speak() has no
+  // re-entrancy guard of its own (calling it mid-turn would stomp the
+  // shared status/mode state machine), and talking over a live human turn
+  // would be bad UX regardless — so "urgent" here only ever means "no
+  // chime, speak the instant the app is next at rest," never "interrupt."
+  // Called both reactively (the mode/status effect below, whenever the app
+  // actually settles into that resting state) and recursively after each
+  // item finishes speaking, so a multi-item backlog drains back-to-back
+  // without waiting for a fresh render/effect cycle in between.
+  const drainSpontaneousQueue = useCallback(() => {
+    if (modeRef.current !== "dormant" || statusRef.current !== "idle") return;
+    const next = spontaneousQueueRef.current.shift();
+    if (!next) return;
+
+    void (async () => {
+      if (next.urgency === "routine" && !(await isPrivateAudioOutputConnected())) {
+        await playChime();
+      }
+      await speak(next.text);
+      drainSpontaneousQueue();
+    })();
+  }, [speak]);
+
+  // Opens (and, on any drop, reconnects) the long-lived SSE connection
+  // behind North's always-on spontaneous speech — see
+  // app/api/v1/voice/spontaneous-stream/route.ts for the server side.
+  // Modeled on this file's existing STT-WebSocket reconnect handling
+  // (staleness-guard via a ref, explicit close/reopen), not a from-scratch
+  // design. A server-initiated "reconnect" event (the route's own
+  // ~6-minute connection rotation, well under Cloud Run's request-timeout
+  // ceiling) reconnects immediately with no backoff — it's a planned
+  // handoff, not a failure. Anything else (network drop, server error)
+  // backs off exponentially (capped at 30s) so a real outage doesn't spin
+  // hot.
+  const connectSpontaneousStream = useCallback(async () => {
+    const controller = new AbortController();
+    spontaneousAbortRef.current = controller;
+    let plannedReconnect = false;
+
+    try {
+      const idToken = await auth.currentUser?.getIdToken();
+      const response = await fetch("/api/v1/voice/spontaneous-stream", {
+        headers: { Authorization: `Bearer ${idToken ?? ""}` },
+        signal: controller.signal,
+      });
+
+      if (!response.ok) {
+        throw new Error(`Spontaneous-speech stream request failed: ${response.status}`);
+      }
+
+      for await (const { event, data } of parseSSEStream(response)) {
+        if (event === "spontaneous_speech") {
+          const raw = data as { id?: unknown; text?: unknown; urgency?: unknown; source?: unknown };
+          if (typeof raw.text === "string") {
+            spontaneousQueueRef.current.push({
+              id: typeof raw.id === "string" ? raw.id : "",
+              text: raw.text,
+              urgency: raw.urgency === "routine" ? "routine" : "urgent",
+              source: typeof raw.source === "string" ? raw.source : "",
+            });
+            drainSpontaneousQueue();
+          }
+        } else if (event === "reconnect") {
+          plannedReconnect = true;
+        } else if (event === "error") {
+          console.warn("[Sandbox] Spontaneous-speech stream error:", data);
+        }
+      }
+    } catch (error) {
+      if (controller.signal.aborted) return; // provider unmounted — no reconnect
+      console.warn("[Sandbox] Spontaneous-speech stream dropped:", error);
+    }
+
+    if (controller.signal.aborted) return;
+
+    const attempt = spontaneousReconnectAttemptRef.current;
+    const delayMs = plannedReconnect ? 0 : Math.min(30000, 1000 * 2 ** attempt);
+    spontaneousReconnectAttemptRef.current = plannedReconnect ? 0 : attempt + 1;
+
+    spontaneousReconnectTimerRef.current = setTimeout(() => {
+      connectSpontaneousStream();
+    }, delayMs);
+  }, [drainSpontaneousQueue]);
+
+  // Opened once when this provider mounts (root layout, survives
+  // navigation — see the module comment at the top of this file) and kept
+  // alive for as long as the Tauri app process is running, deliberately
+  // independent of window focus/visibility (no gate on that here, and no
+  // IPC bridge exists to signal it anyway — see the connectSpontaneousStream
+  // comment / the plan this was built against).
+  useEffect(() => {
+    connectSpontaneousStream();
+    return () => {
+      spontaneousAbortRef.current?.abort();
+      if (spontaneousReconnectTimerRef.current) clearTimeout(spontaneousReconnectTimerRef.current);
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- opened once on mount; connectSpontaneousStream reads current refs internally, doesn't need to be re-run when it's redefined
+  }, []);
+
+  // Reactive drain trigger — fires whenever the app actually settles into
+  // (dormant, idle), regardless of which of this file's many
+  // updateStatus("idle")/goDormant() call sites got it there. More robust
+  // than threading an explicit drainSpontaneousQueue() call into every one
+  // of those sites by hand (and just as correct: React's own state update
+  // is what "settles into idle" means here).
+  useEffect(() => {
+    if (mode === "dormant" && status === "idle") {
+      drainSpontaneousQueue();
+    }
+  }, [mode, status, drainSpontaneousQueue]);
+
   // Streaming sibling of speak() — plays each sentence's audio as it
   // arrives from app/api/v1/voice/respond's SSE stream instead of waiting
   // for the whole response then fetching one complete audio file (the
@@ -831,6 +1016,15 @@ export function VoiceSessionProvider({ children }: { children: ReactNode }) {
       });
 
       let finalMeta: VoiceRespondResult | null = null;
+      // Surfaced at most once per response even if multiple chunks fail —
+      // this loop is deliberately resilient (one bad chunk shouldn't sink
+      // the whole turn, per enqueueSentence's server-side comment), but that
+      // resilience was also making chunk playback failures completely
+      // invisible: console.warn only, nothing in the UI, nothing to go on
+      // when audio silently never plays. First failure now shows up in the
+      // HUD's error line so a hung/silent turn has a visible reason instead
+      // of none — see the finding this was added for.
+      let playbackErrorSurfaced = false;
 
       try {
         for await (const { event, data } of parseSSEStream(response)) {
@@ -858,10 +1052,37 @@ export function VoiceSessionProvider({ children }: { children: ReactNode }) {
               finishCurrentChunk = finish;
               audioElement.onended = finish;
               audioElement.onerror = () => {
-                console.warn("[Sandbox] Audio chunk playback failed, skipping.");
+                // MediaError.code is one of MEDIA_ERR_ABORTED/NETWORK/
+                // DECODE/SRC_NOT_SUPPORTED (1-4) — logging it (not just a
+                // generic warning) is the difference between "playback
+                // failed, no idea why" and actually knowing whether this is
+                // a decode problem, an unsupported-source problem, etc.
+                const mediaError = audioElement.error;
+                console.warn(
+                  "[Sandbox] Audio chunk playback failed, skipping.",
+                  mediaError ? { code: mediaError.code, message: mediaError.message } : "(no MediaError set)"
+                );
+                if (!playbackErrorSurfaced) {
+                  playbackErrorSurfaced = true;
+                  setErrorMessage(
+                    `Audio playback failed (code ${mediaError?.code ?? "?"}) — see console for details.`
+                  );
+                }
                 finish();
               };
-              audioElement.play().catch(() => finish());
+              audioElement.play().catch((error: unknown) => {
+                // On Safari/WKWebView this is typically a DOMException
+                // (NotAllowedError/NotSupportedError/AbortError) — surface
+                // its real name/message rather than swallowing it, same
+                // reasoning as onerror above.
+                console.warn("[Sandbox] audioElement.play() rejected:", error);
+                if (!playbackErrorSurfaced) {
+                  playbackErrorSurfaced = true;
+                  const name = error instanceof DOMException ? error.name : "playback error";
+                  setErrorMessage(`Audio playback failed (${name}) — see console for details.`);
+                }
+                finish();
+              });
             });
             finishCurrentChunk = null;
 
@@ -1076,9 +1297,32 @@ export function VoiceSessionProvider({ children }: { children: ReactNode }) {
     }
 
     let stream: MediaStream;
+    // Declared outside the try block, not just inline in the Promise.race
+    // below, so a stray late resolution — arriving after the timeout below
+    // already rejected and this function has moved on — can still be caught
+    // and stopped in the catch block. Without that, a "timed out" mic
+    // request that actually succeeds a beat later would leave a live,
+    // ungoverned mic stream running with nothing left referencing or ever
+    // stopping it.
+    const rawRequest = navigator.mediaDevices.getUserMedia({ audio: { echoCancellation: true } });
+
     try {
-      stream = await navigator.mediaDevices.getUserMedia({ audio: { echoCancellation: true } });
+      stream = await Promise.race([
+        rawRequest,
+        new Promise<never>((_, reject) =>
+          setTimeout(
+            () => reject(new Error("Microphone didn't respond — the request timed out.")),
+            GET_USER_MEDIA_TIMEOUT_MS
+          )
+        ),
+      ]);
     } catch (error) {
+      // If `error` came from the timeout branch, rawRequest is still live
+      // and may resolve moments later — when/if it does, stop its tracks
+      // immediately rather than leaving an orphaned live mic stream nothing
+      // else knows about. If it instead rejects (the more common real
+      // failure), this is a no-op.
+      rawRequest.then((lateStream) => lateStream.getTracks().forEach((track) => track.stop())).catch(() => {});
       console.warn("getUserMedia failed:", error);
       setErrorMessage(describeMicError(error));
       if (modeRef.current === "active") goDormant(); // can't listen at all — don't strand in active mode
@@ -1406,7 +1650,13 @@ export function VoiceSessionProvider({ children }: { children: ReactNode }) {
     <VoiceSessionContext.Provider value={value}>
       {children}
       {hasMounted && wakeWordDebugEnabled && (
-        <WakeWordDebugOverlay keywords={[WAKE_WORD_KEYWORD, WAKE_WORD_KEYWORD_WHISPER]} threshold={DEFAULT_DETECTION_THRESHOLD} />
+        // "hey_mycroft" here matches use-wake-word.ts's own debug-mode-only
+        // addition of it as a control-group keyword — see that file's
+        // comment for why. Not shown/active outside debug mode.
+        <WakeWordDebugOverlay
+          keywords={[WAKE_WORD_KEYWORD, WAKE_WORD_KEYWORD_WHISPER, "hey_mycroft"]}
+          threshold={DEFAULT_DETECTION_THRESHOLD}
+        />
       )}
     </VoiceSessionContext.Provider>
   );

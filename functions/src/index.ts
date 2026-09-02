@@ -10,6 +10,9 @@ import { evaluateRisks, type RiskEvaluationTask, type RiskEvaluationGoal } from 
 import { resendApiKey, sendEmail, sendRiskSummaryEmail } from "./email";
 import { verifyOwner } from "./require-owner";
 import { runUrgencyScan } from "./urgency-scan";
+import { runHourlyCheckinScan } from "./hourly-checkin-scan";
+import { runTaskReminderScan } from "./task-reminder-scan";
+import { runClassEndScan } from "./class-end-scan";
 import { runSynthesisScan, submitSynthesisScan, pollSynthesisScan } from "./synthesis-scan";
 import {
   runWeeklyRetrospectiveScan,
@@ -102,7 +105,15 @@ export const dailyRiskScan = onSchedule(
 // instead of waiting for a real flagged risk (or 6am tomorrow). Owner-only,
 // same Bearer-token check pattern as the Next.js API routes.
 export const sendTestEmail = onRequest(
-  { secrets: [resendApiKey] },
+  // invoker: "public" — Cloud Run's own IAM invoker check otherwise blocks
+  // every request before it ever reaches verifyOwner() below (confirmed
+  // live: a Firebase Auth ID token isn't a Google Cloud IAM credential, so
+  // Cloud Run's default "authentication required" gate rejects it with a
+  // generic 401/403 HTML page regardless of what the token actually is).
+  // verifyOwner() is the real, intended access control for every
+  // onRequest function in this file — this just makes the transport layer
+  // match that design instead of silently blocking the owner too.
+  { secrets: [resendApiKey], invoker: "public" },
   async (req, res) => {
     const isOwner = await verifyOwner(req, res);
     if (!isOwner) return;
@@ -149,7 +160,7 @@ export const urgencyScan = onSchedule(
 // Manually-triggered test path, same reasoning as sendTestEmail — lets push
 // deliverability be verified without waiting for a real qualifying event.
 export const sendTestUrgency = onRequest(
-  { secrets: urgencyScanSecrets },
+  { secrets: urgencyScanSecrets, invoker: "public" },
   async (req, res) => {
     const isOwner = await verifyOwner(req, res);
     if (!isOwner) return;
@@ -173,7 +184,7 @@ export const sendTestUrgency = onRequest(
 // live without waiting up to 15 minutes for the next scheduled tick. Same
 // triggerSynthesisScan precedent.
 export const triggerUrgencyScan = onRequest(
-  { secrets: urgencyScanSecrets },
+  { secrets: urgencyScanSecrets, invoker: "public" },
   async (req, res) => {
     const isOwner = await verifyOwner(req, res);
     if (!isOwner) return;
@@ -200,7 +211,7 @@ export const triggerUrgencyScan = onRequest(
 // an authenticated Nishad session. Authentication is the channelToken
 // check inside handleCalendarWebhook itself (a random secret only this
 // app and Google's push service know, echoed back on every real call).
-export const calendarWebhook = onRequest({ secrets: urgencyScanSecrets }, async (req, res) => {
+export const calendarWebhook = onRequest({ secrets: urgencyScanSecrets, invoker: "public" }, async (req, res) => {
   await handleCalendarWebhook(req, res);
 });
 
@@ -225,7 +236,7 @@ export const calendarWatchRenew = onSchedule(
 // lets renewal be re-tested on demand later. Same
 // sendTestEmail/sendTestUrgency manual-trigger precedent.
 export const triggerCalendarWatchRenew = onRequest(
-  { secrets: [googleCalendarClientId, googleCalendarClientSecret, googleCalendarRefreshToken] },
+  { secrets: [googleCalendarClientId, googleCalendarClientSecret, googleCalendarRefreshToken], invoker: "public" },
   async (req, res) => {
     const isOwner = await verifyOwner(req, res);
     if (!isOwner) return;
@@ -262,6 +273,80 @@ const synthesisScanSecrets = [
   openaiApiKey,
 ];
 
+// Trigger sources #2-#4 of always-on spontaneous speech — see
+// app/api/v1/voice/spontaneous-stream/route.ts for the channel these all
+// feed into via lib/spontaneous-speech-queue.ts's enqueueSpontaneousSpeech.
+// Same onSchedule + verifyOwner-gated onRequest manual-trigger twin pattern
+// as urgencyScan/triggerUrgencyScan above, for real live-testing without
+// waiting on the schedule.
+
+const hourlyCheckinSecrets = [googleCalendarClientId, googleCalendarClientSecret, googleCalendarRefreshToken, openaiApiKey];
+
+export const hourlyCheckin = onSchedule(
+  { schedule: "every 60 minutes", secrets: hourlyCheckinSecrets },
+  async () => {
+    await runHourlyCheckinScan();
+  }
+);
+
+export const triggerHourlyCheckin = onRequest(
+  { secrets: hourlyCheckinSecrets, invoker: "public" },
+  async (req, res) => {
+    const isOwner = await verifyOwner(req, res);
+    if (!isOwner) return;
+
+    try {
+      const result = await runHourlyCheckinScan();
+      res.status(200).json({ ok: true, ...result });
+    } catch (error) {
+      logger.error("[triggerHourlyCheckin] Hourly check-in failed:", error);
+      res.status(500).json({ ok: false, error: "Hourly check-in failed — check function logs." });
+    }
+  }
+);
+
+export const taskReminderScan = onSchedule({ schedule: "every 30 minutes" }, async () => {
+  await runTaskReminderScan();
+});
+
+export const triggerTaskReminderScan = onRequest({ invoker: "public" }, async (req, res) => {
+  const isOwner = await verifyOwner(req, res);
+  if (!isOwner) return;
+
+  try {
+    const result = await runTaskReminderScan();
+    res.status(200).json({ ok: true, ...result });
+  } catch (error) {
+    logger.error("[triggerTaskReminderScan] Task reminder scan failed:", error);
+    res.status(500).json({ ok: false, error: "Task reminder scan failed — check function logs." });
+  }
+});
+
+const classEndScanSecrets = [googleCalendarClientId, googleCalendarClientSecret, googleCalendarRefreshToken];
+
+export const classEndScan = onSchedule(
+  { schedule: "every 10 minutes", secrets: classEndScanSecrets },
+  async () => {
+    await runClassEndScan();
+  }
+);
+
+export const triggerClassEndScan = onRequest(
+  { secrets: classEndScanSecrets, invoker: "public" },
+  async (req, res) => {
+    const isOwner = await verifyOwner(req, res);
+    if (!isOwner) return;
+
+    try {
+      const result = await runClassEndScan();
+      res.status(200).json({ ok: true, ...result });
+    } catch (error) {
+      logger.error("[triggerClassEndScan] Class-end scan failed:", error);
+      res.status(500).json({ ok: false, error: "Class-end scan failed — check function logs." });
+    }
+  }
+);
+
 // Manual-trigger endpoint — kept alongside the schedule below (same
 // sendTestEmail/sendTestUrgency precedent) for on-demand testing without
 // waiting for the next scheduled run.
@@ -277,7 +362,7 @@ const synthesisScanSecrets = [
 // set on itself too, by hand, in the console, the same way it was set on
 // urgencyScan and this manual endpoint.
 export const triggerSynthesisScan = onRequest(
-  { secrets: synthesisScanSecrets, timeoutSeconds: 120 },
+  { secrets: synthesisScanSecrets, timeoutSeconds: 120, invoker: "public" },
   async (req, res) => {
     const isOwner = await verifyOwner(req, res);
     if (!isOwner) return;
@@ -351,7 +436,7 @@ const weeklyRetrospectiveSecrets = [
 // precedent — lets the retrospective be verified right now rather than
 // waiting for the next Sunday 8am tick.
 export const triggerWeeklyRetrospective = onRequest(
-  { secrets: weeklyRetrospectiveSecrets, timeoutSeconds: 120 },
+  { secrets: weeklyRetrospectiveSecrets, timeoutSeconds: 120, invoker: "public" },
   async (req, res) => {
     const isOwner = await verifyOwner(req, res);
     if (!isOwner) return;
@@ -442,7 +527,7 @@ export const gmailWatchRenew = onSchedule(
 // Manual trigger — bootstraps the first registration right after deploy
 // rather than waiting for the first scheduled tick, same
 // triggerCalendarWatchRenew precedent.
-export const triggerGmailWatchRenew = onRequest({ secrets: gmailWatchSecrets }, async (req, res) => {
+export const triggerGmailWatchRenew = onRequest({ secrets: gmailWatchSecrets, invoker: "public" }, async (req, res) => {
   const isOwner = await verifyOwner(req, res);
   if (!isOwner) return;
 
@@ -463,7 +548,7 @@ export const triggerGmailWatchRenew = onRequest({ secrets: gmailWatchSecrets }, 
 // endpoint just needs to exist and handle the one-time verification
 // handshake plus ongoing HMAC signature checks — see
 // functions/src/notion-webhook.ts.
-export const notionWebhook = onRequest({ secrets: urgencyScanSecrets }, async (req, res) => {
+export const notionWebhook = onRequest({ secrets: urgencyScanSecrets, invoker: "public" }, async (req, res) => {
   await handleNotionWebhook(req, res);
 });
 
@@ -617,7 +702,7 @@ const APP_URL = "https://north-vector--the-north-vector-project.us-east4.hosted.
 const pipelineCallbackToken = defineSecret("PIPELINE_CALLBACK_TOKEN");
 
 export const notifyCapabilityDraftReady = onRequest(
-  { secrets: [pipelineCallbackToken] },
+  { secrets: [pipelineCallbackToken], invoker: "public" },
   async (req, res) => {
     if (!verifyPipelineCallback(req, res, pipelineCallbackToken.value())) return;
 

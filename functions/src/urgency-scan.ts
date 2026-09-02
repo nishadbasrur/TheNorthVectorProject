@@ -1,44 +1,8 @@
-import { getFirestore, FieldValue } from "firebase-admin/firestore";
 import { logger } from "firebase-functions";
 import { getUpcomingEvents, eventsStartingSoon, eventsBackToBack } from "../../lib/google-calendar-client";
 import { getUrgentItems } from "../../lib/notion-client";
 import { sendPushNotification } from "./push";
-
-type AlertSource = "calendar" | "notion" | "back_to_back";
-
-// alert_state doc ids are namespaced by source so a Calendar event id and a
-// Notion page id can never collide.
-function alertStateId(source: AlertSource, externalId: string): string {
-  return `${source}-${externalId}`;
-}
-
-async function alreadyAlerted(source: AlertSource, externalId: string): Promise<boolean> {
-  const db = getFirestore();
-  const doc = await db.collection("alert_state").doc(alertStateId(source, externalId)).get();
-  return doc.exists;
-}
-
-async function recordAlert(
-  source: AlertSource,
-  externalId: string,
-  summary: string
-): Promise<void> {
-  const db = getFirestore();
-
-  await db.collection("alert_state").doc(alertStateId(source, externalId)).set({
-    source,
-    externalId,
-    alertedAt: FieldValue.serverTimestamp(),
-  });
-
-  // Audit log — summary only, never raw source content (matters most for
-  // Gmail, but kept consistent here too).
-  await db.collection("alerts").add({
-    source,
-    summary,
-    sentAt: FieldValue.serverTimestamp(),
-  });
-}
+import { alreadyAlerted, recordAlert } from "./alert-state";
 
 export type UrgencyScanSummary = {
   calendarEventsChecked: number;
