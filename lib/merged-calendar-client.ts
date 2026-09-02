@@ -19,6 +19,7 @@ import { getUpcomingICloudEvents, getICloudEventsInRange } from "./icloud-calend
 // specifies orderBy: "startTime". A bare concatenation of two sources
 // without re-sorting would silently break both.
 function mergeSorted(google: UpcomingEvent[], icloud: UpcomingEvent[]): UpcomingEvent[] {
+  console.log(`[merged-calendar-client] Merging ${google.length} Google event(s) with ${icloud.length} iCloud event(s).`);
   return [...google, ...icloud].sort((a, b) => a.start.getTime() - b.start.getTime());
 }
 
