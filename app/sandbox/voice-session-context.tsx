@@ -427,6 +427,11 @@ type VoiceSessionValue = {
   // is a queue rather than a single nullable slot.
   uiActionQueue: UiAction[];
   handleMicTap: () => void;
+  // Do Not Disturb — manual kill switch for spontaneous (unprompted)
+  // speech only; direct wake-word conversation is unaffected. See the
+  // spontaneousMuted state declaration above for the full rationale.
+  spontaneousMuted: boolean;
+  toggleSpontaneousMute: () => void;
 };
 
 const VoiceSessionContext = createContext<VoiceSessionValue | null>(null);
@@ -591,6 +596,53 @@ export function VoiceSessionProvider({ children }: { children: ReactNode }) {
   const spontaneousAbortRef = useRef<AbortController | null>(null);
   const spontaneousReconnectAttemptRef = useRef(0);
   const spontaneousReconnectTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  // Manual "Do Not Disturb" kill switch for spontaneous speech — added
+  // 2026-09-03 after North spoke unprompted (a wrong, wall-clock-confused
+  // hourly check-in) mid-lecture in a public room. This is a hard, fast
+  // mute: while on, incoming spontaneous-speech events are dropped at the
+  // SSE handler (never queued — nothing builds up to blast out the moment
+  // it's turned back off, same semantics as a phone's Do Not Disturb), and
+  // any spontaneous audio already playing is paused immediately. Persisted
+  // to localStorage so a mute set before class survives a reload/relaunch
+  // — the whole point is not having to remember to re-arm it every
+  // session, only to remember to turn it back off. Deliberately does NOT
+  // affect direct wake-word conversation (asking North something and
+  // getting an answer) — only the unprompted/proactive channel, which is
+  // the one that can fire with zero warning in a public setting.
+  const DND_STORAGE_KEY = "nv-spontaneous-dnd";
+  const [spontaneousMuted, setSpontaneousMutedState] = useState<boolean>(() => {
+    if (typeof window === "undefined") return false;
+    try {
+      return window.localStorage.getItem(DND_STORAGE_KEY) === "1";
+    } catch {
+      return false;
+    }
+  });
+  const spontaneousMutedRef = useRef(spontaneousMuted);
+  spontaneousMutedRef.current = spontaneousMuted;
+
+  const setSpontaneousMuted = useCallback((next: boolean) => {
+    setSpontaneousMutedState(next);
+    spontaneousMutedRef.current = next;
+    try {
+      window.localStorage.setItem(DND_STORAGE_KEY, next ? "1" : "0");
+    } catch {
+      // Persistence failing is never fatal — the toggle still works for
+      // the rest of this session, it just won't survive a reload.
+    }
+    if (next) {
+      // Instant kill, not "stop queueing going forward" — a spontaneous
+      // line already mid-playback when the toggle is hit must cut off
+      // immediately, that's the entire point of a public-setting mute.
+      spontaneousQueueRef.current = [];
+      audioRef.current?.pause();
+    }
+  }, []);
+
+  const toggleSpontaneousMute = useCallback(() => {
+    setSpontaneousMuted(!spontaneousMutedRef.current);
+  }, [setSpontaneousMuted]);
 
   // Streaming STT — see stt-stream-service/ (a standalone Cloud Run
   // WebSocket service, not part of this Next.js app's own deploy; Firebase
@@ -871,6 +923,15 @@ export function VoiceSessionProvider({ children }: { children: ReactNode }) {
   // item finishes speaking, so a multi-item backlog drains back-to-back
   // without waiting for a fresh render/effect cycle in between.
   const drainSpontaneousQueue = useCallback(() => {
+    if (spontaneousMutedRef.current) {
+      // Redundant with the drop-on-arrival check in connectSpontaneousStream
+      // below, deliberately — this is the actual last line of defense
+      // right before anything would be spoken, so a mute flipped on in the
+      // narrow window between an event arriving and this function running
+      // still lands in time.
+      spontaneousQueueRef.current = [];
+      return;
+    }
     if (modeRef.current !== "dormant" || statusRef.current !== "idle") return;
     const next = spontaneousQueueRef.current.shift();
     if (!next) return;
@@ -913,6 +974,7 @@ export function VoiceSessionProvider({ children }: { children: ReactNode }) {
 
       for await (const { event, data } of parseSSEStream(response)) {
         if (event === "spontaneous_speech") {
+          if (spontaneousMutedRef.current) continue; // Do Not Disturb — dropped, never queued
           const raw = data as { id?: unknown; text?: unknown; urgency?: unknown; source?: unknown };
           if (typeof raw.text === "string") {
             spontaneousQueueRef.current.push({
@@ -959,6 +1021,26 @@ export function VoiceSessionProvider({ children }: { children: ReactNode }) {
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps -- opened once on mount; connectSpontaneousStream reads current refs internally, doesn't need to be re-run when it's redefined
   }, []);
+
+  // Cmd/Ctrl+Shift+D — the "kill it now" keyboard shortcut for the
+  // Do Not Disturb toggle above. Window-level, not a Tauri global shortcut:
+  // this only fires while the app window has focus, which is the realistic
+  // case (the whole point is reacting the instant something starts playing
+  // out loud, at which point the app is already the thing making noise on
+  // screen). A true OS-wide global hotkey would need a Tauri-side
+  // registration — worth adding later, not blocking tonight's fix on it
+  // since the visible on-screen toggle covers the same "no menus, no
+  // force-quit" requirement regardless.
+  useEffect(() => {
+    function handleKeyDown(e: KeyboardEvent) {
+      if ((e.metaKey || e.ctrlKey) && e.shiftKey && e.key.toLowerCase() === "d") {
+        e.preventDefault();
+        toggleSpontaneousMute();
+      }
+    }
+    window.addEventListener("keydown", handleKeyDown);
+    return () => window.removeEventListener("keydown", handleKeyDown);
+  }, [toggleSpontaneousMute]);
 
   // Reactive drain trigger — fires whenever the app actually settles into
   // (dormant, idle), regardless of which of this file's many
@@ -1644,6 +1726,8 @@ export function VoiceSessionProvider({ children }: { children: ReactNode }) {
     setHologram,
     uiActionQueue,
     handleMicTap,
+    spontaneousMuted,
+    toggleSpontaneousMute,
   };
 
   return (

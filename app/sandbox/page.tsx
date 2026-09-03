@@ -92,6 +92,8 @@ export default function SandboxPage() {
     setHologram,
     uiActionQueue,
     handleMicTap,
+    spontaneousMuted,
+    toggleSpontaneousMute,
   } = useVoiceSession();
 
   const takeoverClass = visual
@@ -105,6 +107,23 @@ export default function SandboxPage() {
   return (
     <AppShell>
       <div className={`hud-page ${takeoverClass}`}>
+        {/* Manual kill switch for spontaneous (unprompted) speech — see
+            voice-session-context.tsx's spontaneousMuted state for the full
+            rationale. Fixed/top-most so it's reachable in under a second
+            regardless of what else is on screen (map, hologram, display
+            takeover) — not tucked into a menu. Cmd/Ctrl+Shift+D does the
+            same thing without touching the screen at all. */}
+        <button
+          type="button"
+          className={`hud-dnd-toggle${spontaneousMuted ? " hud-dnd-toggle-active" : ""}`}
+          onClick={toggleSpontaneousMute}
+          aria-pressed={spontaneousMuted}
+          title="Cmd/Ctrl+Shift+D"
+        >
+          <span className="hud-dnd-toggle-dot" />
+          {spontaneousMuted ? "Do Not Disturb — ON" : "Do Not Disturb"}
+        </button>
+
         {visual && <HudMap visual={visual} onClose={() => setVisual(null)} />}
         {hologram && (
           <HologramPanel hologram={hologram} onClose={() => setHologram(null)} uiActionQueue={uiActionQueue} />
