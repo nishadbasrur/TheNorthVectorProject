@@ -61,3 +61,6 @@ scripts/oauth-switch-gmail-account.js
 scripts/mac-messages-agent/.env
 scripts/mac-messages-agent/state.json
 scripts/mac-messages-agent/agent.lock
+
+# Local build artifact from scripts/build-curriculum-library.mts — resumable checkpoint, not source
+scripts/.curriculum-library-checkpoint.json
