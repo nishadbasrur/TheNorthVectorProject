@@ -1338,6 +1338,70 @@ html, body {
   user-select: none;
 }
 
+/* Do Not Disturb toggle for spontaneous speech — top-right, fixed, above
+   EVERYTHING else including the map/hologram/display takeover overlays
+   (highest z-index in this file on purpose: the whole point is being
+   reachable in under a second no matter what's currently on screen). Two
+   distinct visual states, not just a label change — armed (muted) needs to
+   read as unmistakably "on" at a glance from across a room, not something
+   you have to read the text of to confirm. */
+.hud-dnd-toggle {
+  position: fixed;
+  top: 16px;
+  right: 16px;
+  z-index: 100;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 8px 14px;
+  border-radius: 999px;
+  border: 1px solid rgba(58, 214, 255, 0.35);
+  background: rgba(10, 18, 26, 0.72);
+  backdrop-filter: blur(6px);
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 11px;
+  letter-spacing: 0.06em;
+  color: rgba(58, 214, 255, 0.75);
+  cursor: pointer;
+  transition: background 0.15s ease, border-color 0.15s ease, color 0.15s ease, box-shadow 0.15s ease;
+}
+
+.hud-dnd-toggle:hover {
+  border-color: rgba(58, 214, 255, 0.6);
+  color: var(--hud-cyan);
+}
+
+.hud-dnd-toggle-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: rgba(58, 214, 255, 0.5);
+  flex-shrink: 0;
+}
+
+.hud-dnd-toggle-active {
+  border-color: rgba(255, 77, 106, 0.8);
+  background: rgba(46, 10, 16, 0.85);
+  color: #ff7a8f;
+  box-shadow: 0 0 16px rgba(255, 77, 106, 0.35);
+}
+
+.hud-dnd-toggle-active:hover {
+  border-color: #ff4d6a;
+  color: #ff9aab;
+}
+
+.hud-dnd-toggle-active .hud-dnd-toggle-dot {
+  background: #ff4d6a;
+  box-shadow: 0 0 6px #ff4d6a;
+  animation: hud-dnd-pulse 1.6s ease-in-out infinite;
+}
+
+@keyframes hud-dnd-pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.4; }
+}
+
 .hud-ring-wrap {
   position: relative;
   width: 260px;
