@@ -1695,8 +1695,31 @@ async function handlePushToScreen(input: {
     // this running first, Wolfram would win and this task's whole point
     // (a real, PubChem-sourced 3D structure instead of a generic
     // placeholder) would never fire.
-    const hologramSignal = detectHologramSubject(input.content);
+    let hologramSignal = detectHologramSubject(input.content);
     console.log(`[push_to_screen] detectHologramSubject: ${hologramSignal ? hologramSignal.objectType : "miss"}`);
+
+    // Subject-only fallback — detectHologramSubject only scans `content`
+    // for a trigger keyword ("molecular", "compound", "chemical
+    // structure", etc.), so it misses whenever Claude passes just the
+    // bare compound name as content (e.g. content: "dibromobutane",
+    // subject: "dibromobutane") instead of a descriptive phrase like
+    // "dibromobutane molecular structure and properties" — even though
+    // `subject` was correctly set in the very same call. Confirmed live
+    // 2026-09-03: exactly this happened for "dibromobutane" (and again
+    // for a bare "Tartaric acid"), and with no hologram match, it fell
+    // through the Wolfram check too, hit the type:"image"-forced-to-
+    // markdown backstop below, and never attempted a PubChem/curriculum-
+    // library lookup at all — a plain text label, not a broken lookup.
+    // `subject` present + type "image" + non-URL content is otherwise
+    // exactly this feature's own documented calling convention (see this
+    // tool's schema: "For type 'image' only: a short descriptive lookup
+    // query"), so treating it as a molecule request here is the narrow,
+    // well-justified case this gap needs, not a broad guess.
+    if (!hologramSignal && type === "image" && input.subject?.trim() && !/^(https?:|data:)/i.test(input.content.trim())) {
+      const subject = input.subject.trim();
+      console.log(`[push_to_screen] detectHologramSubject missed but subject "${subject}" is present — treating as a molecule lookup.`);
+      hologramSignal = { objectType: "molecule", label: subject };
+    }
     if (hologramSignal) {
       let structure: HologramStructure | undefined;
       // Prefer the tool's own `subject`; fall back to deriving one from

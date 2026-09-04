@@ -494,22 +494,45 @@ export function VoiceSessionProvider({ children }: { children: ReactNode }) {
   // nothing needs to read "what's currently displayed" back). Persists
   // across turns until manually dismissed or replaced by a new push, same
   // as the ticket's own spec — not cleared by goDormant the way `visual` is.
-  const [display, setDisplay] = useState<DisplayContent | null>(null);
+  const [displayState, setDisplayState] = useState<DisplayContent | null>(null);
   // Tier 2's full-screen holographic takeover — set the instant a
   // "hologram" SSE event arrives (see askNorth/askNorthAndSpeakStream
-  // below). Both this and `visual` (the map) are full-screen takeovers, so
-  // setting either one clears the other — see setVisual/setHologram below,
-  // not the raw state setters — to keep two overlays from ever stacking.
+  // below). All three of these (this, `visual` the map, and `display`) are
+  // full-screen takeovers rendered independently in app/sandbox/page.tsx —
+  // setting any one of them clears the other two, via setVisual/
+  // setHologram/setDisplay below (never the raw state setters), so at most
+  // one is ever truthy at once. Before 2026-09-04 this only covered
+  // visual/hologram — `display` was never cleared by the other two, so a
+  // stale display panel and a freshly-resolved hologram could both be
+  // truthy simultaneously. Confirmed live: both overlays use identical
+  // z-index (globals.css), so at equal z-index the later-DOM-order one
+  // wins — <DisplayPanel> renders after <HologramPanel> in page.tsx — and
+  // a stale display panel silently covered a correctly-resolved hologram
+  // underneath it, with no visible sign a new push had even worked.
   const [hologramState, setHologramState] = useState<HologramVisual | null>(null);
 
   const setVisual = useCallback((next: MapVisual | null) => {
-    if (next) setHologramState(null);
+    if (next) {
+      setHologramState(null);
+      setDisplayState(null);
+    }
     setVisualState(next);
   }, []);
 
   const setHologram = useCallback((next: HologramVisual | null) => {
-    if (next) setVisualState(null);
+    if (next) {
+      setVisualState(null);
+      setDisplayState(null);
+    }
     setHologramState(next);
+  }, []);
+
+  const setDisplay = useCallback((next: DisplayContent | null) => {
+    if (next) {
+      setVisualState(null);
+      setHologramState(null);
+    }
+    setDisplayState(next);
   }, []);
 
   // control_ui's generic action name/params pair — see lib/tool-
@@ -1720,7 +1743,7 @@ export function VoiceSessionProvider({ children }: { children: ReactNode }) {
     toolsUsed,
     visual: visualState,
     setVisual,
-    display,
+    display: displayState,
     setDisplay,
     hologram: hologramState,
     setHologram,
