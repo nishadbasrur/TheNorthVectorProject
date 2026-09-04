@@ -80,6 +80,27 @@ function isSleepPhrase(text: string): boolean {
 // now" example (app/api/v1/voice/respond/route.ts) for tonal consistency.
 const SLEEP_ACKNOWLEDGMENT = "Understood, sir. I'll be here when something's worth mentioning.";
 
+// Hold/Release — same fast local-pattern-match mechanism as the sleep
+// phrase above (checked client-side before ever calling askNorth), not a
+// second one. Single-word phrases, so unlike SLEEP_PHRASES' multi-word
+// forms a plain .includes() would false-positive on ordinary conversation
+// ("hold on a sec", "can you hold this thought") — trimmed exact-match
+// instead, deliberately less forgiving of STT noise than the sleep phrase,
+// since a false trigger here silently swallows the user's next few
+// utterances rather than just ending the session a beat early.
+const HOLD_PHRASES = ["hold", "north, hold", "hold, north"];
+const RELEASE_PHRASES = ["release", "north, release", "release, north"];
+function isHoldPhrase(text: string): boolean {
+  const lower = text.toLowerCase().trim().replace(/[.!?]+$/, "");
+  return HOLD_PHRASES.includes(lower);
+}
+function isReleasePhrase(text: string): boolean {
+  const lower = text.toLowerCase().trim().replace(/[.!?]+$/, "");
+  return RELEASE_PHRASES.includes(lower);
+}
+const HOLDING_ACKNOWLEDGMENT = "Holding.";
+const RELEASE_ACKNOWLEDGMENT = "Released.";
+
 // Auto-stop-on-silence and barge-in thresholds — hand-tuned starting points
 // against a Float32 [-1, 1] signal's RMS, not derived from any formal
 // calibration. Expect these to need adjustment once tested against a real
@@ -700,6 +721,17 @@ export function VoiceSessionProvider({ children }: { children: ReactNode }) {
   // resetting per-turn. Drives both the RMS threshold used in startListening
   // and the response-delivery branch in handleTranscript.
   const isWhisperModeRef = useRef(false);
+  // Hold/Release — a restricted-listening posture layered on top of ACTIVE
+  // mode, not a third Mode value: the mic/STT loop keeps running exactly
+  // as it does in normal active conversation (so it can still hear
+  // "Release"), the only thing that changes is finishListeningAndTranscribe
+  // routing every transcript except the release phrase to nowhere instead
+  // of to handleTranscript/the model. Ref for synchronous reads inside
+  // callbacks (same dual ref+state pattern as `mode`/modeRef elsewhere in
+  // this file); state so the ring visual (see getStatusLabel/ringState
+  // below) actually re-renders when it changes.
+  const holdingRef = useRef(false);
+  const [holding, setHolding] = useState(false);
   // Reused across the whole app session (not recreated per response) — once
   // this exact element has played from within a user gesture, Safari allows
   // later programmatic .play() calls on it even outside a gesture call
@@ -862,10 +894,18 @@ export function VoiceSessionProvider({ children }: { children: ReactNode }) {
     audioRef.current?.pause();
     setMode("dormant");
     updateStatus("idle");
-    setVisual(null); // map (if any) doesn't survive back to the resting orb-only screen
-    setHologram(null); // same treatment as the map takeover above
+    // Whatever's on screen (map, hologram, or display panel) survives going
+    // dormant — going to sleep is a mic/conversation-loop state change,
+    // not a "clear the screen" action. Confirmed live 2026-09-04: asking
+    // North to keep a hologram up and go to sleep used to take the
+    // hologram away right along with going dormant, which is exactly the
+    // bug this fixes — `visual`/`hologram` used to be explicitly nulled
+    // out here; `display` was never touched (same fix note flags this),
+    // so the three are now consistent with each other.
+    holdingRef.current = false; // holding shouldn't persist into dormant — re-entering active mode later starts fresh
+    setHolding(false);
     isWhisperModeRef.current = false;
-  }, [clearInactivityTimer, teardownRecording, stopBargeInMonitor, updateStatus, setVisual, setHologram]);
+  }, [clearInactivityTimer, teardownRecording, stopBargeInMonitor, updateStatus]);
 
   const resetInactivityTimer = useCallback(() => {
     clearInactivityTimer();
@@ -955,7 +995,19 @@ export function VoiceSessionProvider({ children }: { children: ReactNode }) {
       spontaneousQueueRef.current = [];
       return;
     }
-    if (modeRef.current !== "dormant" || statusRef.current !== "idle") return;
+    const atRest = modeRef.current === "dormant" && statusRef.current === "idle";
+    // Hold is deliberately narrower than Do Not Disturb: routine
+    // spontaneous speech gets no special treatment here — it's still
+    // gated on being fully at rest, same as it already is during any
+    // ordinary active-mode conversation, so it naturally waits out a
+    // Hold with no new rule needed. Urgent items get one explicit
+    // exception. Without this, "urgent" otherwise means nothing more than
+    // "skip the chime, speak the instant the app is next at rest" (no
+    // interrupt behavior exists anywhere else in this function) — so an
+    // urgent alert would otherwise queue silently behind an indefinite
+    // Hold instead of actually getting through.
+    const urgentDuringHold = holdingRef.current && spontaneousQueueRef.current[0]?.urgency === "urgent";
+    if (!atRest && !urgentDuringHold) return;
     const next = spontaneousQueueRef.current.shift();
     if (!next) return;
 
@@ -1070,12 +1122,16 @@ export function VoiceSessionProvider({ children }: { children: ReactNode }) {
   // updateStatus("idle")/goDormant() call sites got it there. More robust
   // than threading an explicit drainSpontaneousQueue() call into every one
   // of those sites by hand (and just as correct: React's own state update
-  // is what "settles into idle" means here).
+  // is what "settles into idle" means here). Also fires on `holding`
+  // flipping true — an urgent item already queued the instant Hold begins
+  // needs its own trigger, same reasoning as the dormant/idle case, since
+  // drainSpontaneousQueue's own urgent-during-hold exception (see above)
+  // only matters if something actually calls it.
   useEffect(() => {
-    if (mode === "dormant" && status === "idle") {
+    if ((mode === "dormant" && status === "idle") || holding) {
       drainSpontaneousQueue();
     }
-  }, [mode, status, drainSpontaneousQueue]);
+  }, [mode, status, holding, drainSpontaneousQueue]);
 
   // Streaming sibling of speak() — plays each sentence's audio as it
   // arrives from app/api/v1/voice/respond's SSE stream instead of waiting
@@ -1346,6 +1402,35 @@ export function VoiceSessionProvider({ children }: { children: ReactNode }) {
         return;
       }
 
+      // Holding takes priority over everything else below, including the
+      // sleep phrase — while held, the ONLY thing being pattern-matched
+      // for is "release" (per the fix note's own spec: "the only thing
+      // it's pattern-matching for is the release phrase"). Anything else
+      // said while holding — including "go to sleep" — is silently
+      // discarded: no model call, no response, no visible reaction, just
+      // loop back to listening for "release".
+      if (modeRef.current === "active" && holdingRef.current) {
+        if (isReleasePhrase(text)) {
+          setTranscript(text);
+          setResponseText(RELEASE_ACKNOWLEDGMENT);
+          setToolsUsed([]);
+          holdingRef.current = false;
+          setHolding(false);
+
+          if (isWhisperModeRef.current && !(await isPrivateAudioOutputConnected())) {
+            setShowTranscript(true);
+            await new Promise((resolve) => setTimeout(resolve, WHISPER_TEXT_READ_DELAY_MS));
+          } else {
+            await speak(RELEASE_ACKNOWLEDGMENT, isWhisperModeRef.current ? { quiet: true } : undefined);
+          }
+        }
+        // Non-release speech while holding: no acknowledgment, no
+        // setTranscript/setResponseText either — a visible "I heard
+        // something" readout would contradict the whole point of Hold.
+        if (modeRef.current === "active") startListeningRef.current();
+        return;
+      }
+
       if (modeRef.current === "active" && isSleepPhrase(text)) {
         setTranscript(text);
         setResponseText(SLEEP_ACKNOWLEDGMENT);
@@ -1362,6 +1447,24 @@ export function VoiceSessionProvider({ children }: { children: ReactNode }) {
         }
 
         goDormant();
+        return;
+      }
+
+      if (modeRef.current === "active" && isHoldPhrase(text)) {
+        setTranscript(text);
+        setResponseText(HOLDING_ACKNOWLEDGMENT);
+        setToolsUsed([]);
+        holdingRef.current = true;
+        setHolding(true);
+
+        if (isWhisperModeRef.current && !(await isPrivateAudioOutputConnected())) {
+          setShowTranscript(true);
+          await new Promise((resolve) => setTimeout(resolve, WHISPER_TEXT_READ_DELAY_MS));
+        } else {
+          await speak(HOLDING_ACKNOWLEDGMENT, isWhisperModeRef.current ? { quiet: true } : undefined);
+        }
+
+        if (modeRef.current === "active") startListeningRef.current();
         return;
       }
 
@@ -1705,6 +1808,8 @@ export function VoiceSessionProvider({ children }: { children: ReactNode }) {
   }, [mode, micArmed, armMic, resetInactivityTimer, status, stopListeningManual, goDormant]);
 
   function getStatusLabel(): string {
+    if (holding) return "Holding — say \"Release\"";
+
     if (mode === "dormant") {
       if (!micArmed) return "Tap to enable voice";
       if (wakeWordStatus === "loading") return "Loading wake-word model…";
@@ -1729,7 +1834,7 @@ export function VoiceSessionProvider({ children }: { children: ReactNode }) {
     }
   }
 
-  const ringState = mode === "dormant" ? "dormant" : status;
+  const ringState = holding ? "holding" : mode === "dormant" ? "dormant" : status;
   const statusLabel = getStatusLabel();
 
   const value: VoiceSessionValue = {

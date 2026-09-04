@@ -1671,6 +1671,35 @@ html, body {
   animation-delay: calc(var(--dot-frac) * 0.6s);
 }
 
+/* State: holding — "I'm not listening to what you're saying right now,"
+   distinct at a glance from every other state above, none of which use
+   amber. A flash, not a breathe/pulse: every other state's animation is
+   smooth (ease-in-out), reading as "alive and working" — holding is
+   deliberately more abrupt/on-off, since the point is an unmistakable
+   "paused" signal, not another flavor of "active." --status-warning is
+   this app's one amber token (see :root), reserved for exactly this kind
+   of "notice me" state per the same DESIGN.md convention .hud-ring-error
+   above already follows for red. */
+.hud-ring-holding .hud-glow {
+  background: radial-gradient(circle, rgba(245, 158, 11, 0.55) 0%, rgba(245, 158, 11, 0.24) 35%, transparent 68%);
+  opacity: 0.9;
+  animation: hud-holding-flash 1.3s ease-in-out infinite;
+}
+.hud-ring-holding .hud-glow-core {
+  background: radial-gradient(circle, rgba(255, 255, 255, 0.9) 0%, var(--status-warning) 30%, transparent 72%);
+  opacity: 0.8;
+  animation: hud-holding-flash 1.3s ease-in-out infinite;
+}
+.hud-ring-holding .hud-particles { opacity: 0.6; }
+.hud-ring-holding .hud-ticks line { opacity: 0.18; }
+.hud-ring-holding .hud-wave-dot { --wave-color: var(--status-warning); }
+
+@keyframes hud-holding-flash {
+  0%, 40% { opacity: 0.95; }
+  50% { opacity: 0.35; }
+  90%, 100% { opacity: 0.95; }
+}
+
 @keyframes hud-breathe {
   0%, 100% { opacity: 0.4; transform: scale(1); }
   50% { opacity: 0.65; transform: scale(1.04); }
