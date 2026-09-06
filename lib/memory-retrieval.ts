@@ -27,6 +27,22 @@ const STOP_WORDS = new Set([
   "and",
   "the",
   "are",
+  // Added 2026-09-04, alongside the minimum-match-score floor below —
+  // confirmed live that these carry essentially zero topical signal (they
+  // pass length>=3 but appear in almost any query regardless of subject)
+  // and were diluting/polluting match ratios in both directions: "can" and
+  // "like" produced real but meaningless matches against a long memory's
+  // incidental vocabulary (a query about checking email for anything
+  // "urgent" partly matched on "can"; "what's the weather like" matched on
+  // "like"), while "how" and "think" inflated a genuinely relevant short
+  // query's token count enough to drag its match ratio below any
+  // reasonable threshold ("how should I think about med school prep"
+  // has exactly one real topical token — "school" — but was previously
+  // scored out of 5).
+  "how",
+  "think",
+  "can",
+  "like",
 ]);
 
 const QUERY_EXPANSIONS: Record<string, string[]> = {
@@ -104,11 +120,71 @@ function tokenize(value: string) {
   return Array.from(expandedTokens);
 }
 
+// Basic stemming — strips a few common suffixes so a query token still
+// connects to plural/gerund/participle variants in a memory ("sleeps" ->
+// "sleep", "scheduling" -> "schedul"). Deliberately crude (no real
+// stemming library, no linguistic correctness attempted) — same "good
+// enough for keyword overlap" spirit as the rest of this scorer. Guards
+// against stripping a short token down to nothing/near-nothing (e.g. "as"
+// -> "").
+function stem(token: string): string {
+  const stripped = token.replace(/(ing|edly|ed|es|s)$/, "");
+  return stripped.length >= 3 ? stripped : token;
+}
+
+// Expands one token into every form worth matching against: itself, its
+// stem, and — for hyphenated compounds like "medical-school" — each
+// hyphen-separated part and that part's own stem too. This is what lets a
+// bare query token like "school" connect to a longer memory's
+// "medical-school" without resorting to blind substring matching (which
+// would just as happily match "art" inside "party" or "cat" inside
+// "location") — confirmed live 2026-09-04 that exact-token-only matching
+// missed a real, plausible query ("med school prep" against a memory
+// containing "medical-school") for exactly this reason.
+function expandTokenForms(token: string): Set<string> {
+  const forms = new Set<string>([token, stem(token)]);
+  if (token.includes("-")) {
+    for (const part of token.split("-")) {
+      if (part.length >= 3) {
+        forms.add(part);
+        forms.add(stem(part));
+      }
+    }
+  }
+  return forms;
+}
+
+// A query token "matches" a memory's token set if any of its expanded
+// forms overlaps any of the memory tokens' expanded forms — computed once
+// per memory (not per query token) since the memory side doesn't change
+// across the loop below.
+function expandTokenSet(tokens: Set<string>): Set<string> {
+  const forms = new Set<string>();
+  for (const token of tokens) {
+    for (const form of expandTokenForms(token)) forms.add(form);
+  }
+  return forms;
+}
+
+// Below this, a "match" is too weak to be worth surfacing at all — e.g. a
+// single coincidental shared word between a short unrelated query and a
+// long memory with broad vocabulary coverage. Confirmed live 2026-09-04:
+// a 6,500-character Distilled memory was returned for "What's the weather
+// like this weekend?" and "Can you check my email for anything urgent?"
+// (real matchScores ~0.33 and ~0.40) purely because a long document has
+// enough incidental vocabulary to weakly overlap almost any query — not
+// because either query was actually about that memory. Chosen with real
+// margin below the genuine matches seen in that same test (~0.83-1.0) and
+// above those two false positives, not a round-number guess.
+const MIN_MATCH_SCORE = 0.3;
+
 // Shared keyword-overlap scorer — no embeddings/vector DB, just token
-// overlap between the query and each memory's content/domain/type, blended
-// with the memory's own confidence. Used by both the local-file retrieval
-// (below, unchanged in behavior) and the Firestore-backed retrieval used by
-// the Judgment Engine.
+// overlap (with basic stemming/compound-splitting, see expandTokenForms
+// above) between the query and each memory's content/domain/type, blended
+// with the memory's own confidence, gated by a minimum match-score floor
+// so a weak coincidental overlap never qualifies at all. Used by both the
+// local-file retrieval (below, unchanged in behavior) and the
+// Firestore-backed retrieval used by the Judgment Engine.
 function scoreMemories<T extends ScoreableMemory>(
   memories: T[],
   query: string,
@@ -137,13 +213,20 @@ function scoreMemories<T extends ScoreableMemory>(
       ].join(" ");
 
       const memoryTokens = new Set(tokenize(searchableText));
+      const memoryTokenForms = expandTokenSet(memoryTokens);
 
       let tokenMatches = 0;
 
       for (const token of queryTokens) {
-        if (memoryTokens.has(token)) {
-          tokenMatches += 1;
+        const queryForms = expandTokenForms(token);
+        let matched = false;
+        for (const form of queryForms) {
+          if (memoryTokenForms.has(form)) {
+            matched = true;
+            break;
+          }
         }
+        if (matched) tokenMatches += 1;
       }
 
       const matchScore = tokenMatches / queryTokens.size;
@@ -152,7 +235,7 @@ function scoreMemories<T extends ScoreableMemory>(
 
       return { ...memory, relevanceScore, matchScore };
     })
-    .filter((memory) => memory.matchScore > 0)
+    .filter((memory) => memory.matchScore >= MIN_MATCH_SCORE)
     .sort((a, b) => b.relevanceScore - a.relevanceScore)
     .slice(0, limit);
 }
