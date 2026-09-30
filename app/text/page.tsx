@@ -230,11 +230,6 @@ export default function TextChatPage() {
         {hologram && <HologramPanel hologram={hologram} onClose={() => showHologram(null)} uiActionQueue={uiActionQueue} />}
         {display && <DisplayPanel display={display} onClose={() => showDisplay(null)} />}
 
-        <div className="text-chat-header">
-          <div className="page-eyebrow">TEXT</div>
-          <div className="page-title">Chat with North</div>
-        </div>
-
         <div className="text-chat-messages">
           {messages.length === 0 && (
             <div className="text-chat-empty">Nothing here yet — send a message to get started.</div>

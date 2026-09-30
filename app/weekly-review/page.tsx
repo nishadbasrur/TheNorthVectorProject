@@ -51,12 +51,6 @@ export default function WeeklyReviewPage() {
 
   return (
     <AppShell>
-      <div className="page-header">
-        <div className="page-eyebrow">Weekly Command</div>
-        <div className="page-title">Weekly Review</div>
-        <div className="page-meta">Draft and record your structured weekly reflection</div>
-      </div>
-
       <div className="page-body">
         <div className="grid-main-side">
           <div>

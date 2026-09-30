@@ -71,12 +71,6 @@ export default function NotificationsPage() {
 
   return (
     <AppShell>
-      <div className="page-header">
-        <div className="page-eyebrow">Signal</div>
-        <div className="page-title">Notifications</div>
-        <div className="page-meta">Everything North has surfaced unprompted — newest first.</div>
-      </div>
-
       <div className="page-body">
         {isLoading && <div className="card">Loading…</div>}
 
