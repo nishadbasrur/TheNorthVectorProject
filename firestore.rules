@@ -187,6 +187,15 @@ service cloud.firestore {
       allow write: if false;
     }
 
+    // text_sessions is text-chat mode's own turn-history store (2026-09-30
+    // fix note) — deliberately separate from voice_sessions above, same
+    // access pattern (owner-read, Admin-SDK-only write via
+    // app/api/v1/text/respond). See lib/text-session-store.ts.
+    match /text_sessions/{document=**} {
+      allow read: if isOwner();
+      allow write: if false;
+    }
+
     // synthesis_runs is the audit trail for each Synthesis Engine pass —
     // source counts and which connections were found/delivered, never raw
     // source content (same boundary Gmail already enforces). Written only
