@@ -2006,3 +2006,104 @@ html, body {
   border-radius: 8px;
   box-shadow: 0 0 40px rgba(58, 214, 255, 0.1);
 }
+
+/* Text-chat mode (app/text/page.tsx) — a standard chat window, deliberately
+   plainer/quieter chrome than the sandbox HUD's glowing-orb theatrics
+   (no orb, no ring states, no particle field): this is a reactive,
+   read-the-screen interface, not a live-voice ambient display, so it
+   borrows the app's card/border tokens directly rather than the hud-*
+   glow palette. */
+.text-chat-page {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  max-width: 720px;
+  margin: 0 auto;
+  padding: 24px 20px;
+  gap: 16px;
+}
+
+.text-chat-header {
+  flex-shrink: 0;
+}
+
+.text-chat-messages {
+  flex: 1;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 4px 2px;
+}
+
+.text-chat-empty {
+  color: var(--text-faint);
+  font-size: 13px;
+  text-align: center;
+  margin-top: 40px;
+}
+
+.text-chat-bubble {
+  max-width: 80%;
+  padding: 10px 14px;
+  border-radius: 12px;
+  font-size: 14px;
+  line-height: 1.5;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.text-chat-bubble-user {
+  align-self: flex-end;
+  background: var(--navy-accent);
+  color: white;
+  border-bottom-right-radius: 3px;
+}
+
+.text-chat-bubble-assistant {
+  align-self: flex-start;
+  background: var(--bg-card);
+  border: 1px solid var(--border-default);
+  color: var(--text-primary);
+  border-bottom-left-radius: 3px;
+}
+
+.text-chat-input-row {
+  flex-shrink: 0;
+  display: flex;
+  gap: 8px;
+  padding-top: 8px;
+  border-top: 1px solid var(--border-default);
+}
+
+.text-chat-input {
+  flex: 1;
+  background: var(--bg-card);
+  border: 1px solid var(--border-default);
+  border-radius: 8px;
+  padding: 10px 14px;
+  color: var(--text-primary);
+  font-size: 14px;
+  font-family: inherit;
+}
+
+.text-chat-input:focus {
+  outline: none;
+  border-color: var(--border-accent);
+}
+
+.text-chat-send-btn {
+  background: var(--navy-accent);
+  color: white;
+  border: none;
+  border-radius: 8px;
+  padding: 10px 20px;
+  font-size: 14px;
+  font-weight: 500;
+  cursor: pointer;
+}
+
+.text-chat-send-btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}

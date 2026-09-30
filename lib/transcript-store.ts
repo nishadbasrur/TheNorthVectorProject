@@ -87,11 +87,19 @@ function transcriptFileName(date: Date): string {
   return `${parts.year}-${parts.month}-${parts.day}-${parts.hour}-${parts.minute}-${parts.second}.md`;
 }
 
-// Fire-and-forget from app/api/v1/voice/respond/route.ts — every voice
-// message, verbatim, no AI call, no summarization. Callers must not await
-// this on the response's critical path (see that route's own comment on
-// where this is invoked).
-export async function createTranscript(text: string): Promise<{ fileId: string }> {
+// Fire-and-forget from app/api/v1/voice/respond/route.ts (and, since the
+// text-chat-mode fix note, app/api/v1/text/respond/route.ts too) — every
+// message, verbatim, no AI call, no summarization, regardless of which
+// channel it came in on. This is Tier 1 of the shared memory pipeline
+// (Transcripts → General → Distilled): text and voice write to the exact
+// same Transcripts/ folder, tagged only by `source`, so the nightly batch
+// extraction (functions/src/transcript-batch-scan.ts) treats a fact
+// mentioned in a text chat identically to one spoken aloud — genuinely
+// shared long-term memory, even though the two routes' session/turn-history
+// storage is deliberately kept separate. Callers must not await this on the
+// response's critical path (see the voice route's own comment on where
+// this is invoked).
+export async function createTranscript(text: string, source: "voice" | "text" = "voice"): Promise<{ fileId: string }> {
   const client = getDriveClient();
   const folderId = await findTranscriptsFolderId();
 
@@ -99,7 +107,7 @@ export async function createTranscript(text: string): Promise<{ fileId: string }
   const bodyWithCenterPoint = `${text}\n\n[[Transcript Memories Center Point]]`;
   const fileContent = matter.stringify(bodyWithCenterPoint, {
     date: now.toISOString(),
-    source: "voice",
+    source,
   });
 
   const { data } = await client.files.create({
