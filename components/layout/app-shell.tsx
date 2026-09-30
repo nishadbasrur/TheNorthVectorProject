@@ -14,7 +14,7 @@ const navGroups = [
     label: "Command",
     items: [
       { label: "North", href: "/sandbox", icon: "○" },
-      { label: "Text", href: "/text", icon: "◇" },
+      { label: "Stealth", href: "/text", icon: "◇" },
       { label: "Dashboard", href: "/dashboard", icon: "⊞" },
       { label: "Weekly Review", href: "/weekly-review", icon: "◈" },
       { label: "Notifications", href: "/notifications", icon: "◎" },

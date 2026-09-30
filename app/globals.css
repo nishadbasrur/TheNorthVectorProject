@@ -2023,10 +2023,6 @@ html, body {
   gap: 16px;
 }
 
-.text-chat-header {
-  flex-shrink: 0;
-}
-
 .text-chat-messages {
   flex: 1;
   overflow-y: auto;
